@@ -27,7 +27,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
       - name: Configure static linker
         run: |
           rust_host=$(rustc -vV | sed -n 's/^host: //p')
@@ -90,7 +89,6 @@ jobs:
         with:
           version: 8
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Verify tag matches app version
         shell: bash
         run: |
