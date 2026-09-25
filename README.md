@@ -16,7 +16,8 @@ Open a local folder, or enter an SSH host and absolute repository path in the Op
 
 ## Available now
 
-- Repository tabs, recent repositories, branches/remotes/tags/stashes/submodules sidebar, paged commit history and graph, commit details, working-tree status, and diffs.
+- Repository tabs, recent repositories, branch and remote folders, tags/stashes/submodules sidebar, paged commit history and graph, commit details, working-tree status, and diffs.
+- An All Changes tab shows every changed file's diff in one scrollable view, with per-file and global expand/collapse controls.
 - File and hunk staging/unstaging, commit/amend, fetch, fast-forward pull, push, branch switching/creation/safe deletion, and stash.
 - Commit search by message; prefix with `author:` or `path:` to search those fields.
 - Resizable panes with side or bottom details layout, draggable repository tabs, folder drop, and a command palette with Ctrl+P.
@@ -41,7 +42,7 @@ The SSH smoke test against the isolated `warmer` repository covered snapshot, di
 
 ## GitHub releases
 
-Pushing a `vX.Y.Z` tag matching the versions in `app/package.json` and `app/src-tauri/tauri.conf.json` runs `.github/workflows/release.yml`. It builds Windows x64 (NSIS), macOS Apple Silicon and Intel (DMG), and Linux x64 (Debian package and AppImage). The release starts as a draft and is published only after all builds succeed. For example, after updating the versions, run `git tag v0.1.1` and `git push origin v0.1.1`.
+Pushing a `vX.Y.Z` tag matching the versions in `app/package.json` and `app/src-tauri/tauri.conf.json` runs `.github/workflows/release.yml`. It builds Windows x64 (NSIS), macOS Apple Silicon and Intel (DMG), and Linux x64 (Debian package and AppImage). The release starts as a draft and is published only after all builds succeed. For example, after updating the versions, run `git tag v0.1.2` and `git push origin v0.1.2`.
 
 The macOS bundles use ad-hoc signing and are not notarized; Windows installers are not certificate signed. Operating systems may show an approval warning when installing downloaded builds.
 

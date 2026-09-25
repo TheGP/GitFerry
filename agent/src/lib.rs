@@ -142,7 +142,7 @@ fn refs(repo: &Path, current_branch: &str) -> Result<Vec<RefEntry>, String> {
         repo,
         &[
             "for-each-ref",
-            "--format=%(refname)%00%(objectname)%00%(upstream:track)%00",
+            "--format=%(refname)%00%(objectname)%00%(upstream:track)%00%(*objectname)%00",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
@@ -174,7 +174,13 @@ fn refs(repo: &Path, current_branch: &str) -> Result<Vec<RefEntry>, String> {
         entries.push(RefEntry {
             name: name.to_string(),
             kind: kind.to_string(),
-            target: text(fields[1]),
+            target: text(
+                if kind == "tag" && fields.get(3).is_some_and(|field| !field.is_empty()) {
+                    fields[3]
+                } else {
+                    fields[1]
+                },
+            ),
             is_head: kind == "branch" && name == current_branch,
             ahead: tracking_count("ahead "),
             behind: tracking_count("behind "),

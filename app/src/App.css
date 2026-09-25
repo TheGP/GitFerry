@@ -399,6 +399,32 @@ button { cursor: pointer; }
 .folder-button:hover { background: var(--theme-hover); }
 .modal-body input:focus { border-color: var(--theme-accent); }
 
+.locations-list { flex: 1; min-height: 0; overflow-y: auto; }
+.ref-item, .ref-folder { width: 100%; border: 0; background: transparent; text-align: left; }
+.ref-item:hover, .ref-folder:hover { background: var(--theme-hover); }
+.ref-item:disabled { cursor: default; }
+.ref-item:disabled:hover { background: transparent; }
+.ref-item { flex: none; }
+.ref-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.ref-folder { height: 29px; display: flex; align-items: center; gap: 7px; padding-right: 12px; color: var(--theme-secondary); font-size: 12.5px; }
+.ref-disclosure { width: 13px; flex: none; color: var(--theme-accent); font-size: 17px; line-height: 1; text-align: center; }
+.ref-folder-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ref-folder-count { color: var(--theme-muted); font-size: 10px; }
+.details-tab { border-top: 2px solid transparent; background: transparent; cursor: pointer; text-align: left; }
+.details-tab:hover:not(.active) { background: var(--theme-hover); color: var(--theme-text); }
+.files-heading-spacer { flex: 1; }
+.files-heading button { margin-left: 0; }
+.all-diffs { margin: 0 25px 26px; }
+.all-diff-group { padding: 11px 3px 8px; color: var(--theme-secondary); font-size: 10.5px; font-weight: 800; letter-spacing: 1px; }
+.all-diff-group span { margin-left: 5px; color: var(--theme-muted); }
+.all-diff-card { margin-bottom: 8px; overflow: hidden; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-details); }
+.all-diff-heading { width: 100%; min-height: 38px; display: flex; align-items: center; gap: 9px; padding: 5px 12px; border: 0; background: var(--theme-raised); color: var(--theme-text); text-align: left; font-size: 12.5px; }
+.all-diff-heading:hover { background: var(--theme-hover); }
+.all-diff-heading .file-path { font-size: 12px; }
+.all-diff-heading .diff-target { flex: none; color: var(--theme-muted); font: 700 9px Inter, "Segoe UI", sans-serif; letter-spacing: 1px; }
+.all-diff-card .file-actions { padding-right: 12px; }
+.all-diff-card .diff-content { padding-bottom: 13px; }
+
 .theme-control { height: 100%; flex: none; display: flex; align-items: center; gap: 7px; padding: 0 14px; border-left: 1px solid var(--theme-border); color: var(--theme-muted); }
 .theme-caption { font-size: 9px; font-weight: 800; letter-spacing: 1px; }
 .theme-swatch { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--theme-accent); }

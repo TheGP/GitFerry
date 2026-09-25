@@ -13,6 +13,7 @@ type SearchResult = { commits: Commit[]; hasMore: boolean };
 type Details = { hash: string; subject: string; body: string; author: string; authorEmail: string; timestamp: number; parents: string[]; files: { path: string; status: string }[] };
 type Choice = { path: string; status: string; target: string };
 type Diff = { text: string; truncated: boolean };
+type RefNode = { label: string; path: string; ref?: Ref; children: RefNode[]; count: number; containsHead: boolean };
 type Operation = { kind: "stage_all" | "fetch" | "pull" | "push" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch"; value: { branch: string } } | { kind: "stash"; value: { message: string } };
 const recentKey = "gitferry.recent";
 const tabsKey = "gitferry.openTabs";
@@ -37,6 +38,80 @@ const graphColors: Record<ThemeId, string[]> = {
   claude: ["#d99172", "#b8a0cf", "#d5b77a", "#91b69b", "#a0adc9"],
 };
 const graphOutlines: Record<ThemeId, string> = { antigravity: "#242424", vscode: "#252526", sublime: "#293039", claude: "#302b28" };
+
+function groupRefs(refs: Ref[], folders: boolean): RefNode[] {
+  const root: RefNode = { label: "", path: "", children: [], count: 0, containsHead: false };
+  for (const ref of refs) {
+    const parts = folders ? ref.name.split("/") : [ref.name];
+    let parent = root;
+    for (const part of parts.slice(0, -1)) {
+      let folder = parent.children.find(item => !item.ref && item.label === part);
+      if (!folder) {
+        folder = { label: part, path: `${parent.path}${part}/`, children: [], count: 0, containsHead: false };
+        parent.children.push(folder);
+      }
+      folder.count++;
+      folder.containsHead ||= ref.isHead;
+      parent = folder;
+    }
+    parent.children.push({ label: parts[parts.length - 1], path: ref.name, ref, children: [], count: 1, containsHead: ref.isHead });
+  }
+  const sort = (nodes: RefNode[]) => {
+    nodes.sort((a, b) => Number(Boolean(a.ref)) - Number(Boolean(b.ref)) || a.label.localeCompare(b.label));
+    nodes.forEach(node => sort(node.children));
+  };
+  sort(root.children);
+  return root.children;
+}
+
+function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrides: Record<string, boolean>; onToggle: (key: string, open: boolean) => void; onSelect: (hash: string) => void }) {
+  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${25 + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)}>
+    <span class="ref-icon">{props.kind === "branch" ? "⑂" : props.kind === "remote" ? "☁" : props.kind === "stash" ? "◷" : props.kind === "submodule" ? "▣" : "◇"}</span><span class="ref-name">{node.label}</span><Show when={node.ref?.ahead || node.ref?.behind}><span class="ref-tracking">{node.ref?.ahead ? `↑${node.ref.ahead}` : ""} {node.ref?.behind ? `↓${node.ref.behind}` : ""}</span></Show><Show when={node.ref?.isHead}><span class="ref-head">HEAD</span></Show>
+  </button>}>
+    {(() => {
+      const key = `${props.kind}:${node.path}`;
+      const open = () => props.overrides[key] ?? node.containsHead;
+      return <><button class="ref-folder" style={{ "padding-left": `${14 + props.depth * 14}px` }} aria-expanded={open()} onClick={() => props.onToggle(key, !open())}><span class="ref-disclosure">{open() ? "⌄" : "›"}</span><span class="ref-folder-name">{node.label}</span><span class="ref-folder-count">{node.count}</span></button><Show when={open()}><RefTree nodes={node.children} kind={props.kind} depth={props.depth + 1} overrides={props.overrides} onToggle={props.onToggle} onSelect={props.onSelect} /></Show></>;
+    })()}
+  </Show>}</For>;
+}
+
+function parseDiffLines(value: Diff | null) {
+  let hunk = -1;
+  return (value?.text ?? "").split("\n").map(line => ({ line, hunk: line.startsWith("@@") ? ++hunk : -1 }));
+}
+
+function DiffText(props: { value: Diff; item: Choice; working: boolean; actionBusy: boolean; onAction: (operation: Operation) => void }) {
+  const lines = createMemo(() => parseDiffLines(props.value));
+  return <><div class="diff-content"><For each={lines()}>{({ line, hunk }, index) => <div class={`diff-line ${line.startsWith("+") && !line.startsWith("+++") ? "added" : line.startsWith("-") && !line.startsWith("---") ? "deleted" : line.startsWith("@@") ? "hunk" : line.startsWith("diff --git") ? "diff-title" : ""}`}><span class="line-number">{index() + 1}</span><span class="line-text">{line || " "}</span><Show when={hunk >= 0 && props.working && (props.item.target === "working" || props.item.target === "staged")}><button class="hunk-action" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_hunk", value: { path: props.item.path, index: hunk, reverse: props.item.target === "staged" } })}>{props.item.target === "staged" ? "Unstage hunk" : "Stage hunk"}</button></Show></div>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show></>;
+}
+
+function demoDiff(item: Choice): Diff {
+  return { text: `diff --git a/${item.path} b/${item.path}\nindex 2a6d9f1..a83f140 100644\n--- a/${item.path}\n+++ b/${item.path}\n@@ -12,6 +12,8 @@ function RepositoryView() {\n   const branch = repository.branch;\n-  const loading = false;\n+  const loading = repository.isLoading;\n+  const remote = repository.remoteHost;\n   return renderHistory(branch);\n }\n`, truncated: false };
+}
+
+function DiffCard(props: { item: Choice; repoPath: string; working: boolean; expanded: boolean; actionBusy: boolean; scrollRoot: HTMLElement; onToggle: () => void; onAction: (operation: Operation, confirmation?: string) => void; onError: (error: string) => void }) {
+  let element!: HTMLDivElement;
+  const [value, setValue] = createSignal<Diff | null>(null);
+  const [loading, setLoading] = createSignal(false);
+  const [loadError, setLoadError] = createSignal("");
+  createEffect(() => {
+    if (!props.expanded || value() || loading() || loadError()) return;
+    const observer = new IntersectionObserver(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return;
+      observer.disconnect();
+      setLoading(true);
+      const result = demoMode ? Promise.resolve(demoDiff(props.item)) : invoke<Diff>("repo_diff", { path: props.repoPath, target: props.item.target, file: props.item.path });
+      void result.then(setValue).catch(cause => { setLoadError(String(cause)); props.onError(String(cause)); }).finally(() => setLoading(false));
+    }, { root: props.scrollRoot, rootMargin: "400px" });
+    observer.observe(element);
+    onCleanup(() => observer.disconnect());
+  });
+  return <div class="all-diff-card" ref={element}>
+    <button class="all-diff-heading" aria-expanded={props.expanded} onClick={props.onToggle}><span class="ref-disclosure">{props.expanded ? "⌄" : "›"}</span><span class={`file-status ${props.item.status === "A" || props.item.status === "U" ? "added" : props.item.status === "D" ? "deleted" : "modified"}`}>{props.item.status}</span><span class="file-path">{props.item.path}</span><span class="diff-target">{props.item.target === "untracked" ? "NEW FILE" : props.item.target === "working" ? "UNSTAGED" : props.item.target === "staged" ? "STAGED" : "COMMIT"}</span></button>
+    <Show when={props.expanded}><Show when={props.working}><div class="file-actions"><Show when={props.item.target === "staged"} fallback={<button disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_file", value: { path: props.item.path } })}>Stage file</button>}><button disabled={props.actionBusy} onClick={() => props.onAction({ kind: "unstage_file", value: { path: props.item.path } })}>Unstage file</button></Show><Show when={props.item.target === "working"}><button class="danger" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } }, `Discard changes to ${props.item.path}?`)}>Discard changes</button></Show></div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() || "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} actionBusy={props.actionBusy} onAction={operation => props.onAction(operation)} />}</Show></Show>
+  </div>;
+}
 
 function GraphRow(props: { step: GraphStep; theme: ThemeId }) {
   let canvas!: HTMLCanvasElement;
@@ -69,6 +144,10 @@ function App() {
   const [details, setDetails] = createSignal<Details | null>(null);
   const [choice, setChoice] = createSignal<Choice | null>(null);
   const [diff, setDiff] = createSignal<Diff | null>(null);
+  const [showAllDiffs, setShowAllDiffs] = createSignal(false);
+  const [allExpanded, setAllExpanded] = createSignal(true);
+  const [diffOverrides, setDiffOverrides] = createSignal<Record<string, boolean>>({});
+  const [folderOverrides, setFolderOverrides] = createSignal<Record<string, boolean>>({});
   const [error, setError] = createSignal("");
   const [busy, setBusy] = createSignal(false);
   const [actionBusy, setActionBusy] = createSignal(false);
@@ -124,10 +203,10 @@ function App() {
       { title: "UNTRACKED", items: files().filter(item => item.target === "untracked") },
     ].filter(group => group.items.length)
     : [{ title: "", items: files() }]);
-  const diffLines = createMemo(() => {
-    let hunk = -1;
-    return (diff()?.text ?? "").split("\n").map(line => ({ line, hunk: line.startsWith("@@") ? ++hunk : -1 }));
-  });
+  const diffKey = (item: Choice) => `${item.target}:${item.path}`;
+  const isDiffExpanded = (item: Choice) => diffOverrides()[diffKey(item)] ?? allExpanded();
+  function toggleDiff(item: Choice) { setDiffOverrides(previous => ({ ...previous, [diffKey(item)]: !isDiffExpanded(item) })); }
+  function setEveryDiff(open: boolean) { setAllExpanded(open); setDiffOverrides({}); }
   const graph = createMemo<GraphStep[]>(() => {
     const pending: (string | null)[] = [];
     return displayedCommits().map(item => {
@@ -187,7 +266,7 @@ function App() {
   }
   createEffect(() => { if (repo() && commitScroll) setViewportHeight(commitScroll.clientHeight); });
 
-  function selectWorking() { request++; setSelected("working"); setDetails(null); setChoice(null); setDiff(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
+  function selectWorking() { request++; setSelected("working"); setDetails(null); setChoice(null); setDiff(null); setShowAllDiffs(false); if (detailsScroll) detailsScroll.scrollTop = 0; }
   function saveRecent(path: string) {
     const next = [path, ...recent().filter(item => item !== path)].slice(0, 12);
     setRecent(next);
@@ -280,6 +359,7 @@ function App() {
     const path = activePath();
     if (!path) return;
     setSelected(hash); setDetails(null); setChoice(null); setDiff(null);
+    setShowAllDiffs(false);
     if (detailsScroll) detailsScroll.scrollTop = 0;
     const id = ++request;
     if (demoMode) {
@@ -295,10 +375,10 @@ function App() {
   async function selectFile(item: Choice) {
     const path = activePath();
     if (!path) return;
-    setChoice(item); setDiff(null);
+    setShowAllDiffs(false); setChoice(item); setDiff(null);
     const id = ++request;
     if (demoMode) {
-      setDiff({ text: `diff --git a/${item.path} b/${item.path}\nindex 2a6d9f1..a83f140 100644\n--- a/${item.path}\n+++ b/${item.path}\n@@ -12,6 +12,8 @@ function RepositoryView() {\n   const branch = repository.branch;\n-  const loading = false;\n+  const loading = repository.isLoading;\n+  const remote = repository.remoteHost;\n   return renderHistory(branch);\n }\n`, truncated: false });
+      setDiff(demoDiff(item));
       requestAnimationFrame(revealDiff);
       return;
     }
@@ -378,9 +458,9 @@ function App() {
     if (demoMode) {
       const hashes = Array.from({ length: 7 }, (_, index) => String(index + 1).repeat(40));
       const sample: Repo = {
-        path: "ssh://root@warmer/srv/atelier", name: "atelier", branch: "feature/remote-git", head: "a".repeat(40),
+        path: "ssh://root@warmer/srv/atelier", name: "atelier", branch: "feature/remote-git", head: hashes[0],
         status: [{ path: "src/components/RepositoryView.tsx", index: " ", worktree: "M" }, { path: "src/styles/diff.css", index: "M", worktree: " " }, { path: "docs/notes.md", index: "?", worktree: "?" }],
-        refs: [{ name: "feature/remote-git", kind: "branch", target: "a".repeat(40), isHead: true }, { name: "main", kind: "branch", target: "b".repeat(40), isHead: false }, { name: "origin/main", kind: "remote", target: "b".repeat(40), isHead: false }, { name: "v0.9.0", kind: "tag", target: "c".repeat(40), isHead: false }],
+        refs: [{ name: "feature/remote-git", kind: "branch", target: hashes[0], isHead: true }, { name: "main", kind: "branch", target: hashes[3], isHead: false }, { name: "origin/main", kind: "remote", target: hashes[3], isHead: false }, { name: "v0.9.0", kind: "tag", target: hashes[6], isHead: false }],
         commits: ["Refine repository overview layout", "Add persistent SSH transport", "Handle binary file previews", "Merge branch feature/graph", "Improve diff readability", "Create agent protocol", "Initialize project scaffold"].map((subject, index) => ({ hash: hashes[index], parents: index === 3 ? [hashes[4], hashes[5]] : index < 6 ? [hashes[index + 1]] : [], subject, author: index % 2 ? "Alex Morgan" : "Sam Rivera", timestamp: Date.now() / 1000 - index * 86400, decorations: index === 0 ? ["HEAD -> feature/remote-git"] : index === 3 ? ["origin/main"] : [] })),
         hasMore: false,
       };
@@ -451,13 +531,11 @@ function App() {
       <Show when={recent().length}><div class="recent-list"><div class="eyebrow">RECENT</div><For each={recent()}>{path => <button onClick={() => void openRepo(path)}>⌁ &nbsp; {path}</button>}</For></div></Show>
     </main>}>
       <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"}`} style={{ "--history-height": `${commitsHeight()}px` }}>
-        <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div>
+        <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
           <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
             <div class="section-heading">⌄ &nbsp; {kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span></div>
-            <For each={repo()?.refs.filter(item => item.kind === kind)}>{item => <div class={`ref-item ${item.isHead ? "current" : ""}`} title={item.target}>
-              <span class="ref-icon">{kind === "branch" ? "⑂" : kind === "remote" ? "☁" : kind === "stash" ? "◷" : kind === "submodule" ? "▣" : "◇"}</span><span>{item.name}</span><Show when={item.ahead || item.behind}><span class="ref-tracking">{item.ahead ? `↑${item.ahead}` : ""} {item.behind ? `↓${item.behind}` : ""}</span></Show><Show when={item.isHead}><span class="ref-head">HEAD</span></Show>
-            </div>}</For>
-          </section>}</For><div class="locations-footer"><span class="connection-dot" /> {repo()?.path.startsWith("ssh://") ? "SSH REPOSITORY" : "LOCAL REPOSITORY"}</div>
+            <RefTree nodes={groupRefs(repo()?.refs.filter(item => item.kind === kind) ?? [], kind === "branch" || kind === "remote")} kind={kind} depth={0} overrides={folderOverrides()} onToggle={(key, open) => setFolderOverrides(previous => ({ ...previous, [key]: open }))} onSelect={hash => void selectCommit(hash)} />
+          </section>}</For></div><div class="locations-footer"><span class="connection-dot" /> {repo()?.path.startsWith("ssh://") ? "SSH REPOSITORY" : "LOCAL REPOSITORY"}</div>
         </aside><div class="splitter locations-splitter" onPointerDown={event => startResize("locations", event)} /></Show>
         <section class="commits-pane" style={{ width: `${commitsWidth()}px` }}><div class="pane-heading">{searchQuery() ? "SEARCH RESULTS" : "COMMITS"} <span class="heading-count">{displayedCommits().length}{hasMore() ? "+" : ""}</span></div>
           <div class="commit-scroll" ref={commitScroll} onScroll={event => {
@@ -478,19 +556,19 @@ function App() {
             <Show when={!displayedCommits().length}><div class="empty-note">{searchBusy() ? "Searching…" : searchQuery() ? "No matching commits" : "No commits yet"}</div></Show>
           </div>
         </section><div class="splitter commits-splitter" onPointerDown={event => startResize(bottomLayout() ? "history" : "commits", event)} />
-        <section class="details-pane"><div class="details-tabs"><span class="details-tab active">SUMMARY</span><Show when={choice()}><span class="details-tab">{choice()?.path.split("/").pop()?.split("\\").pop()}</span></Show></div>
+        <section class="details-pane"><div class="details-tabs"><button class={`details-tab ${!showAllDiffs() && !choice() ? "active" : ""}`} onClick={() => { setShowAllDiffs(false); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><button class={`details-tab ${showAllDiffs() ? "active" : ""}`} onClick={() => { setShowAllDiffs(true); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>ALL CHANGES</button><Show when={choice() && !showAllDiffs()}><button class="details-tab active" title={choice()?.path}>{choice()?.path.split("/").pop()?.split("\\").pop()}</button></Show></div>
           <div class="details-scroll" ref={detailsScroll}>
             <Show when={selected() === "working"} fallback={<Show when={details()} fallback={<div class="empty-note">Loading commit…</div>}>
               <div class="detail-header"><div class="eyebrow">COMMIT DETAILS <span class="hash">{details()!.hash.slice(0, 8)}</span></div><h2>{details()!.subject}</h2><Show when={details()!.body}><p class="commit-body">{details()!.body}</p></Show><div class="commit-byline"><span class="avatar">{details()!.author.charAt(0).toUpperCase()}</span><span>{details()!.author}<small>{details()!.authorEmail} · {new Date(details()!.timestamp * 1000).toLocaleString()}</small></span></div><Show when={details()!.parents.length}><div class="parent-hashes">PARENT{details()!.parents.length > 1 ? "S" : ""} <For each={details()!.parents}>{parent => <span>{parent.slice(0, 8)}</span>}</For></div></Show></div>
             </Show>}><div class="detail-header working-header"><div class="eyebrow">WORKING DIRECTORY</div><h2>{repo()?.status.length ? "Uncommitted changes" : "Everything is up to date"}</h2><p>{repo()?.status.length ? "Review the files changed in your working tree." : "Your working tree is clean."}</p></div></Show>
             <Show when={selected() === "working"}><div class="commit-editor"><textarea value={commitMessage()} onInput={event => setCommitMessage(event.currentTarget.value)} placeholder="Commit message" rows="2" /><div class="commit-editor-actions"><label><input type="checkbox" checked={amend()} disabled={!repo()?.head} onChange={event => setAmend(event.currentTarget.checked)} /> Amend previous commit</label><button disabled={!commitMessage().trim() || actionBusy() || (!amend() && !workingFiles().some(item => item.target === "staged"))} onClick={() => void commitChanges()}>Commit changes</button></div></div></Show>
-            <div class="files-heading">CHANGED FILES <span>{files().length}</span><Show when={selected() === "working" && files().length}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_all" })}>Stage All</button></Show></div>
-            <Show when={files().length} fallback={<div class="empty-note">No files to show</div>}><div class="files-list"><For each={fileGroups()}>{group => <><Show when={group.title}><div class="file-group-heading">{group.title} <span>{group.items.length}</span></div></Show><For each={group.items}>{item => <button class={`file-row ${choice()?.path === item.path && choice()?.target === item.target ? "selected" : ""}`} onClick={() => void selectFile(item)}>
+            <div class="files-heading">CHANGED FILES <span>{files().length}</span><div class="files-heading-spacer" /><Show when={showAllDiffs() && files().length}><button onClick={() => setEveryDiff(!allExpanded())}>{allExpanded() ? "Collapse all" : "Expand all"}</button></Show><Show when={selected() === "working" && files().length}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_all" })}>Stage All</button></Show></div>
+            <Show when={files().length} fallback={<div class="empty-note">No files to show</div>}><Show when={showAllDiffs()} fallback={<div class="files-list"><For each={fileGroups()}>{group => <><Show when={group.title}><div class="file-group-heading">{group.title} <span>{group.items.length}</span></div></Show><For each={group.items}>{item => <button class={`file-row ${choice()?.path === item.path && choice()?.target === item.target ? "selected" : ""}`} onClick={() => void selectFile(item)}>
               <span class={`file-status ${item.status === "A" || item.status === "U" ? "added" : item.status === "D" ? "deleted" : "modified"}`}>{item.status}</span><span class="file-path">{item.path}</span><Show when={item.target === "staged"}><span class="file-tag">STAGED</span></Show><span class="file-chevron">›</span>
-            </button>}</For></>}</For></div></Show>
-            <Show when={choice()}><div class="diff-heading"><span>{choice()?.path}</span><span>{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span></div>
+            </button>}</For></>}</For></div>}><div class="all-diffs"><For each={fileGroups()}>{group => <><Show when={group.title}><div class="all-diff-group">{group.title} <span>{group.items.length}</span></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} expanded={isDiffExpanded(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onToggle={() => toggleDiff(item)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
+            <Show when={choice() && !showAllDiffs()}><div class="diff-heading"><span>{choice()?.path}</span><span>{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span></div>
               <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>Stage file</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
-              <Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}><div class="diff-content"><For each={diffLines()}>{({ line, hunk }, index) => <div class={`diff-line ${line.startsWith("+") && !line.startsWith("+++") ? "added" : line.startsWith("-") && !line.startsWith("---") ? "deleted" : line.startsWith("@@") ? "hunk" : line.startsWith("diff --git") ? "diff-title" : ""}`}><span class="line-number">{index() + 1}</span><span class="line-text">{line || " "}</span><Show when={hunk >= 0 && selected() === "working" && (choice()?.target === "working" || choice()?.target === "staged")}><button class="hunk-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_hunk", value: { path: choice()!.path, index: hunk, reverse: choice()!.target === "staged" } })}>{choice()?.target === "staged" ? "Unstage hunk" : "Stage hunk"}</button></Show></div>}</For></div><Show when={diff()?.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show></Show>
+              <Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} actionBusy={actionBusy()} onAction={operation => void runAction(operation)} />}</Show>
             </Show>
           </div>
         </section>

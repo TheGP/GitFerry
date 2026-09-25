@@ -104,6 +104,27 @@ fn reads_commits_and_paginates() {
 }
 
 #[test]
+fn annotated_tag_opens_its_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    std::fs::write(temp.path().join("hello.txt"), "first\n").unwrap();
+    git(temp.path(), &["add", "hello.txt"]);
+    git(temp.path(), &["commit", "-qm", "Initial commit"]);
+    git(temp.path(), &["tag", "-am", "Release", "v1"]);
+
+    let path = temp.path().to_str().unwrap();
+    let repo = snapshot(path, 0, 20).unwrap();
+    let tag = repo.refs.iter().find(|entry| entry.name == "v1").unwrap();
+    assert_eq!(tag.target, repo.head.unwrap());
+    assert_eq!(
+        commit_details(path, &tag.target).unwrap().subject,
+        "Initial commit"
+    );
+}
+
+#[test]
 fn stages_commits_and_switches_branch() {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "-q"]);
