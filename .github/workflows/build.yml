@@ -1,0 +1,86 @@
+name: Build GitFerry
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agents:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            name: gitferry-agent-linux-x64
+          - target: aarch64-unknown-linux-musl
+            name: gitferry-agent-linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Configure static linker
+        run: |
+          rust_host=$(rustc -vV | sed -n 's/^host: //p')
+          linker="$(rustc --print sysroot)/lib/rustlib/$rust_host/bin/rust-lld"
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=$linker" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=$linker" >> "$GITHUB_ENV"
+      - name: Build agent
+        run: cargo build --locked --release --target ${{ matrix.target }} -p gitferry-agent
+      - name: Test repository operations
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: cargo test --locked -p gitferry-agent --test repository
+      - name: Prepare agent artifact
+        run: cp target/${{ matrix.target }}/release/gitferry-agent ${{ matrix.name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+          if-no-files-found: error
+
+  desktop:
+    needs: agents
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux webview dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitferry-agent-linux-x64
+          path: app/src-tauri/resources
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitferry-agent-linux-arm64
+          path: app/src-tauri/resources
+      - name: Install frontend packages
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        working-directory: app
+        run: pnpm exec tsc --noEmit
+      - name: Build desktop app
+        working-directory: app
+        run: pnpm tauri build --no-bundle --ci
