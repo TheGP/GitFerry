@@ -30,8 +30,11 @@ Open a local folder, or enter an SSH host and absolute repository path in the Op
 cargo test -p gitferry-agent
 cd app
 pnpm exec tsc --noEmit
+pnpm test:ui
 pnpm tauri build
 ```
+
+`pnpm test:ui` uses headless Chrome and disposable Git repositories. It clicks through staging, commits, fetch/pull/push, branches, stash, diffs, themes, and layouts without opening a desktop window. Set `CHROME_PATH` if Chrome is installed elsewhere. Optionally set `GITFERRY_REAL_REPO` to inspect a large local repository in read-only mode.
 
 On a machine with limited free space on the system drive, set `CARGO_TARGET_DIR` to a roomy drive before building. This workspace's Windows release build was verified with `CARGO_TARGET_DIR=D:\GitFerry-build`.
 The Windows installer can be built with `pnpm tauri build --bundles nsis --ci`.

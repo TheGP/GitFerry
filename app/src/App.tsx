@@ -278,7 +278,7 @@ function App() {
   }
   async function openRepo(path: string) {
     if (!path.trim()) return;
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setNotice("");
     try {
       const result = await invoke<Repo>("repo_snapshot", { path: path.trim(), offset: 0 });
       setTabs(current => current.some(item => item.path === result.path) ? current.map(item => item.path === result.path ? result : item) : [...current, result]);
@@ -501,7 +501,7 @@ function App() {
       <div class="brand-mark">◇</div>
       <div class="tab-strip">
       <For each={tabs()}>{item => <div class={`repo-tab ${activePath() === item.path ? "active" : ""}`} draggable onDragStart={() => { draggedTab = item.path; }} onDragOver={event => event.preventDefault()} onDrop={() => reorderTab(item.path)} onDragEnd={() => { draggedTab = null; }}>
-        <button class="tab-main" onClick={() => { setActivePath(item.path); setScrollTop(0); setSearchQuery(""); setSearchInput(""); if (commitScroll) commitScroll.scrollTop = 0; selectWorking(); saveTabs(); }}>{item.name}<span>{item.branch}</span></button>
+        <button class="tab-main" onClick={() => { setActivePath(item.path); setNotice(""); setScrollTop(0); setSearchQuery(""); setSearchInput(""); if (commitScroll) commitScroll.scrollTop = 0; selectWorking(); saveTabs(); }}>{item.name}<span>{item.branch}</span></button>
         <button class="tab-close" aria-label={`Close ${item.name}`} onClick={() => closeTab(item.path)}>×</button>
       </div>}</For>
       <button class="tab-add" title="Open repository" onClick={() => setShowOpen(true)}>＋</button>
