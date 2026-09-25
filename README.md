@@ -36,7 +36,7 @@ pnpm tauri build
 On a machine with limited free space on the system drive, set `CARGO_TARGET_DIR` to a roomy drive before building. This workspace's Windows release build was verified with `CARGO_TARGET_DIR=D:\GitFerry-build`.
 The Windows installer can be built with `pnpm tauri build --bundles nsis --ci`.
 
-The Linux agent binaries are bundled in `app/src-tauri/resources/`. GitHub Actions rebuilds x64 and arm64 agents before compiling the Windows, macOS, and Linux desktop apps. See [PLAN.md](PLAN.md) for the full roadmap.
+The Linux agent binaries are bundled in `app/src-tauri/resources/`. Pushes and pull requests run frontend checks and agent tests on Linux. Run the Build GitFerry workflow manually for the full Windows, macOS, and Linux desktop matrix; version tags build the release installers. See [PLAN.md](PLAN.md) for the full roadmap.
 An arm64 macOS desktop build and all seven agent repository tests passed on a test Mac. The `.app` launched successfully; its temporary build, app bundle, and caches were removed afterward.
 The SSH smoke test against the isolated `warmer` repository covered snapshot, diff, stage, commit, search, and push; the pushed bare remote ref was verified against the working repository's HEAD.
 
