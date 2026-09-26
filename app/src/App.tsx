@@ -14,7 +14,7 @@ type Details = { hash: string; subject: string; body: string; author: string; au
 type Choice = { path: string; status: string; target: string };
 type Diff = { text: string; truncated: boolean };
 type RefNode = { label: string; path: string; ref?: Ref; children: RefNode[]; count: number; containsHead: boolean };
-type Operation = { kind: "stage_all" | "fetch" | "pull" | "push" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch"; value: { branch: string } } | { kind: "stash"; value: { message: string } };
+type Operation = { kind: "stage_all" | "fetch" | "pull" | "push" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch"; value: { branch: string } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash"; value: { hash: string } };
 const recentKey = "gitferry.recent";
 const tabsKey = "gitferry.openTabs";
 const activeKey = "gitferry.activeTab";
@@ -35,9 +35,9 @@ const graphColors: Record<ThemeId, string[]> = {
   antigravity: ["#4d9bd8", "#b89bd7", "#d4ae73", "#83bd95", "#8aafd8"],
   vscode: ["#4fc1ff", "#c586c0", "#d7ba7d", "#89c996", "#9bb7ed"],
   sublime: ["#e8a866", "#b6a0d2", "#74b9c0", "#97c58f", "#d5b87c"],
-  claude: ["#d99172", "#b8a0cf", "#d5b77a", "#91b69b", "#a0adc9"],
+  claude: ["#df8065", "#c5a5d3", "#d3b579", "#92b9a3", "#a3b4ce"],
 };
-const graphOutlines: Record<ThemeId, string> = { antigravity: "#242424", vscode: "#252526", sublime: "#293039", claude: "#302b28" };
+const graphOutlines: Record<ThemeId, string> = { antigravity: "#242424", vscode: "#252526", sublime: "#293039", claude: "#242424" };
 
 function groupRefs(refs: Ref[], folders: boolean): RefNode[] {
   const root: RefNode = { label: "", path: "", children: [], count: 0, containsHead: false };
@@ -155,6 +155,7 @@ function App() {
   const [commitMessage, setCommitMessage] = createSignal("");
   const [amend, setAmend] = createSignal(false);
   const [branchMenu, setBranchMenu] = createSignal(false);
+  const [stashMenu, setStashMenu] = createSignal(false);
   const [newBranch, setNewBranch] = createSignal("");
   const [searchInput, setSearchInput] = createSignal("");
   const [searchQuery, setSearchQuery] = createSignal("");
@@ -186,6 +187,7 @@ function App() {
   let commitScroll!: HTMLDivElement;
   let detailsScroll!: HTMLDivElement;
   const repo = createMemo(() => tabs().find(item => item.path === activePath()) ?? null);
+  const stashes = createMemo(() => repo()?.refs.filter(item => item.kind === "stash") ?? []);
   const displayedCommits = createMemo(() => searchQuery() ? searchResult().commits : repo()?.commits ?? []);
   const hasMore = createMemo(() => searchQuery() ? searchResult().hasMore : repo()?.hasMore ?? false);
   const workingFiles = createMemo<Choice[]>(() => (repo()?.status ?? []).flatMap(item => {
@@ -397,7 +399,7 @@ function App() {
     try {
       const output = await invoke<string>("repo_action", { path, operation });
       setNotice(output || "Done");
-      setChoice(null); setDiff(null); setBranchMenu(false);
+      setChoice(null); setDiff(null); setBranchMenu(false); setStashMenu(false);
       await refresh();
       if (searchQuery()) await performSearch(searchQuery());
     } catch (cause) { setError(String(cause)); }
@@ -483,7 +485,7 @@ function App() {
     const interval = window.setInterval(() => { if (document.hasFocus()) void refreshState(); }, 1500);
     const focus = () => void refresh();
     const keys = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setBranchMenu(false); return; }
+      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setBranchMenu(false); setStashMenu(false); return; }
       if (!(event.ctrlKey || event.metaKey)) return;
       if (event.key.toLowerCase() === "p") { event.preventDefault(); setPaletteInput(""); setPaletteOpen(true); requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".palette input")?.focus()); }
       if (event.key.toLowerCase() === "o") { event.preventDefault(); setShowOpen(true); }
@@ -495,13 +497,13 @@ function App() {
     onCleanup(() => { unlistenDrop?.(); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); window.removeEventListener("resize", resize); });
   });
 
-  return <div class="app-shell">
+  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element && !event.target.closest(".stash-control")) setStashMenu(false); }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
     <header class="tabbar">
       <div class="brand-mark">◇</div>
       <div class="tab-strip">
       <For each={tabs()}>{item => <div class={`repo-tab ${activePath() === item.path ? "active" : ""}`} draggable onDragStart={() => { draggedTab = item.path; }} onDragOver={event => event.preventDefault()} onDrop={() => reorderTab(item.path)} onDragEnd={() => { draggedTab = null; }}>
-        <button class="tab-main" onClick={() => { setActivePath(item.path); setNotice(""); setScrollTop(0); setSearchQuery(""); setSearchInput(""); if (commitScroll) commitScroll.scrollTop = 0; selectWorking(); saveTabs(); }}>{item.name}<span>{item.branch}</span></button>
+        <button class="tab-main" onClick={() => { setActivePath(item.path); setNotice(""); setStashMenu(false); setScrollTop(0); setSearchQuery(""); setSearchInput(""); if (commitScroll) commitScroll.scrollTop = 0; selectWorking(); saveTabs(); }}>{item.name}<span>{item.branch}</span></button>
         <button class="tab-close" aria-label={`Close ${item.name}`} onClick={() => closeTab(item.path)}>×</button>
       </div>}</For>
       <button class="tab-add" title="Open repository" onClick={() => setShowOpen(true)}>＋</button>
@@ -519,7 +521,7 @@ function App() {
       </Show>
       <div class="toolbar-spacer" />
       <Show when={repo()}><form class="search-box" onSubmit={event => { event.preventDefault(); void performSearch(); }}><span>⌕</span><input value={searchInput()} onInput={event => { setSearchInput(event.currentTarget.value); if (!event.currentTarget.value) void performSearch(""); }} placeholder="Search commits" title="Search message, author:name, or path:file" /><Show when={searchQuery()}><button type="button" onClick={() => void performSearch("")}>×</button></Show></form></Show>
-      <Show when={repo()}><button class="toolbar-button" title="Refresh" onClick={() => void refresh()}>↻ <span>Refresh</span></button><span class="toolbar-divider" /><button class="toolbar-button" title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}>↓ <span>Fetch</span></button><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}>⇣ <span>Pull</span></button><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}>⇡ <span>Push</span></button><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={() => { const message = window.prompt("Stash message", "Work in progress"); if (message !== null) void runAction({ kind: "stash", value: { message } }); }}>▣ <span>Stash</span></button></Show>
+      <Show when={repo()}><button class="toolbar-button" title="Refresh" onClick={() => void refresh()}>↻ <span>Refresh</span></button><span class="toolbar-divider" /><button class="toolbar-button" title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}>↓ <span>Fetch</span></button><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}>⇣ <span>Pull</span></button><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}>⇡ <span>Push</span></button><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={() => { const message = window.prompt("Stash message", "Work in progress"); if (message !== null) void runAction({ kind: "stash", value: { message } }); }}>▣ <span>Stash</span></button><div class="stash-control"><button class="toolbar-button" title="Unstash" aria-expanded={stashMenu()} disabled={actionBusy()} onClick={() => setStashMenu(!stashMenu())}>↶ <span>Unstash</span><Show when={stashes().length}><small>{stashes().length}</small></Show></button><Show when={stashMenu()}><div class="stash-menu"><div class="eyebrow">SAVED STASHES</div><Show when={stashes().length} fallback={<div class="stash-empty">No saved stashes</div>}><For each={stashes()}>{item => <div class="stash-menu-row"><div class="stash-menu-label" title={item.name}>{item.name}</div><div class="stash-menu-actions"><button disabled={actionBusy()} title="Restore changes and keep this stash" onClick={() => void runAction({ kind: "apply_stash", value: { hash: item.target } })}>Apply</button><button disabled={actionBusy()} title="Restore changes and remove this stash" onClick={() => void runAction({ kind: "pop_stash", value: { hash: item.target } })}>Pop</button></div></div>}</For></Show></div></Show></div></Show>
       <button class="toolbar-button primary" title="Open repository" onClick={() => setShowOpen(true)}>＋ <span>Open repo</span></button>
     </div>
     <Show when={error()}><div class="error-bar">{error()}<button onClick={() => setError("")}>×</button></div></Show>

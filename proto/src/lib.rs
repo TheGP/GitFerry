@@ -125,6 +125,12 @@ pub enum RepoAction {
     Stash {
         message: String,
     },
+    ApplyStash {
+        hash: String,
+    },
+    PopStash {
+        hash: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

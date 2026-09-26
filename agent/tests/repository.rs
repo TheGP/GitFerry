@@ -19,6 +19,50 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn restores_selected_stash_and_only_pop_removes_it() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    std::fs::write(temp.path().join("hello.txt"), "first\n").unwrap();
+    git(temp.path(), &["add", "hello.txt"]);
+    git(temp.path(), &["commit", "-qm", "Initial"]);
+    let path = temp.path().to_str().unwrap();
+    std::fs::write(temp.path().join("hello.txt"), "stashed\n").unwrap();
+    action(
+        path,
+        RepoAction::Stash {
+            message: "Test stash".into(),
+        },
+    )
+    .unwrap();
+    let hash = snapshot(path, 0, 20)
+        .unwrap()
+        .refs
+        .into_iter()
+        .find(|item| item.kind == "stash")
+        .unwrap()
+        .target;
+
+    assert!(action(path, RepoAction::ApplyStash { hash: "bad".into() }).is_err());
+    action(path, RepoAction::ApplyStash { hash: hash.clone() }).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("hello.txt")).unwrap(),
+        "stashed\n"
+    );
+    assert_eq!(git(temp.path(), &["stash", "list", "--format=%H"]), hash);
+
+    git(temp.path(), &["restore", "hello.txt"]);
+    action(path, RepoAction::PopStash { hash: hash.clone() }).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("hello.txt")).unwrap(),
+        "stashed\n"
+    );
+    assert_eq!(git(temp.path(), &["stash", "list", "--format=%H"]), "");
+    assert!(action(path, RepoAction::PopStash { hash }).is_err());
+}
+
+#[test]
 fn reads_empty_repo_and_working_changes() {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "-q"]);

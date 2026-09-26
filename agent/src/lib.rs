@@ -591,10 +591,30 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
             git(&root, &["branch", "-d", &branch])?
         }
         RepoAction::Stash { message } => git(&root, &["stash", "push", "-u", "-m", &message])?,
+        RepoAction::ApplyStash { hash } => restore_stash(&root, &hash, false)?,
+        RepoAction::PopStash { hash } => restore_stash(&root, &hash, true)?,
     };
     let stdout = text(&output.stdout);
     let stderr = text(&output.stderr);
     Ok(format!("{}{}", stdout, stderr).trim().to_string())
+}
+
+fn restore_stash(repo: &Path, hash: &str, pop: bool) -> Result<Output, String> {
+    if !valid_hash(hash) {
+        return Err("Invalid stash hash".to_string());
+    }
+    let list = git(repo, &["stash", "list", "--format=%gd%x00%H%x1e"])?;
+    let stash = list
+        .stdout
+        .split(|byte| *byte == 0x1e)
+        .find_map(|record| {
+            let mut fields = record.trim_ascii().split(|byte| *byte == 0);
+            let name = fields.next()?;
+            let target = fields.next()?;
+            (target == hash.as_bytes()).then(|| text(name))
+        })
+        .ok_or("Stash no longer exists; refresh the repository")?;
+    git(repo, &["stash", if pop { "pop" } else { "apply" }, &stash])
 }
 
 fn git_with_input(repo: &Path, args: &[&str], input: &[u8]) -> Result<Output, String> {

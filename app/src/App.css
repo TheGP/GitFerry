@@ -291,26 +291,26 @@ button { cursor: pointer; }
   --theme-welcome-glow: #33363a;
 }
 :root[data-theme="claude"] {
-  --theme-chrome: #211e1c;
-  --theme-toolbar: #2b2623;
-  --theme-locations: #26221f;
-  --theme-commits: #2c2724;
-  --theme-details: #302a26;
-  --theme-heading: #292420;
-  --theme-border: #4b403a;
-  --theme-input: #28231f;
-  --theme-raised: #3c342f;
-  --theme-hover: #4c4038;
-  --theme-selected: #513c32;
-  --theme-text: #f0e8de;
-  --theme-secondary: #cbbeb1;
-  --theme-muted: #a7978a;
-  --theme-accent: #d58d6d;
-  --theme-accent-hover: #e9a581;
-  --theme-accent-soft: #593e32;
-  --theme-modal: #322b26;
-  --theme-welcome: #28221e;
-  --theme-welcome-glow: #40302a;
+  --theme-chrome: #1b1b1b;
+  --theme-toolbar: #262626;
+  --theme-locations: #202020;
+  --theme-commits: #242424;
+  --theme-details: #202020;
+  --theme-heading: #292929;
+  --theme-border: #3b3b3b;
+  --theme-input: #1b1b1b;
+  --theme-raised: #303030;
+  --theme-hover: #393939;
+  --theme-selected: #37312f;
+  --theme-text: #f1efec;
+  --theme-secondary: #cbc8c4;
+  --theme-muted: #aaa7a3;
+  --theme-accent: #df8065;
+  --theme-accent-hover: #ef9a7f;
+  --theme-accent-soft: #51362f;
+  --theme-modal: #292929;
+  --theme-welcome: #1e1e1e;
+  --theme-welcome-glow: #32302e;
 }
 
 :root { color: var(--theme-text); background: var(--theme-chrome); }
@@ -334,6 +334,19 @@ button { cursor: pointer; }
 .branch-menu form { border-color: var(--theme-border); }
 .branch-menu input, .search-box input { background: var(--theme-input); color: var(--theme-text); border-color: var(--theme-border); }
 .branch-menu form button, .toolbar-button.primary, .welcome-open { background: var(--theme-accent-soft); border-color: var(--theme-accent); color: var(--theme-text); }
+.stash-control { position: relative; flex: none; }
+.stash-control .toolbar-button { display: flex; align-items: center; gap: 4px; }
+.stash-control small { min-width: 16px; padding: 1px 3px; border-radius: 3px; background: var(--theme-accent-soft); color: var(--theme-accent-hover); font-size: 9px; }
+.stash-menu { position: absolute; top: 37px; right: 0; z-index: 9; width: 330px; max-height: min(440px, 65vh); overflow-y: auto; padding: 12px; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-modal); box-shadow: 0 16px 40px #0009; white-space: normal; }
+.stash-menu .eyebrow { padding: 3px 4px 9px; font-size: 9px; }
+.stash-empty { padding: 10px 4px; color: var(--theme-muted); font-size: 12px; }
+.stash-menu-row { padding: 9px 4px; border-top: 1px solid var(--theme-border); }
+.stash-menu-label { overflow: hidden; color: var(--theme-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.stash-menu-actions { display: flex; gap: 7px; margin-top: 8px; }
+.stash-menu-actions button { padding: 5px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 11px; }
+.stash-menu-actions button:hover { background: var(--theme-hover); }
+.stash-menu-actions button:disabled { opacity: .5; cursor: default; }
+.stash-menu-actions button:last-child { border-color: var(--theme-accent); }
 .toolbar-button.primary:hover, .welcome-open:hover { background: var(--theme-accent); color: var(--theme-chrome); }
 .toolbar-divider { background: var(--theme-border); }
 .search-box input { background: transparent; }
@@ -431,4 +444,4 @@ button { cursor: pointer; }
 .theme-control select { max-width: 142px; padding: 5px 17px 5px 3px; border: 0; outline: 0; background: var(--theme-chrome); color: var(--theme-text); font-size: 11px; cursor: pointer; }
 .theme-control select:focus-visible { outline: 1px solid var(--theme-accent); }
 .theme-control option { background: var(--theme-modal); color: var(--theme-text); }
-@media (max-width: 1100px) { .app-name, .theme-caption { display: none; } .theme-control { padding: 0 8px; } .theme-control select { max-width: 130px; } }
+@media (max-width: 1100px) { .app-name, .theme-caption { display: none; } .theme-control { padding: 0 8px; } .theme-control select { max-width: 130px; } .toolbar { gap: 7px; } .toolbar-button:not(.primary) { padding: 0 7px; } .toolbar-button[title="Stash"] span, .stash-control .toolbar-button span { display: inline; } .search-box { width: 145px; } }
