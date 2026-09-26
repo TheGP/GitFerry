@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
@@ -9,7 +9,7 @@ import "./App.css";
 type Status = { path: string; index: string; worktree: string };
 type Ref = { name: string; kind: string; target: string; isHead: boolean; ahead?: number; behind?: number };
 type Commit = { hash: string; parents: string[]; subject: string; author: string; timestamp: number; decorations: string[] };
-type Repo = { path: string; name: string; branch: string; head: string | null; status: Status[]; refs: Ref[]; commits: Commit[]; hasMore: boolean; operation?: string | null };
+type Repo = { path: string; name: string; branch: string; head: string | null; status: Status[]; refs: Ref[]; commits: Commit[]; hasMore: boolean; operation?: string | null; loading?: boolean; loadError?: string };
 type RepoState = { branch: string; head: string | null; status: Status[]; operation?: string | null };
 type SearchResult = { commits: Commit[]; hasMore: boolean };
 type Details = { hash: string; subject: string; body: string; author: string; authorEmail: string; timestamp: number; parents: string[]; files: { path: string; status: string }[] };
@@ -43,6 +43,20 @@ type ThemeId = (typeof themeOptions)[number]["id"];
 const storedTheme = localStorage.getItem(themeKey);
 const initialTheme: ThemeId = themeOptions.find(option => option.id === storedTheme)?.id ?? "antigravity";
 const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).has("demo");
+function savedSession(): { tabs: Repo[]; activePath: string | null } {
+  if (!isTauri() || demoMode) return { tabs: [], activePath: null };
+  try {
+    const stored = JSON.parse(localStorage.getItem(tabsKey) ?? "[]");
+    if (!Array.isArray(stored)) return { tabs: [], activePath: null };
+    const paths = [...new Set(stored.filter((path): path is string => typeof path === "string" && Boolean(path.trim())))];
+    const tabs = paths.map(path => ({
+      path, name: path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path,
+      branch: "Loading…", head: null, status: [], refs: [], commits: [], hasMore: false, loading: true,
+    }));
+    const selected = localStorage.getItem(activeKey);
+    return { tabs, activePath: selected && paths.includes(selected) ? selected : paths[0] ?? null };
+  } catch { return { tabs: [], activePath: null }; }
+}
 const date = (value: number) => new Date(value * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const commitRowHeight = 76;
 const workingRowHeight = 68;
@@ -273,12 +287,13 @@ function ChevronDown() {
 }
 
 function App() {
+  const restored = savedSession();
   const [theme, setTheme] = createSignal<ThemeId>(initialTheme);
   const [editor, setEditor] = createSignal<EditorId>(initialEditor);
   const [editorExecutable, setEditorExecutable] = createSignal(localStorage.getItem(editorExecutableKey) ?? "");
   const [showSettings, setShowSettings] = createSignal(false);
-  const [tabs, setTabs] = createSignal<Repo[]>([]);
-  const [activePath, setActivePath] = createSignal<string | null>(null);
+  const [tabs, setTabs] = createSignal<Repo[]>(restored.tabs);
+  const [activePath, setActivePath] = createSignal<string | null>(restored.activePath);
   const [selected, setSelected] = createSignal("working");
   const [details, setDetails] = createSignal<Details | null>(null);
   const [choice, setChoice] = createSignal<Choice | null>(null);
@@ -340,6 +355,7 @@ function App() {
   let commitScroll!: HTMLDivElement;
   let detailsScroll!: HTMLDivElement;
   const repo = createMemo(() => tabs().find(item => item.path === activePath()) ?? null);
+  const repoReady = createMemo(() => Boolean(repo() && !repo()?.loading && !repo()?.loadError));
   const stashes = createMemo(() => repo()?.refs.filter(item => item.kind === "stash") ?? []);
   const conflicts = createMemo(() => repo()?.status.filter(item => item.index === "U" || item.worktree === "U" || ["AA", "DD"].includes(item.index + item.worktree)) ?? []);
   const displayedCommits = createMemo(() => searchQuery() ? searchResult().commits : repo()?.commits ?? []);
@@ -407,7 +423,7 @@ function App() {
       { label: "Refresh repository", run: () => { void refresh(); } },
       { label: "Search commits", run: () => document.querySelector<HTMLInputElement>(".search-box input")?.focus() },
     ];
-    if (repo()) {
+    if (repoReady()) {
       commands.push(
         { label: "Stage all files", run: () => { void runAction({ kind: "stage_all" }); } },
         { label: "Fetch all remotes", run: () => { void runAction({ kind: "fetch" }); } },
@@ -437,7 +453,7 @@ function App() {
   createEffect(() => { if (repo() && commitScroll) setViewportHeight(commitScroll.clientHeight); });
   createEffect(() => {
     const path = activePath();
-    if (!path || !isTauri() || demoMode) return;
+    if (!path || !repoReady() || !isTauri() || demoMode) return;
     let stopped = false;
     setWatchFallback(false);
     const loop = async () => {
@@ -466,6 +482,24 @@ function App() {
     localStorage.setItem(tabsKey, JSON.stringify(tabs().map(item => item.path)));
     localStorage.setItem(activeKey, activePath() ?? "");
   }
+  async function restoreRepo(path: string) {
+    try {
+      const result = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
+      batch(() => {
+        setTabs(current => current.map(item => item.path === path && item.loading ? result : item));
+        if (activePath() === path) setActivePath(result.path);
+      });
+      saveTabs();
+    } catch (cause) {
+      setTabs(current => current.map(item => item.path === path && item.loading
+        ? { ...item, branch: "Unavailable", loading: false, loadError: String(cause) } : item));
+    }
+  }
+  function retryRestoredRepo(path: string) {
+    setTabs(current => current.map(item => item.path === path
+      ? { ...item, branch: "Loading…", loading: true, loadError: undefined } : item));
+    void restoreRepo(path);
+  }
   async function openRepo(path: string) {
     if (!path.trim()) return;
     setBusy(true); setError(""); setNotice("");
@@ -484,7 +518,7 @@ function App() {
   async function refresh() {
     if (!isTauri()) return;
     const path = activePath();
-    if (!path) return;
+    if (!path || !repoReady()) return;
     try {
       const update = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
       setTabs(current => current.map(item => {
@@ -497,7 +531,7 @@ function App() {
   }
   async function refreshState() {
     const path = activePath();
-    if (!path || !isTauri() || stateBusy) return;
+    if (!path || !repoReady() || !isTauri() || stateBusy) return;
     stateBusy = true;
     try {
       const update = await invoke<RepoState>("repo_state", { path });
@@ -803,16 +837,7 @@ function App() {
       const saved = JSON.parse(localStorage.getItem(recentKey) ?? "[]");
       if (Array.isArray(saved)) setRecent(saved.filter((item): item is string => typeof item === "string"));
     } catch { /* Ignore invalid old settings. */ }
-    if (isTauri()) {
-      try {
-        const paths = JSON.parse(localStorage.getItem(tabsKey) ?? "[]");
-        const selectedPath = localStorage.getItem(activeKey);
-        if (Array.isArray(paths)) void (async () => {
-          for (const path of paths.filter((item): item is string => typeof item === "string")) await openRepo(path);
-          if (selectedPath && tabs().some(item => item.path === selectedPath)) setActivePath(selectedPath);
-        })();
-      } catch { /* Ignore invalid old settings. */ }
-    }
+    for (const item of restored.tabs) void restoreRepo(item.path);
     const interval = window.setInterval(() => { if (watchFallback() && document.hasFocus()) void refreshState(); }, 8000);
     const focus = () => void refresh();
     const keys = (event: KeyboardEvent) => {
@@ -835,7 +860,7 @@ function App() {
         if (event.key.toLowerCase() === "r") { event.preventDefault(); void refresh(); }
         return;
       }
-      if (modalOpen || editable || event.altKey || event.shiftKey || !repo()) return;
+      if (modalOpen || editable || event.altKey || event.shiftKey || !repoReady()) return;
       const area = target?.closest(".details-pane") ? "files" : target?.closest(".commits-pane") ? "commits" : navigationArea;
       if (event.key === "ArrowRight" && area === "commits" && navigationFiles().length) { event.preventDefault(); moveFile(1); return; }
       if (event.key === "ArrowLeft" && area === "files") { event.preventDefault(); navigationArea = "commits"; revealCommit(selected() === "working" ? -1 : displayedCommits().findIndex(item => item.hash === selected())); return; }
@@ -856,7 +881,7 @@ function App() {
     <header class="tabbar">
       <div class="brand-mark">◇</div>
       <div class="tab-strip">
-      <For each={tabs()}>{item => <div class={`repo-tab ${activePath() === item.path ? "active" : ""}`} draggable onDragStart={() => { draggedTab = item.path; }} onDragOver={event => event.preventDefault()} onDrop={() => reorderTab(item.path)} onDragEnd={() => { draggedTab = null; }}>
+      <For each={tabs()}>{item => <div class={`repo-tab ${activePath() === item.path ? "active" : ""} ${item.loading ? "loading" : ""} ${item.loadError ? "unavailable" : ""}`} draggable onDragStart={() => { draggedTab = item.path; }} onDragOver={event => event.preventDefault()} onDrop={() => reorderTab(item.path)} onDragEnd={() => { draggedTab = null; }}>
         <button class="tab-main" onClick={() => { setActivePath(item.path); setNotice(""); setStashMenu(false); setScrollTop(0); setSearchQuery(""); setSearchInput(""); if (commitScroll) commitScroll.scrollTop = 0; selectWorking(); saveTabs(); }}>{item.name}<span>{item.branch}</span></button>
         <button class="tab-close" aria-label={`Close ${item.name}`} onClick={() => closeTab(item.path)}>×</button>
       </div>}</For>
@@ -868,14 +893,14 @@ function App() {
       <button class="toolbar-icon" title="Toggle locations" onClick={() => setLocationsOpen(!locationsOpen())}>☷</button>
       <button class="toolbar-icon layout-toggle" title={bottomLayout() ? "Show details beside history" : "Show details below history"} onClick={() => { const next = !bottomLayout(); setBottomLayout(next); localStorage.setItem("gitferry.bottomLayout", String(next)); requestAnimationFrame(() => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); }); }}>{bottomLayout() ? "▤" : "◫"}</button>
       <Show when={repo()} fallback={<span class="toolbar-title">Open a repository to begin</span>}>
-        <div class="branch-control"><button class="branch-chip" title={repo()?.branch} onClick={() => setBranchMenu(!branchMenu())}><span class="branch-icon">⑂</span><span class="branch-name">{repo()?.branch}</span><span class="branch-arrow"><ChevronDown /></span></button>
+        <div class="branch-control"><button class="branch-chip" title={repo()?.branch} disabled={!repoReady()} onClick={() => setBranchMenu(!branchMenu())}><span class="branch-icon">⑂</span><span class="branch-name">{repo()?.branch}</span><span class="branch-arrow"><ChevronDown /></span></button>
           <Show when={branchMenu()}><div class="branch-menu"><div class="eyebrow">LOCAL BRANCHES</div><For each={repo()?.refs.filter(item => item.kind === "branch")}>{item => <div class="branch-menu-row"><button onClick={() => void runAction({ kind: "checkout", value: { branch: item.name } })}>{item.isHead ? "✓ " : ""}{item.name}</button><Show when={!item.isHead}><button title={`Merge ${item.name} into ${repo()?.branch}`} onClick={() => void runAction({ kind: "merge", value: { branch: item.name } }, `Merge ${item.name} into ${repo()?.branch}?`)}>Merge</button><button title={`Rebase ${repo()?.branch} onto ${item.name}`} onClick={() => void runAction({ kind: "rebase", value: { branch: item.name } }, `Rebase ${repo()?.branch} onto ${item.name}?`)}>Rebase</button><button title={`Plan an interactive rebase onto ${item.name}`} disabled={rebaseLoading()} onClick={() => void openRebasePlan(item.name)}>Plan…</button><button class="branch-delete" title={`Delete ${item.name}`} onClick={() => void runAction({ kind: "delete_branch", value: { branch: item.name } }, `Delete branch ${item.name}?`)}>×</button></Show></div>}</For>
             <form onSubmit={event => { event.preventDefault(); void runAction({ kind: "create_branch", value: { branch: newBranch() } }); setNewBranch(""); }}><input value={newBranch()} onInput={event => setNewBranch(event.currentTarget.value)} placeholder="New branch name" /><button type="submit">Create</button></form></div></Show>
         </div><div class="path-label" title={repo()?.path}>{repo()?.path}</div>
       </Show>
       <div class="toolbar-spacer" />
-      <Show when={repo()}><form class="search-box" onSubmit={event => { event.preventDefault(); void performSearch(); }}><span>⌕</span><input value={searchInput()} onInput={event => { setSearchInput(event.currentTarget.value); if (!event.currentTarget.value) void performSearch(""); }} placeholder="Search commits" title="Search message, author:name, or path:file" /><Show when={searchQuery()}><button type="button" onClick={() => void performSearch("")}>×</button></Show></form></Show>
-      <Show when={repo()}><button class="toolbar-button" title="Refresh" onClick={() => void refresh()}>↻ <span>Refresh</span></button><span class="toolbar-divider" /><button class="toolbar-button" title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}>↓ <span>Fetch</span></button><div class="push-control"><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}>⇣ <span>Pull</span></button><button class="toolbar-button push-more" title="More pull options" aria-label="More pull options" aria-expanded={pullMenu()} disabled={actionBusy()} onClick={() => setPullMenu(!pullMenu())}><ChevronDown /></button><Show when={pullMenu()}><div class="push-menu"><button onClick={() => void runAction({ kind: "pull_merge" })}>Pull with merge</button><button onClick={() => void runAction({ kind: "pull_rebase" })}>Pull with rebase</button><p>Choose how to combine diverged branches.</p></div></Show></div><div class="push-control"><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}>⇡ <span>Push</span></button><button class="toolbar-button push-more" title="More push options" aria-label="More push options" aria-expanded={pushMenu()} disabled={actionBusy()} onClick={() => setPushMenu(!pushMenu())}><ChevronDown /></button><Show when={pushMenu()}><div class="push-menu"><button title="Force push with lease" disabled={actionBusy()} onClick={forcePushWithLease}>Force push with lease</button><p>Push only if the remote branch still matches your tracking branch.</p></div></Show></div><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={() => { const message = window.prompt("Stash message", "Work in progress"); if (message !== null) void runAction({ kind: "stash", value: { message } }); }}>▣ <span>Stash</span></button><div class="stash-control"><button class="toolbar-button" title="Unstash" aria-expanded={stashMenu()} disabled={actionBusy()} onClick={() => setStashMenu(!stashMenu())}>↶ <span>Unstash</span><Show when={stashes().length}><small>{stashes().length}</small></Show></button><Show when={stashMenu()}><div class="stash-menu"><div class="eyebrow">SAVED STASHES</div><Show when={stashes().length} fallback={<div class="stash-empty">No saved stashes</div>}><For each={stashes()}>{item => <div class="stash-menu-row"><div class="stash-menu-label" title={item.name}>{item.name}</div><div class="stash-menu-actions"><button disabled={actionBusy()} title="Restore changes and keep this stash" onClick={() => void runAction({ kind: "apply_stash", value: { hash: item.target } })}>Apply</button><button disabled={actionBusy()} title="Restore changes and remove this stash" onClick={() => void runAction({ kind: "pop_stash", value: { hash: item.target } })}>Pop</button></div></div>}</For></Show></div></Show></div></Show>
+      <Show when={repoReady()}><form class="search-box" onSubmit={event => { event.preventDefault(); void performSearch(); }}><span>⌕</span><input value={searchInput()} onInput={event => { setSearchInput(event.currentTarget.value); if (!event.currentTarget.value) void performSearch(""); }} placeholder="Search commits" title="Search message, author:name, or path:file" /><Show when={searchQuery()}><button type="button" onClick={() => void performSearch("")}>×</button></Show></form></Show>
+      <Show when={repoReady()}><button class="toolbar-button" title="Refresh" onClick={() => void refresh()}>↻ <span>Refresh</span></button><span class="toolbar-divider" /><button class="toolbar-button" title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}>↓ <span>Fetch</span></button><div class="push-control"><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}>⇣ <span>Pull</span></button><button class="toolbar-button push-more" title="More pull options" aria-label="More pull options" aria-expanded={pullMenu()} disabled={actionBusy()} onClick={() => setPullMenu(!pullMenu())}><ChevronDown /></button><Show when={pullMenu()}><div class="push-menu"><button onClick={() => void runAction({ kind: "pull_merge" })}>Pull with merge</button><button onClick={() => void runAction({ kind: "pull_rebase" })}>Pull with rebase</button><p>Choose how to combine diverged branches.</p></div></Show></div><div class="push-control"><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}>⇡ <span>Push</span></button><button class="toolbar-button push-more" title="More push options" aria-label="More push options" aria-expanded={pushMenu()} disabled={actionBusy()} onClick={() => setPushMenu(!pushMenu())}><ChevronDown /></button><Show when={pushMenu()}><div class="push-menu"><button title="Force push with lease" disabled={actionBusy()} onClick={forcePushWithLease}>Force push with lease</button><p>Push only if the remote branch still matches your tracking branch.</p></div></Show></div><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={() => { const message = window.prompt("Stash message", "Work in progress"); if (message !== null) void runAction({ kind: "stash", value: { message } }); }}>▣ <span>Stash</span></button><div class="stash-control"><button class="toolbar-button" title="Unstash" aria-expanded={stashMenu()} disabled={actionBusy()} onClick={() => setStashMenu(!stashMenu())}>↶ <span>Unstash</span><Show when={stashes().length}><small>{stashes().length}</small></Show></button><Show when={stashMenu()}><div class="stash-menu"><div class="eyebrow">SAVED STASHES</div><Show when={stashes().length} fallback={<div class="stash-empty">No saved stashes</div>}><For each={stashes()}>{item => <div class="stash-menu-row"><div class="stash-menu-label" title={item.name}>{item.name}</div><div class="stash-menu-actions"><button disabled={actionBusy()} title="Restore changes and keep this stash" onClick={() => void runAction({ kind: "apply_stash", value: { hash: item.target } })}>Apply</button><button disabled={actionBusy()} title="Restore changes and remove this stash" onClick={() => void runAction({ kind: "pop_stash", value: { hash: item.target } })}>Pop</button></div></div>}</For></Show></div></Show></div></Show>
       <button class="toolbar-button primary" title="Open repository" onClick={() => setShowOpen(true)}>＋ <span>Open repo</span></button>
     </div>
     <Show when={error()}><div class="error-bar">{error()}<button onClick={() => setError("")}>×</button></div></Show>
@@ -887,6 +912,7 @@ function App() {
       <button class="welcome-open" onClick={() => setShowOpen(true)}>＋ &nbsp; Open repository</button>
       <Show when={recent().length}><div class="recent-list"><div class="eyebrow">RECENT</div><For each={recent()}>{path => <button onClick={() => void openRepo(path)}>⌁ &nbsp; {path}</button>}</For></div></Show>
     </main>}>
+      <Show when={repoReady()} fallback={<main class="repo-startup" role="status"><div class="repo-startup-icon">◇</div><strong>{repo()?.loading ? `Opening ${repo()?.name}…` : `Could not open ${repo()?.name}`}</strong><span>{repo()?.loadError || "Your saved repositories are loading."}</span><Show when={repo()?.loadError}><button onClick={() => retryRestoredRepo(repo()!.path)}>Retry</button></Show></main>}>
       <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"}`} style={{ "--history-height": `${commitsHeight()}px` }}>
         <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
           <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
@@ -931,8 +957,9 @@ function App() {
           </div>
         </section>
       </main>
+      </Show>
     </Show>
-    <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span>{actionBusy() ? "RUNNING GIT COMMAND" : busy() || searchBusy() ? "LOADING REPOSITORY" : "READY"} <i /> GITFERRY 0.1</span></footer>
+    <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span>{actionBusy() ? "RUNNING GIT COMMAND" : repo()?.loading || busy() || searchBusy() ? "LOADING REPOSITORY" : repo()?.loadError ? "REPOSITORY UNAVAILABLE" : "READY"} <i /> GITFERRY 0.1</span></footer>
     <Show when={rebasePlan()}>{plan => <div class="modal-backdrop" onClick={() => setRebasePlan(null)}><div class="rebase-modal" role="dialog" aria-label="Interactive rebase plan" onClick={event => event.stopPropagation()}>
       <div class="modal-title"><span>Interactive rebase</span><button aria-label="Close rebase plan" onClick={() => setRebasePlan(null)}>×</button></div>
       <div class="rebase-intro"><strong>{plan().branch}</strong> onto <strong>{plan().onto}</strong><p>Commits replay from top to bottom. Move them, then choose Pick, Fixup, or Drop. Fixup combines a commit with the preceding picked commit.</p></div>

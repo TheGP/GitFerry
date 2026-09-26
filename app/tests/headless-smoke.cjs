@@ -18,6 +18,7 @@ let browser, vite, agent;
 let nextId = 0;
 const pending = new Map();
 const progressEvents = [];
+let snapshotGate = null;
 
 function git(cwd, ...args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -127,6 +128,11 @@ function rpc(method, params) {
 
 async function bridge(command, args) {
   if (command.startsWith("plugin:event|")) return 1;
+  if (command === "repo_snapshot" && snapshotGate) {
+    const gate = snapshotGate;
+    gate.paths.push(args.path);
+    await gate.promise;
+  }
   if (command === "repo_watch") return new Promise((resolve, reject) => {
     let watcher, timer;
     try {
@@ -689,6 +695,22 @@ async function main() {
   await page.click(".discard-selection");
   await waitUntil(() => !git(lineRepo, "diff", "--", "lines.txt").includes("-line 15"), "discard selected hunk");
   await waitForAction(page);
+  let releaseSnapshots;
+  snapshotGate = { paths: [], promise: new Promise(resolve => { releaseSnapshots = resolve; }) };
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".repo-startup");
+  assert.equal(await page.$$eval(".repo-tab", items => items.length), 2, "all saved tabs must appear before snapshots finish");
+  assert.equal(await page.$$eval(".welcome", items => items.length), 0, "saved repositories must bypass the first-run welcome screen");
+  assert.match(await page.$eval(".repo-tab.active .tab-main", item => item.textContent), /lines/, "the last selected tab must be active immediately");
+  await waitUntil(() => snapshotGate.paths.includes(large) && snapshotGate.paths.includes(lineRepo), "parallel restoration of both repositories");
+  await page.screenshot({ path: path.join(screenshots, "restored-tabs-loading.png") });
+  releaseSnapshots();
+  snapshotGate = null;
+  await page.waitForFunction(value => document.querySelector(".workspace") && document.querySelector(".statusbar")?.textContent.includes(value), {}, lineRepo);
+  await page.waitForFunction(() => !document.querySelector(".repo-tab.loading"));
+  assert.equal(await page.$$eval(".repo-tab", items => items.length), 2);
+  assert.equal(await page.$$eval(".repo-tab.unavailable", items => items.length), 0);
+  await page.screenshot({ path: path.join(screenshots, "restored-tabs-loaded.png") });
   const realPath = process.env.GITFERRY_REAL_REPO;
   let realRepo;
   if (realPath) {

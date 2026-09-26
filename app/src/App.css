@@ -24,6 +24,8 @@ button { cursor: pointer; }
 .tab-strip { display: flex; align-items: stretch; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .tab-strip::-webkit-scrollbar { display: none; }
 .tab-strip .repo-tab, .tab-strip .tab-add { flex: none; }
+.repo-tab.loading .tab-main span { color: var(--theme-muted); }
+.repo-tab.unavailable .tab-main span { color: var(--theme-accent-hover); }
 .toolbar-spacer { flex: 1; }
 .app-name { align-self: center; margin-right: 18px; color: #86919c; letter-spacing: 2px; font-size: 13px; font-weight: 800; }
 .app-name span { margin-left: 5px; color: #5c6873; letter-spacing: 1px; font-weight: 500; }
@@ -204,6 +206,12 @@ button { cursor: pointer; }
 .statusbar > span:last-child { flex: none; }
 .statusbar i { display: inline-block; width: 3px; height: 3px; margin: 0 6px 2px; border-radius: 50%; background: #667884; }
 .welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; background: radial-gradient(circle at 50% 35%, #263941, #1c252c 56%, #171d23); }
+.repo-startup { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 11px; padding: 30px; background: var(--theme-details); color: var(--theme-secondary); text-align: center; }
+.repo-startup-icon { color: var(--theme-accent); font-size: 40px; line-height: 1; }
+.repo-startup strong { color: var(--theme-text); font-size: 17px; }
+.repo-startup span { max-width: min(620px, 90vw); overflow-wrap: anywhere; font-size: 13px; }
+.repo-startup button { margin-top: 6px; padding: 7px 18px; border: 1px solid var(--theme-accent); border-radius: 4px; background: var(--theme-accent-soft); color: var(--theme-text); }
+.repo-startup button:hover { background: var(--theme-accent); color: var(--theme-chrome); }
 .welcome-symbol { display: grid; place-items: center; width: 76px; height: 76px; margin-bottom: 25px; border: 1px solid #416b70; border-radius: 16px; background: #2a454a; color: #80d5d3; font-size: 47px; }
 .welcome h1 { margin: 14px 0 6px; color: #f0f7f7; font-size: 34px; font-weight: 650; letter-spacing: -.8px; }
 .welcome p { margin: 0 0 30px; color: #9facb5; font-size: 13px; }
