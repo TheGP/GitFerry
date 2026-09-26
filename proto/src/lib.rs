@@ -113,6 +113,7 @@ pub enum RepoAction {
     Fetch,
     Pull,
     Push,
+    ForcePushWithLease,
     Checkout {
         branch: String,
     },

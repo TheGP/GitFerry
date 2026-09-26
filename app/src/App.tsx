@@ -14,7 +14,7 @@ type Details = { hash: string; subject: string; body: string; author: string; au
 type Choice = { path: string; status: string; target: string };
 type Diff = { text: string; truncated: boolean };
 type RefNode = { label: string; path: string; ref?: Ref; children: RefNode[]; count: number; containsHead: boolean };
-type Operation = { kind: "stage_all" | "fetch" | "pull" | "push" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch"; value: { branch: string } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash"; value: { hash: string } };
+type Operation = { kind: "stage_all" | "fetch" | "pull" | "push" | "force_push_with_lease" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch"; value: { branch: string } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash"; value: { hash: string } };
 const recentKey = "gitferry.recent";
 const tabsKey = "gitferry.openTabs";
 const activeKey = "gitferry.activeTab";
@@ -155,6 +155,7 @@ function App() {
   const [commitMessage, setCommitMessage] = createSignal("");
   const [amend, setAmend] = createSignal(false);
   const [branchMenu, setBranchMenu] = createSignal(false);
+  const [pushMenu, setPushMenu] = createSignal(false);
   const [stashMenu, setStashMenu] = createSignal(false);
   const [newBranch, setNewBranch] = createSignal("");
   const [searchInput, setSearchInput] = createSignal("");
@@ -246,6 +247,7 @@ function App() {
         { label: "Fetch all remotes", run: () => { void runAction({ kind: "fetch" }); } },
         { label: "Pull fast-forward", run: () => { void runAction({ kind: "pull" }); } },
         { label: "Push current branch", run: () => { void runAction({ kind: "push" }); } },
+        { label: "Force push current branch with lease", run: forcePushWithLease },
       );
       for (const branch of repo()!.refs.filter(item => item.kind === "branch")) {
         commands.push({ label: `Switch to ${branch.name}`, run: () => { void runAction({ kind: "checkout", value: { branch: branch.name } }); } });
@@ -399,11 +401,15 @@ function App() {
     try {
       const output = await invoke<string>("repo_action", { path, operation });
       setNotice(output || "Done");
-      setChoice(null); setDiff(null); setBranchMenu(false); setStashMenu(false);
+      setChoice(null); setDiff(null); setBranchMenu(false); setPushMenu(false); setStashMenu(false);
       await refresh();
       if (searchQuery()) await performSearch(searchQuery());
     } catch (cause) { setError(String(cause)); }
     finally { setActionBusy(false); }
+  }
+  function forcePushWithLease() {
+    setPushMenu(false);
+    void runAction({ kind: "force_push_with_lease" }, `Force push ${repo()?.branch} with lease? This can replace remote commits if the remote still matches your tracking branch.`);
   }
   async function commitChanges() {
     if (!commitMessage().trim()) return;
@@ -485,7 +491,7 @@ function App() {
     const interval = window.setInterval(() => { if (document.hasFocus()) void refreshState(); }, 1500);
     const focus = () => void refresh();
     const keys = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setBranchMenu(false); setStashMenu(false); return; }
+      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setBranchMenu(false); setPushMenu(false); setStashMenu(false); return; }
       if (!(event.ctrlKey || event.metaKey)) return;
       if (event.key.toLowerCase() === "p") { event.preventDefault(); setPaletteInput(""); setPaletteOpen(true); requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".palette input")?.focus()); }
       if (event.key.toLowerCase() === "o") { event.preventDefault(); setShowOpen(true); }
@@ -497,7 +503,7 @@ function App() {
     onCleanup(() => { unlistenDrop?.(); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); window.removeEventListener("resize", resize); });
   });
 
-  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element && !event.target.closest(".stash-control")) setStashMenu(false); }}>
+  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) setPushMenu(false); if (!event.target.closest(".stash-control")) setStashMenu(false); } }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
     <header class="tabbar">
       <div class="brand-mark">◇</div>
@@ -521,7 +527,7 @@ function App() {
       </Show>
       <div class="toolbar-spacer" />
       <Show when={repo()}><form class="search-box" onSubmit={event => { event.preventDefault(); void performSearch(); }}><span>⌕</span><input value={searchInput()} onInput={event => { setSearchInput(event.currentTarget.value); if (!event.currentTarget.value) void performSearch(""); }} placeholder="Search commits" title="Search message, author:name, or path:file" /><Show when={searchQuery()}><button type="button" onClick={() => void performSearch("")}>×</button></Show></form></Show>
-      <Show when={repo()}><button class="toolbar-button" title="Refresh" onClick={() => void refresh()}>↻ <span>Refresh</span></button><span class="toolbar-divider" /><button class="toolbar-button" title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}>↓ <span>Fetch</span></button><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}>⇣ <span>Pull</span></button><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}>⇡ <span>Push</span></button><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={() => { const message = window.prompt("Stash message", "Work in progress"); if (message !== null) void runAction({ kind: "stash", value: { message } }); }}>▣ <span>Stash</span></button><div class="stash-control"><button class="toolbar-button" title="Unstash" aria-expanded={stashMenu()} disabled={actionBusy()} onClick={() => setStashMenu(!stashMenu())}>↶ <span>Unstash</span><Show when={stashes().length}><small>{stashes().length}</small></Show></button><Show when={stashMenu()}><div class="stash-menu"><div class="eyebrow">SAVED STASHES</div><Show when={stashes().length} fallback={<div class="stash-empty">No saved stashes</div>}><For each={stashes()}>{item => <div class="stash-menu-row"><div class="stash-menu-label" title={item.name}>{item.name}</div><div class="stash-menu-actions"><button disabled={actionBusy()} title="Restore changes and keep this stash" onClick={() => void runAction({ kind: "apply_stash", value: { hash: item.target } })}>Apply</button><button disabled={actionBusy()} title="Restore changes and remove this stash" onClick={() => void runAction({ kind: "pop_stash", value: { hash: item.target } })}>Pop</button></div></div>}</For></Show></div></Show></div></Show>
+      <Show when={repo()}><button class="toolbar-button" title="Refresh" onClick={() => void refresh()}>↻ <span>Refresh</span></button><span class="toolbar-divider" /><button class="toolbar-button" title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}>↓ <span>Fetch</span></button><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}>⇣ <span>Pull</span></button><div class="push-control"><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}>⇡ <span>Push</span></button><button class="toolbar-button push-more" title="More push options" aria-label="More push options" aria-expanded={pushMenu()} disabled={actionBusy()} onClick={() => setPushMenu(!pushMenu())}>⌄</button><Show when={pushMenu()}><div class="push-menu"><button title="Force push with lease" disabled={actionBusy()} onClick={forcePushWithLease}>Force push with lease</button><p>Push only if the remote branch still matches your tracking branch.</p></div></Show></div><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={() => { const message = window.prompt("Stash message", "Work in progress"); if (message !== null) void runAction({ kind: "stash", value: { message } }); }}>▣ <span>Stash</span></button><div class="stash-control"><button class="toolbar-button" title="Unstash" aria-expanded={stashMenu()} disabled={actionBusy()} onClick={() => setStashMenu(!stashMenu())}>↶ <span>Unstash</span><Show when={stashes().length}><small>{stashes().length}</small></Show></button><Show when={stashMenu()}><div class="stash-menu"><div class="eyebrow">SAVED STASHES</div><Show when={stashes().length} fallback={<div class="stash-empty">No saved stashes</div>}><For each={stashes()}>{item => <div class="stash-menu-row"><div class="stash-menu-label" title={item.name}>{item.name}</div><div class="stash-menu-actions"><button disabled={actionBusy()} title="Restore changes and keep this stash" onClick={() => void runAction({ kind: "apply_stash", value: { hash: item.target } })}>Apply</button><button disabled={actionBusy()} title="Restore changes and remove this stash" onClick={() => void runAction({ kind: "pop_stash", value: { hash: item.target } })}>Pop</button></div></div>}</For></Show></div></Show></div></Show>
       <button class="toolbar-button primary" title="Open repository" onClick={() => setShowOpen(true)}>＋ <span>Open repo</span></button>
     </div>
     <Show when={error()}><div class="error-bar">{error()}<button onClick={() => setError("")}>×</button></div></Show>

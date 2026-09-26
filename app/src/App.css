@@ -334,6 +334,14 @@ button { cursor: pointer; }
 .branch-menu form { border-color: var(--theme-border); }
 .branch-menu input, .search-box input { background: var(--theme-input); color: var(--theme-text); border-color: var(--theme-border); }
 .branch-menu form button, .toolbar-button.primary, .welcome-open { background: var(--theme-accent-soft); border-color: var(--theme-accent); color: var(--theme-text); }
+.push-control { position: relative; flex: none; display: flex; }
+.push-control > .toolbar-button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.push-control .push-more { min-width: 23px; padding: 0 5px; border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.push-menu { position: absolute; top: 37px; right: 0; z-index: 9; width: 265px; padding: 8px; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-modal); box-shadow: 0 16px 40px #0009; white-space: normal; }
+.push-menu button { width: 100%; padding: 8px; border: 0; border-radius: 3px; background: transparent; color: var(--theme-text); text-align: left; font-size: 12px; }
+.push-menu button:hover { background: var(--theme-hover); }
+.push-menu button:disabled { opacity: .5; cursor: default; }
+.push-menu p { margin: 3px 8px 5px; color: var(--theme-muted); font-size: 11px; line-height: 1.4; }
 .stash-control { position: relative; flex: none; }
 .stash-control .toolbar-button { display: flex; align-items: center; gap: 4px; }
 .stash-control small { min-width: 16px; padding: 1px 3px; border-radius: 3px; background: var(--theme-accent-soft); color: var(--theme-accent-hover); font-size: 9px; }
@@ -444,4 +452,4 @@ button { cursor: pointer; }
 .theme-control select { max-width: 142px; padding: 5px 17px 5px 3px; border: 0; outline: 0; background: var(--theme-chrome); color: var(--theme-text); font-size: 11px; cursor: pointer; }
 .theme-control select:focus-visible { outline: 1px solid var(--theme-accent); }
 .theme-control option { background: var(--theme-modal); color: var(--theme-text); }
-@media (max-width: 1100px) { .app-name, .theme-caption { display: none; } .theme-control { padding: 0 8px; } .theme-control select { max-width: 130px; } .toolbar { gap: 7px; } .toolbar-button:not(.primary) { padding: 0 7px; } .toolbar-button[title="Stash"] span, .stash-control .toolbar-button span { display: inline; } .search-box { width: 145px; } }
+@media (max-width: 1100px) { .app-name, .theme-caption { display: none; } .theme-control { padding: 0 8px; } .theme-control select { max-width: 130px; } .toolbar { gap: 7px; } .toolbar-button:not(.primary) { padding: 0 7px; } .push-control .toolbar-button span, .toolbar-button[title="Stash"] span, .stash-control .toolbar-button span { display: inline; } .search-box { width: 145px; } }

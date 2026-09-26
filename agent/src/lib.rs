@@ -578,6 +578,7 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
         RepoAction::Fetch => git(&root, &["fetch", "--all", "--progress"])?,
         RepoAction::Pull => git(&root, &["pull", "--ff-only", "--progress"])?,
         RepoAction::Push => git(&root, &["push", "--progress"])?,
+        RepoAction::ForcePushWithLease => force_push_with_lease(&root)?,
         RepoAction::Checkout { branch } => {
             validate_branch(&root, &branch)?;
             git(&root, &["switch", &branch])?
@@ -597,6 +598,44 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
     let stdout = text(&output.stdout);
     let stderr = text(&output.stderr);
     Ok(format!("{}{}", stdout, stderr).trim().to_string())
+}
+
+fn force_push_with_lease(repo: &Path) -> Result<Output, String> {
+    let branch = git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map(|output| text(&output.stdout).trim().to_string())
+        .map_err(|_| "Select a branch before pushing".to_string())?;
+    let upstream_error = || "Set an upstream branch before force pushing with lease".to_string();
+    let remote = git(
+        repo,
+        &["config", "--get", &format!("branch.{branch}.remote")],
+    )
+    .map(|output| text(&output.stdout).trim().to_string())
+    .map_err(|_| upstream_error())?;
+    let target = git(
+        repo,
+        &["config", "--get", &format!("branch.{branch}.merge")],
+    )
+    .map(|output| text(&output.stdout).trim().to_string())
+    .map_err(|_| upstream_error())?;
+    if remote.is_empty()
+        || remote == "."
+        || remote.starts_with('-')
+        || !target.starts_with("refs/heads/")
+        || target == "refs/heads/"
+    {
+        return Err(upstream_error());
+    }
+    git(
+        repo,
+        &[
+            "push",
+            "--force-with-lease",
+            "--no-follow-tags",
+            "--progress",
+            &remote,
+            &format!("HEAD:{target}"),
+        ],
+    )
 }
 
 fn restore_stash(repo: &Path, hash: &str, pop: bool) -> Result<Output, String> {
