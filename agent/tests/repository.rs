@@ -1,6 +1,6 @@
 use gitferry_agent::{
-    action, action_with_progress, blame, cancel_operation, commit_details, diff, file_history,
-    read_file, rebase_plan, save_file, search, snapshot, tracked_files, watch,
+    action, action_with_progress, blame, cancel_operation, commit_details, compare, diff,
+    file_history, read_file, rebase_plan, save_file, search, snapshot, tracked_files, watch,
 };
 use gitferry_proto::{RebaseStep, RepoAction, Request, Response, RpcRequest, RpcResponse};
 use std::io::Write;
@@ -615,6 +615,20 @@ fn reads_commits_and_paginates() {
     let details = commit_details(path, &second.commits[0].hash).unwrap();
     assert_eq!(details.files[0].path, "hello.txt");
     assert_eq!(details.files[0].status, "A");
+    assert_eq!(
+        details.tree,
+        git(
+            temp.path(),
+            &["rev-parse", &format!("{}^{{tree}}", second.commits[0].hash)]
+        )
+    );
+    assert_eq!((details.additions, details.deletions), (Some(1), Some(0)));
+    assert_eq!(
+        (details.files[0].additions, details.files[0].deletions),
+        (Some(1), Some(0))
+    );
+    let latest = commit_details(path, &first.commits[0].hash).unwrap();
+    assert_eq!((latest.additions, latest.deletions), (Some(1), Some(1)));
     assert!(diff(path, &first.commits[0].hash, "hello.txt")
         .unwrap()
         .text
@@ -894,6 +908,52 @@ fn reports_branch_ahead_and_behind_counts() {
     git(&local, &["push"]);
     git(&local, &["reset", "--hard", "HEAD~1"]);
     assert_eq!((head_ref().ahead, head_ref().behind), (0, 1));
+}
+
+#[test]
+fn compares_branch_changes_since_it_left_the_base() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path();
+    let path = repo.to_str().unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["config", "user.name", "Test"]);
+    git(repo, &["config", "user.email", "test@example.com"]);
+    std::fs::write(repo.join("shared.txt"), "base\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "Base"]);
+    let base_branch = git(repo, &["branch", "--show-current"]);
+    git(repo, &["switch", "-qc", "feature"]);
+    std::fs::write(repo.join("feature.txt"), "one\ntwo\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "Feature one"]);
+    std::fs::write(repo.join("shared.txt"), "base\nfeature\n").unwrap();
+    git(repo, &["commit", "-qam", "Feature two"]);
+    let feature = git(repo, &["rev-parse", "HEAD"]);
+    git(repo, &["switch", "-q", &base_branch]);
+    std::fs::write(repo.join("main-only.txt"), "main\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "Main moves on"]);
+    let main = git(repo, &["rev-parse", "HEAD"]);
+
+    let result = compare(path, &main, &feature).unwrap();
+    assert_eq!(result.commits, 2);
+    let mut paths: Vec<_> = result.files.iter().map(|file| file.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        ["feature.txt", "shared.txt"],
+        "base-only changes must not appear"
+    );
+    assert_eq!((result.additions, result.deletions), (3, 0));
+    let range = format!("{}..{}", result.merge_base, feature);
+    assert!(diff(path, &range, "shared.txt")
+        .unwrap()
+        .text
+        .contains("+feature"));
+    assert!(
+        compare(path, "main", &feature).is_err(),
+        "refs must be resolved to commit IDs first"
+    );
 }
 
 #[test]

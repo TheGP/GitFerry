@@ -1,10 +1,10 @@
 use gitferry_agent::{
-    action_with_progress, blame, cancel_operation, commit_details, diff_with_options, file_history,
-    read_file, rebase_plan, save_file, search, snapshot, state, tracked_files, watch,
+    action_with_progress, blame, cancel_operation, commit_details, compare, diff_with_options,
+    file_history, read_file, rebase_plan, save_file, search, snapshot, state, tracked_files, watch,
 };
 use gitferry_proto::{
-    BlameResult, CommitDetails, DiffResult, EditableFile, FileHistoryResult, RebaseCommit,
-    RepoAction, RepoSnapshot, RepoState, Request, Response, SavedFile, SearchResult,
+    BlameResult, CommitDetails, CompareResult, DiffResult, EditableFile, FileHistoryResult,
+    RebaseCommit, RepoAction, RepoSnapshot, RepoState, Request, Response, SavedFile, SearchResult,
 };
 use tauri::{Emitter, Manager};
 
@@ -209,6 +209,38 @@ async fn repo_commit(
             }
         } else {
             commit_details(&path, &hash)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn repo_compare(
+    app: tauri::AppHandle,
+    path: String,
+    base: String,
+    head: String,
+) -> Result<CompareResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            let response = app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::Compare {
+                    path: remote_path.to_string(),
+                    base,
+                    head,
+                },
+            )?;
+            match response {
+                Response::Compare(result) => Ok(result),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            compare(&path, &base, &head)
         }
     })
     .await
@@ -499,6 +531,7 @@ pub fn run() {
             repo_rebase_plan,
             repo_search,
             repo_commit,
+            repo_compare,
             repo_file_history,
             repo_blame,
             repo_tracked_files,

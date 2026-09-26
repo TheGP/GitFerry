@@ -84,6 +84,24 @@ pub struct CommitDetails {
     pub timestamp: i64,
     pub parents: Vec<String>,
     pub files: Vec<ChangedFile>,
+    #[serde(default)]
+    pub tree: String,
+    /// Total line counts; `None` from older agents that do not report them.
+    #[serde(default)]
+    pub additions: Option<u64>,
+    #[serde(default)]
+    pub deletions: Option<u64>,
+}
+
+/// What `head` changes relative to its merge base with `base`, like a pull request diff.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareResult {
+    pub merge_base: String,
+    pub commits: u64,
+    pub files: Vec<ChangedFile>,
+    pub additions: u64,
+    pub deletions: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +109,11 @@ pub struct CommitDetails {
 pub struct ChangedFile {
     pub path: String,
     pub status: String,
+    /// Line counts from `git diff --numstat`; `None` for binary files.
+    #[serde(default)]
+    pub additions: Option<u64>,
+    #[serde(default)]
+    pub deletions: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -327,6 +350,11 @@ pub enum Request {
         path: String,
         hash: String,
     },
+    Compare {
+        path: String,
+        base: String,
+        head: String,
+    },
     FileHistory {
         path: String,
         file: String,
@@ -384,6 +412,7 @@ pub enum Response {
     RebasePlan(Vec<RebaseCommit>),
     Search(SearchResult),
     CommitDetails(CommitDetails),
+    Compare(CompareResult),
     FileHistory(FileHistoryResult),
     Blame(BlameResult),
     TrackedFiles(Vec<String>),

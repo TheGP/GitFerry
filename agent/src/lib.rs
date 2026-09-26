@@ -1,7 +1,7 @@
 use gitferry_proto::{
-    BlameLine, BlameResult, ChangedFile, CommitDetails, CommitSummary, DiffResult, EditableFile,
-    FileHistoryEntry, FileHistoryResult, RebaseCommit, RebaseStep, RefEntry, RepoAction,
-    RepoSnapshot, RepoState, Request, Response, SavedFile, SearchResult, StatusEntry,
+    BlameLine, BlameResult, ChangedFile, CommitDetails, CommitSummary, CompareResult, DiffResult,
+    EditableFile, FileHistoryEntry, FileHistoryResult, RebaseCommit, RebaseStep, RefEntry,
+    RepoAction, RepoSnapshot, RepoState, Request, Response, SavedFile, SearchResult, StatusEntry,
 };
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -44,6 +44,9 @@ pub fn handle(request: Request) -> Response {
         } => search(&path, &query, offset, limit).map(Response::Search),
         Request::CommitDetails { path, hash } => {
             commit_details(&path, &hash).map(Response::CommitDetails)
+        }
+        Request::Compare { path, base, head } => {
+            compare(&path, &base, &head).map(Response::Compare)
         }
         Request::FileHistory {
             path,
@@ -959,7 +962,7 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
         &[
             "show",
             "-s",
-            "--format=%H%x00%s%x00%b%x00%an%x00%ae%x00%at%x00%P",
+            "--format=%H%x00%s%x00%b%x00%an%x00%ae%x00%at%x00%P%x00%T",
             hash,
         ],
     )?;
@@ -968,29 +971,52 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
         .trim_ascii_end()
         .split(|byte| *byte == 0)
         .collect();
-    if fields.len() != 7 {
+    if fields.len() != 8 {
         return Err("Git returned invalid commit details".to_string());
     }
     let parents: Vec<String> = text(fields[6])
         .split_whitespace()
         .map(str::to_string)
         .collect();
-    let output = if let Some(parent) = parents.first() {
-        git(&root, &["diff", "--name-status", "-z", parent, hash])?
-    } else {
-        git(
-            &root,
+    let (files, additions, deletions) =
+        changed_files(&root, parents.first().map(String::as_str), hash)?;
+    Ok(CommitDetails {
+        hash: text(fields[0]),
+        subject: text(fields[1]),
+        body: text(fields[2]),
+        author: text(fields[3]),
+        author_email: text(fields[4]),
+        timestamp: text(fields[5]).parse().unwrap_or_default(),
+        parents,
+        files,
+        tree: text(fields[7]),
+        additions: Some(additions),
+        deletions: Some(deletions),
+    })
+}
+
+/// Files changed from `from` (or the empty tree for a root commit) to `to`, with line counts and totals.
+fn changed_files(
+    root: &Path,
+    from: Option<&str>,
+    to: &str,
+) -> Result<(Vec<ChangedFile>, u64, u64), String> {
+    let run = |format: &str| match from {
+        Some(from) => git(root, &["diff", format, "-z", from, to]),
+        None => git(
+            root,
             &[
                 "diff-tree",
                 "--root",
                 "-r",
                 "--no-commit-id",
-                "--name-status",
+                format,
                 "-z",
-                hash,
+                to,
             ],
-        )?
+        ),
     };
+    let output = run("--name-status")?;
     let fields_changed: Vec<&[u8]> = output.stdout.split(|byte| *byte == 0).collect();
     let mut files = Vec::new();
     let mut index = 0;
@@ -1005,19 +1031,68 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
             files.push(ChangedFile {
                 path: text(file),
                 status: state,
+                additions: None,
+                deletions: None,
             });
         }
         index = path_index + 1;
     }
-    Ok(CommitDetails {
-        hash: text(fields[0]),
-        subject: text(fields[1]),
-        body: text(fields[2]),
-        author: text(fields[3]),
-        author_email: text(fields[4]),
-        timestamp: text(fields[5]).parse().unwrap_or_default(),
-        parents,
+    let numstat = run("--numstat")?;
+    // Records are "added\tdeleted\tpath\0", or "added\tdeleted\t\0old\0new\0" for renames and copies.
+    let records: Vec<&[u8]> = numstat.stdout.split(|byte| *byte == 0).collect();
+    let (mut additions, mut deletions) = (0, 0);
+    let mut index = 0;
+    while index < records.len() && !records[index].is_empty() {
+        let record = text(records[index]);
+        let mut parts = record.splitn(3, '\t');
+        let (added, deleted, inline_path) =
+            (parts.next(), parts.next(), parts.next().unwrap_or(""));
+        let path = if inline_path.is_empty() {
+            index += 2;
+            records
+                .get(index)
+                .map(|path| text(path))
+                .unwrap_or_default()
+        } else {
+            inline_path.to_string()
+        };
+        index += 1;
+        let added = added.and_then(|value| value.parse::<u64>().ok());
+        let deleted = deleted.and_then(|value| value.parse::<u64>().ok());
+        additions += added.unwrap_or(0);
+        deletions += deleted.unwrap_or(0);
+        if let Some(file) = files.iter_mut().find(|file| file.path == path) {
+            file.additions = added;
+            file.deletions = deleted;
+        }
+    }
+    Ok((files, additions, deletions))
+}
+
+/// What `head` changes since it diverged from `base` (`git diff base...head`), plus how many commits that is.
+pub fn compare(path: &str, base: &str, head: &str) -> Result<CompareResult, String> {
+    if !valid_hash(base) || !valid_hash(head) {
+        return Err("Invalid commit ID".to_string());
+    }
+    let root = repo_root(path)?;
+    let merge_base = text(&git(&root, &["merge-base", base, head])?.stdout)
+        .trim()
+        .to_string();
+    if !valid_hash(&merge_base) {
+        return Err("These branches have no common history".to_string());
+    }
+    let range = format!("{base}..{head}");
+    let commits = text(&git(&root, &["rev-list", "--count", &range])?.stdout)
+        .trim()
+        .parse()
+        .unwrap_or_default();
+    let (files, additions, deletions) = changed_files(&root, Some(&merge_base), head)?;
+    Ok(CompareResult {
+        merge_base,
+        commits,
         files,
+        additions,
+        deletions,
     })
 }
 
@@ -1175,6 +1250,22 @@ pub fn diff_with_options(
                     &literal_file,
                 ])?
             }
+        }
+        range
+            if range
+                .split_once("..")
+                .is_some_and(|(from, to)| valid_hash(from) && valid_hash(to)) =>
+        {
+            let (from, to) = range.split_once("..").unwrap_or_default();
+            run_diff(&[
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                from,
+                to,
+                "--",
+                &literal_file,
+            ])?
         }
         _ => return Err("Invalid diff target".to_string()),
     };
