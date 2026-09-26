@@ -155,7 +155,11 @@ button { cursor: pointer; }
 .diff-line.added { background: #244638; color: #ddf8e5; }
 .diff-line.deleted { background: #4b3032; color: #ffdcda; }
 .diff-line.hunk { background: #303d4b; color: #8cb8d8; }
-.diff-line.diff-title { color: #e8e0bd; }
+.diff-content.has-hunks .diff-line.metadata { display: none; }
+.diff-content.has-hunks .diff-line.hunk { height: 8px; overflow: hidden; font-size: 0; background: var(--theme-heading); }
+.diff-content.has-hunks .diff-line.hunk .line-number, .diff-content.has-hunks .diff-line.hunk .line-text { visibility: hidden; }
+.diff-content.actionable .diff-line.hunk { cursor: pointer; }
+.diff-content.actionable .diff-line .line-text { cursor: pointer; }
 .line-number { width: 86px; flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 8px 0 2px; text-align: right; color: #657481; font-size: 12px; line-height: inherit; user-select: none; }
 .line-number span { min-width: 0; padding-right: 4px; }
 .line-number.selectable { border: 0; background: transparent; cursor: pointer; }
@@ -167,10 +171,8 @@ button { cursor: pointer; }
 .line-selection-toolbar span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .line-selection-toolbar button { flex: none; padding: 4px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 11px; }
 .line-selection-toolbar button:hover:not(:disabled) { background: var(--theme-hover); }
-.line-selection-toolbar button.stage-lines { border-color: var(--theme-accent); background: var(--theme-accent-soft); }
+.line-selection-toolbar button.stage-lines, .line-selection-toolbar button.hunk-action { border-color: var(--theme-accent); background: var(--theme-accent-soft); }
 .line-selection-toolbar button:disabled { opacity: .5; cursor: default; }
-.hunk-action { align-self: center; margin: 0 18px 0 auto; padding: 2px 8px; border: 1px solid #547789; border-radius: 2px; background: #344c5e; color: #bfdbeb; font-family: Inter, "Segoe UI", sans-serif; font-size: 9px; line-height: 15px; }
-.hunk-action:hover { background: #3d6174; }
 .empty-note, .truncated-note { padding: 24px 32px; color: #81919d; font-size: 12px; }
 .statusbar { height: 26px; flex: none; display: flex; justify-content: space-between; align-items: center; padding: 0 11px; border-top: 1px solid #141a1e; background: #1b2228; color: #778892; font-size: 9px; letter-spacing: .5px; }
 .statusbar i { display: inline-block; width: 3px; height: 3px; margin: 0 6px 2px; border-radius: 50%; background: #667884; }

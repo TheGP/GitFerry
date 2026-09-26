@@ -516,42 +516,29 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
             path,
             index,
             reverse,
-        } => {
-            let path = literal_path(&path)?;
-            let diff_args = if reverse {
-                vec![
-                    "diff",
-                    "--cached",
-                    "--no-ext-diff",
-                    "--no-color",
-                    "--",
-                    path.as_str(),
-                ]
+        } => apply_hunk(
+            &root,
+            &path,
+            index,
+            if reverse {
+                HunkAction::Unstage
             } else {
-                vec!["diff", "--no-ext-diff", "--no-color", "--", path.as_str()]
-            };
-            let patch = git(&root, &diff_args)?.stdout;
-            if patch.len() > MAX_DIFF_BYTES {
-                return Err("Diff is too large for hunk staging".to_string());
-            }
-            let patch = text(&patch);
-            let starts: Vec<usize> = patch
-                .match_indices("\n@@")
-                .map(|(position, _)| position + 1)
-                .collect();
-            let start = *starts
-                .get(index)
-                .ok_or("Hunk no longer exists; refresh the diff")?;
-            let end = starts.get(index + 1).copied().unwrap_or(patch.len());
-            let selected = format!("{}{}", &patch[..start], &patch[start..end]);
-            let args = if reverse {
-                vec!["apply", "--cached", "--reverse", "--unidiff-zero", "-"]
-            } else {
-                vec!["apply", "--cached", "--unidiff-zero", "-"]
-            };
-            git_with_input(&root, &args, selected.as_bytes())?
+                HunkAction::Stage
+            },
+            None,
+        )?,
+        RepoAction::DiscardHunk { path, index, diff } => {
+            apply_hunk(&root, &path, index, HunkAction::Discard, Some(&diff))?
         }
-        RepoAction::StageLines { path, lines, diff } => stage_lines(&root, &path, &lines, &diff)?,
+        RepoAction::StageLines { path, lines, diff } => {
+            apply_lines(&root, &path, &lines, &diff, LineAction::Stage)?
+        }
+        RepoAction::UnstageLines { path, lines, diff } => {
+            apply_lines(&root, &path, &lines, &diff, LineAction::Unstage)?
+        }
+        RepoAction::DiscardLines { path, lines, diff } => {
+            apply_lines(&root, &path, &lines, &diff, LineAction::Discard)?
+        }
         RepoAction::UnstageFile { path } => {
             let path = literal_path(&path)?;
             if head(&root).is_some() {
@@ -602,27 +589,96 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
     Ok(format!("{}{}", stdout, stderr).trim().to_string())
 }
 
-fn stage_lines(
+enum HunkAction {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+fn apply_hunk(
+    repo: &Path,
+    file: &str,
+    index: usize,
+    action: HunkAction,
+    expected_diff: Option<&str>,
+) -> Result<Output, String> {
+    let path = literal_path(file)?;
+    let diff_args = match action {
+        HunkAction::Unstage => vec![
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-color",
+            "--",
+            path.as_str(),
+        ],
+        _ => vec!["diff", "--no-ext-diff", "--no-color", "--", path.as_str()],
+    };
+    let patch = git(repo, &diff_args)?.stdout;
+    if patch.len() > MAX_DIFF_BYTES {
+        return Err("Diff is too large for hunk actions".to_string());
+    }
+    let patch = text(&patch);
+    if expected_diff.is_some_and(|expected| expected != patch) {
+        return Err("Diff changed; reopen the file before discarding this hunk".to_string());
+    }
+    let starts: Vec<usize> = patch
+        .match_indices("\n@@")
+        .map(|(position, _)| position + 1)
+        .collect();
+    let start = *starts
+        .get(index)
+        .ok_or("Hunk no longer exists; refresh the diff")?;
+    let end = starts.get(index + 1).copied().unwrap_or(patch.len());
+    let selected = format!("{}{}", &patch[..start], &patch[start..end]);
+    let args: &[&str] = match action {
+        HunkAction::Stage => &["apply", "--cached", "--unidiff-zero", "-"],
+        HunkAction::Unstage => &["apply", "--cached", "--reverse", "--unidiff-zero", "-"],
+        HunkAction::Discard => &["apply", "--reverse", "--unidiff-zero", "-"],
+    };
+    git_with_input(repo, args, selected.as_bytes())
+}
+
+#[derive(Clone, Copy)]
+enum LineAction {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+fn apply_lines(
     repo: &Path,
     file: &str,
     selected: &[usize],
     expected_diff: &str,
+    action: LineAction,
 ) -> Result<Output, String> {
     let path = literal_path(file)?;
-    let output = git(repo, &["diff", "--no-ext-diff", "--no-color", "--", &path])?;
+    let diff_args = match action {
+        LineAction::Unstage => vec![
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-color",
+            "--",
+            path.as_str(),
+        ],
+        _ => vec!["diff", "--no-ext-diff", "--no-color", "--", path.as_str()],
+    };
+    let output = git(repo, &diff_args)?;
     if output.stdout.len() > MAX_DIFF_BYTES {
-        return Err("Diff is too large for line staging".to_string());
+        return Err("Diff is too large for line actions".to_string());
     }
     let current_diff = text(&output.stdout);
     if current_diff != expected_diff {
-        return Err("Diff changed; reopen the file before staging lines".to_string());
+        return Err("Diff changed; reopen the file before applying lines".to_string());
     }
     if current_diff.contains("\\ No newline at end of file") {
-        return Err("Stage the whole hunk when a file has no final newline".to_string());
+        return Err("Use the whole hunk when a file has no final newline".to_string());
     }
     let requested: HashSet<usize> = selected.iter().copied().collect();
     if requested.is_empty() {
-        return Err("Select changed lines to stage".to_string());
+        return Err("Select changed lines first".to_string());
     }
     let lines: Vec<&str> = current_diff.split('\n').collect();
     let hunks: Vec<usize> = lines
@@ -630,7 +686,7 @@ fn stage_lines(
         .enumerate()
         .filter_map(|(index, line)| line.starts_with("@@ ").then_some(index))
         .collect();
-    let first_hunk = *hunks.first().ok_or("This diff has no stageable lines")?;
+    let first_hunk = *hunks.first().ok_or("This diff has no selectable lines")?;
     if lines[..first_hunk].iter().any(|line| {
         [
             "new file mode",
@@ -645,16 +701,16 @@ fn stage_lines(
         .iter()
         .any(|prefix| line.starts_with(prefix))
     }) {
-        return Err("Stage the whole file for this kind of change".to_string());
+        return Err("Use the whole file for this kind of change".to_string());
     }
     let mut patch = lines[..first_hunk].join("\n");
     patch.push('\n');
     let mut used = HashSet::new();
+    let reverse = !matches!(action, LineAction::Stage);
     for (number, &start) in hunks.iter().enumerate() {
         let end = hunks.get(number + 1).copied().unwrap_or(lines.len());
         let mut body = String::new();
         let mut has_selected = false;
-        let mut keep_marker = false;
         for index in start + 1..end {
             let line = lines[index];
             if line.is_empty() && index + 1 == lines.len() {
@@ -662,36 +718,32 @@ fn stage_lines(
             }
             match line.as_bytes().first() {
                 Some(b'+') => {
-                    keep_marker = requested.contains(&index);
-                    if keep_marker {
+                    if requested.contains(&index) {
                         body.push_str(line);
                         body.push('\n');
                         used.insert(index);
                         has_selected = true;
+                    } else if reverse {
+                        body.push(' ');
+                        body.push_str(&line[1..]);
+                        body.push('\n');
                     }
                 }
                 Some(b'-') => {
-                    keep_marker = true;
                     if requested.contains(&index) {
                         body.push_str(line);
                         used.insert(index);
                         has_selected = true;
-                    } else {
+                        body.push('\n');
+                    } else if !reverse {
                         body.push(' ');
                         body.push_str(&line[1..]);
+                        body.push('\n');
                     }
-                    body.push('\n');
                 }
                 Some(b' ') => {
                     body.push_str(line);
                     body.push('\n');
-                    keep_marker = true;
-                }
-                Some(b'\\') => {
-                    if keep_marker {
-                        body.push_str(line);
-                        body.push('\n');
-                    }
                 }
                 _ => return Err("Cannot stage lines from this diff format".to_string()),
             }
@@ -705,11 +757,19 @@ fn stage_lines(
     if used.len() != requested.len() {
         return Err("Select only added or deleted lines".to_string());
     }
-    git_with_input(
-        repo,
-        &["apply", "--cached", "--recount", "--unidiff-zero", "-"],
-        patch.as_bytes(),
-    )
+    let apply_args: &[&str] = match action {
+        LineAction::Stage => &["apply", "--cached", "--recount", "--unidiff-zero", "-"],
+        LineAction::Unstage => &[
+            "apply",
+            "--cached",
+            "--reverse",
+            "--recount",
+            "--unidiff-zero",
+            "-",
+        ],
+        LineAction::Discard => &["apply", "--reverse", "--recount", "--unidiff-zero", "-"],
+    };
+    git_with_input(repo, apply_args, patch.as_bytes())
 }
 
 fn force_push_with_lease(repo: &Path) -> Result<Output, String> {

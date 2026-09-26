@@ -100,7 +100,22 @@ pub enum RepoAction {
         index: usize,
         reverse: bool,
     },
+    DiscardHunk {
+        path: String,
+        index: usize,
+        diff: String,
+    },
     StageLines {
+        path: String,
+        lines: Vec<usize>,
+        diff: String,
+    },
+    UnstageLines {
+        path: String,
+        lines: Vec<usize>,
+        diff: String,
+    },
+    DiscardLines {
         path: String,
         lines: Vec<usize>,
         diff: String,

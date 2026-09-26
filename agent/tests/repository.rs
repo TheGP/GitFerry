@@ -195,6 +195,104 @@ fn stages_a_selected_deletion_without_other_changes() {
 }
 
 #[test]
+fn unstages_and_discards_selected_lines() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    let path = temp.path().to_str().unwrap();
+    let file = temp.path().join("lines.txt");
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    git(temp.path(), &["add", "lines.txt"]);
+    git(temp.path(), &["commit", "-qm", "Initial"]);
+    std::fs::write(&file, "one\nTWO\nthree\n").unwrap();
+    action(
+        path,
+        RepoAction::StageFile {
+            path: "lines.txt".into(),
+        },
+    )
+    .unwrap();
+
+    let staged = diff(path, "staged", "lines.txt").unwrap().text;
+    let selected = staged
+        .split('\n')
+        .enumerate()
+        .filter_map(|(index, line)| ["-two", "+TWO"].contains(&line).then_some(index))
+        .collect();
+    action(
+        path,
+        RepoAction::UnstageLines {
+            path: "lines.txt".into(),
+            lines: selected,
+            diff: staged,
+        },
+    )
+    .unwrap();
+    assert_eq!(diff(path, "staged", "lines.txt").unwrap().text, "");
+    assert!(diff(path, "working", "lines.txt")
+        .unwrap()
+        .text
+        .contains("+TWO"));
+
+    let working = diff(path, "working", "lines.txt").unwrap().text;
+    let selected = working
+        .split('\n')
+        .enumerate()
+        .filter_map(|(index, line)| ["-two", "+TWO"].contains(&line).then_some(index))
+        .collect();
+    action(
+        path,
+        RepoAction::DiscardLines {
+            path: "lines.txt".into(),
+            lines: selected,
+            diff: working,
+        },
+    )
+    .unwrap();
+    assert_eq!(diff(path, "working", "lines.txt").unwrap().text, "");
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "one\ntwo\nthree\n");
+
+    std::fs::write(temp.path().join("lines.txt"), "one\nTWO\nthree\n").unwrap();
+    action(
+        path,
+        RepoAction::StageFile {
+            path: "lines.txt".into(),
+        },
+    )
+    .unwrap();
+    let staged = diff(path, "staged", "lines.txt").unwrap().text;
+    let added = staged.split('\n').position(|line| line == "+TWO").unwrap();
+    action(
+        path,
+        RepoAction::UnstageLines {
+            path: "lines.txt".into(),
+            lines: vec![added],
+            diff: staged,
+        },
+    )
+    .unwrap();
+    let staged = diff(path, "staged", "lines.txt").unwrap().text;
+    assert!(staged.contains("-two"));
+    assert!(!staged.contains("+TWO"));
+    let working = diff(path, "working", "lines.txt").unwrap().text;
+    let added = working.split('\n').position(|line| line == "+TWO").unwrap();
+    action(
+        path,
+        RepoAction::DiscardLines {
+            path: "lines.txt".into(),
+            lines: vec![added],
+            diff: working,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("lines.txt")).unwrap(),
+        "one\nthree\n"
+    );
+}
+
+#[test]
 fn reads_empty_repo_and_working_changes() {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "-q"]);
@@ -434,6 +532,29 @@ fn stages_one_hunk_without_staging_another() {
     )
     .unwrap();
     assert!(diff(path, "staged", "lines.txt").unwrap().text.is_empty());
+    let before_discard = diff(path, "working", "lines.txt").unwrap().text;
+    action(
+        path,
+        RepoAction::DiscardHunk {
+            path: "lines.txt".into(),
+            index: 0,
+            diff: before_discard.clone(),
+        },
+    )
+    .unwrap();
+    let working = diff(path, "working", "lines.txt").unwrap().text;
+    assert!(!working.contains("+FIRST"));
+    assert!(working.contains("+LAST"));
+    assert!(action(
+        path,
+        RepoAction::DiscardHunk {
+            path: "lines.txt".into(),
+            index: 0,
+            diff: before_discard,
+        }
+    )
+    .unwrap_err()
+    .contains("Diff changed"));
 }
 
 #[test]
