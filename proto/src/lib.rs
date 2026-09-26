@@ -43,6 +43,10 @@ pub struct StatusEntry {
     pub index: String,
     pub worktree: String,
     pub original_path: Option<String>,
+    #[serde(default)]
+    pub worktree_revision: String,
+    #[serde(default)]
+    pub index_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +98,19 @@ pub struct ChangedFile {
 pub struct DiffResult {
     pub text: String,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditableFile {
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedFile {
+    pub staged: bool,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +214,10 @@ pub enum RepoAction {
     Push,
     ForcePushWithLease,
     Checkout {
+        branch: String,
+    },
+    TrackRemoteBranch {
+        remote: String,
         branch: String,
     },
     CreateBranch {
@@ -332,6 +353,17 @@ pub enum Request {
         #[serde(default)]
         ignore_whitespace: bool,
     },
+    ReadFile {
+        path: String,
+        file: String,
+    },
+    SaveFile {
+        path: String,
+        file: String,
+        content: String,
+        expected_content: String,
+        stage: bool,
+    },
     Action {
         path: String,
         action: RepoAction,
@@ -356,6 +388,8 @@ pub enum Response {
     Blame(BlameResult),
     TrackedFiles(Vec<String>),
     Diff(DiffResult),
+    EditableFile(EditableFile),
+    SavedFile(SavedFile),
     Progress(String),
     Action(String),
     Error(String),

@@ -1,6 +1,6 @@
 use gitferry_agent::{
     action, action_with_progress, blame, cancel_operation, commit_details, diff, file_history,
-    rebase_plan, search, snapshot, tracked_files, watch,
+    read_file, rebase_plan, save_file, search, snapshot, tracked_files, watch,
 };
 use gitferry_proto::{RebaseStep, RepoAction, Request, Response, RpcRequest, RpcResponse};
 use std::io::Write;
@@ -20,6 +20,75 @@ fn git(dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn edits_working_files_and_stages_saved_staged_files() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    let file = temp.path().join("file.txt");
+    std::fs::write(&file, "committed\n").unwrap();
+    git(temp.path(), &["add", "file.txt"]);
+    git(temp.path(), &["commit", "-qm", "Initial"]);
+    std::fs::write(&file, "staged\n").unwrap();
+    git(temp.path(), &["add", "file.txt"]);
+    std::fs::write(&file, "working\n").unwrap();
+    let path = temp.path().to_str().unwrap();
+    assert_eq!(read_file(path, "file.txt").unwrap().content, "working\n");
+    let saved = save_file(path, "file.txt", "edited\n", "working\n", true).unwrap();
+    assert!(saved.staged);
+    assert!(saved.warning.is_none());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited\n");
+    assert_eq!(git(temp.path(), &["show", ":file.txt"]), "edited");
+    assert!(git(temp.path(), &["diff", "--", "file.txt"]).is_empty());
+
+    let error = save_file(path, "file.txt", "stale write\n", "working\n", true).unwrap_err();
+    assert!(error.contains("changed on disk"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "edited\n");
+
+    save_file(path, "file.txt", "unstaged\n", "edited\n", false).unwrap();
+    assert_eq!(git(temp.path(), &["show", ":file.txt"]), "edited");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "unstaged\n");
+    assert!(save_file(path, "../outside.txt", "bad", "", false).is_err());
+    std::fs::write(&file, "one\r\ntwo\n").unwrap();
+    assert!(read_file(path, "file.txt")
+        .unwrap_err()
+        .contains("mixed line endings"));
+}
+
+#[test]
+fn status_revisions_change_only_for_the_modified_file() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    std::fs::write(temp.path().join("one.txt"), "one\n").unwrap();
+    std::fs::write(temp.path().join("two.txt"), "two\n").unwrap();
+    git(temp.path(), &["add", "."]);
+    git(temp.path(), &["commit", "-qm", "Initial"]);
+    std::fs::write(temp.path().join("one.txt"), "changed one\n").unwrap();
+    std::fs::write(temp.path().join("two.txt"), "changed two\n").unwrap();
+    let path = temp.path().to_str().unwrap();
+    let first = snapshot(path, 0, 10).unwrap().status;
+    std::fs::write(temp.path().join("one.txt"), "changed one again\n").unwrap();
+    let second = snapshot(path, 0, 10).unwrap().status;
+    let find = |entries: &Vec<gitferry_proto::StatusEntry>, name: &str| {
+        entries
+            .iter()
+            .find(|entry| entry.path == name)
+            .unwrap()
+            .worktree_revision
+            .clone()
+    };
+    assert_ne!(find(&first, "one.txt"), find(&second, "one.txt"));
+    assert_eq!(find(&first, "two.txt"), find(&second, "two.txt"));
+    git(temp.path(), &["add", "one.txt"]);
+    let staged = snapshot(path, 0, 10).unwrap().status;
+    let one = staged.iter().find(|entry| entry.path == "one.txt").unwrap();
+    assert!(!one.index_revision.is_empty());
+    assert_eq!(find(&first, "two.txt"), find(&staged, "two.txt"));
 }
 
 #[test]
@@ -213,6 +282,37 @@ fn stash_helper_filter_keeps_snapshot_and_search_pages_contiguous() {
         assert!(actual_search.len() < 20, "search paging did not finish");
     }
     assert_eq!(actual_search, expected_search);
+}
+
+#[test]
+fn pages_without_stash_are_contiguous_in_history_and_search() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    for number in 0..7 {
+        std::fs::write(dir.join("tracked.txt"), format!("Page {number}\n")).unwrap();
+        git(dir, &["add", "tracked.txt"]);
+        git(dir, &["commit", "-qm", &format!("Page {number}")]);
+    }
+    let expected: Vec<String> = git(dir, &["log", "HEAD", "--all", "--format=%H"])
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let path = dir.to_str().unwrap();
+    let mut history = Vec::new();
+    let mut results = Vec::new();
+    for offset in [0, 3, 6, 9] {
+        let page = snapshot(path, offset, 3).unwrap();
+        let search_page = search(path, "Page", offset, 3).unwrap();
+        assert_eq!(page.has_more, offset + 3 < expected.len());
+        assert_eq!(search_page.has_more, page.has_more);
+        history.extend(page.commits.into_iter().map(|item| item.hash));
+        results.extend(search_page.commits.into_iter().map(|item| item.hash));
+    }
+    assert_eq!(history, expected);
+    assert_eq!(results, expected);
 }
 
 #[test]
@@ -844,6 +944,93 @@ fn pushes_new_branch_with_upstream_without_pushing_other_branches() {
         ),
         "origin/topic"
     );
+}
+
+#[test]
+fn checks_out_remote_branch_with_local_tracking_and_rejects_head_alias() {
+    let temp = tempfile::tempdir().unwrap();
+    let seed = temp.path().join("seed");
+    let bare = temp.path().join("remote.git");
+    let local = temp.path().join("local");
+    std::fs::create_dir(&seed).unwrap();
+    git(&seed, &["init", "-q", "-b", "main"]);
+    git(&seed, &["config", "user.name", "Test"]);
+    git(&seed, &["config", "user.email", "test@example.com"]);
+    std::fs::write(seed.join("hello.txt"), "initial\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-qm", "Initial"]);
+    git(
+        temp.path(),
+        &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()],
+    );
+    git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    git(&seed, &["push", "origin", "main"]);
+    git(&seed, &["switch", "-q", "-c", "team/topic"]);
+    std::fs::write(seed.join("topic.txt"), "topic\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-qm", "Topic"]);
+    git(&seed, &["push", "origin", "team/topic"]);
+    git(
+        temp.path(),
+        &[
+            "clone",
+            "-q",
+            bare.to_str().unwrap(),
+            local.to_str().unwrap(),
+        ],
+    );
+    let path = local.to_str().unwrap();
+    assert!(snapshot(path, 0, 10)
+        .unwrap()
+        .refs
+        .iter()
+        .any(|item| item.name == "origin/HEAD"));
+    assert!(action(
+        path,
+        RepoAction::TrackRemoteBranch {
+            remote: "origin".into(),
+            branch: "HEAD".into()
+        }
+    )
+    .is_err());
+    assert!(action(
+        path,
+        RepoAction::TrackRemoteBranch {
+            remote: "origin".into(),
+            branch: "missing".into()
+        }
+    )
+    .is_err());
+    action(
+        path,
+        RepoAction::TrackRemoteBranch {
+            remote: "origin".into(),
+            branch: "team/topic".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(git(&local, &["branch", "--show-current"]), "team/topic");
+    assert_eq!(
+        git(
+            &local,
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}"
+            ]
+        ),
+        "origin/team/topic"
+    );
+    assert_eq!(
+        git(&local, &["rev-parse", "HEAD"]),
+        git(&bare, &["rev-parse", "refs/heads/team/topic"])
+    );
+    assert!(snapshot(path, 0, 10)
+        .unwrap()
+        .refs
+        .iter()
+        .any(|item| item.name == "team/topic" && item.is_head));
 }
 
 #[test]

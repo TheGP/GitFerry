@@ -1,7 +1,7 @@
 use gitferry_proto::{
-    BlameLine, BlameResult, ChangedFile, CommitDetails, CommitSummary, DiffResult,
+    BlameLine, BlameResult, ChangedFile, CommitDetails, CommitSummary, DiffResult, EditableFile,
     FileHistoryEntry, FileHistoryResult, RebaseCommit, RebaseStep, RefEntry, RepoAction,
-    RepoSnapshot, RepoState, Request, Response, SearchResult, StatusEntry,
+    RepoSnapshot, RepoState, Request, Response, SavedFile, SearchResult, StatusEntry,
 };
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -14,6 +14,7 @@ use std::sync::{
 };
 
 const MAX_DIFF_BYTES: usize = 512 * 1024;
+const MAX_EDIT_BYTES: usize = 1024 * 1024;
 
 fn hide_console(command: &mut Command) {
     #[cfg(windows)]
@@ -67,6 +68,14 @@ pub fn handle(request: Request) -> Response {
             file,
             ignore_whitespace,
         } => diff_with_options(&path, &target, &file, ignore_whitespace).map(Response::Diff),
+        Request::ReadFile { path, file } => read_file(&path, &file).map(Response::EditableFile),
+        Request::SaveFile {
+            path,
+            file,
+            content,
+            expected_content,
+            stage,
+        } => save_file(&path, &file, &content, &expected_content, stage).map(Response::SavedFile),
         Request::Action {
             path,
             action: operation,
@@ -428,13 +437,52 @@ fn status(repo: &Path) -> Result<Vec<StatusEntry>, String> {
             } else {
                 None
             };
+        let path = text(&field[3..]);
+        let worktree_revision = std::fs::symlink_metadata(repo.join(&path))
+            .ok()
+            .and_then(|metadata| {
+                let modified = metadata
+                    .modified()
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?;
+                Some(format!("{}:{}", modified.as_nanos(), metadata.len()))
+            })
+            .unwrap_or_default();
         entries.push(StatusEntry {
-            path: text(&field[3..]),
+            path,
             index: index_state.to_string(),
             worktree: worktree_state.to_string(),
             original_path,
+            worktree_revision,
+            index_revision: String::new(),
         });
         index += 1;
+    }
+    if entries
+        .iter()
+        .any(|entry| entry.index != " " && entry.index != "?")
+    {
+        if let Ok(staged) = git(
+            repo,
+            &[
+                "diff",
+                "--cached",
+                "--raw",
+                "--no-renames",
+                "--abbrev=40",
+                "-z",
+            ],
+        ) {
+            let mut records = staged.stdout.split(|byte| *byte == 0);
+            while let (Some(header), Some(path)) = (records.next(), records.next()) {
+                let hash = text(header).split_whitespace().nth(3).map(str::to_string);
+                let path = text(path);
+                if let Some(entry) = entries.iter_mut().find(|entry| entry.path == path) {
+                    entry.index_revision = hash.unwrap_or_default();
+                }
+            }
+        }
     }
     Ok(entries)
 }
@@ -533,6 +581,7 @@ fn stash_history_helpers(repo: &Path) -> Result<(Option<String>, HashSet<String>
     .trim()
     .to_string();
     if stash.is_empty() {
+        // Without refs/stash there are no stash helper parents to inspect.
         return Ok((None, HashSet::new()));
     }
     let output = git(repo, &["rev-list", "--parents", "-n", "1", &stash])?;
@@ -569,20 +618,28 @@ fn log(
 ) -> Result<(Vec<CommitSummary>, bool), String> {
     let limit = limit.clamp(1, 200);
     let (stash_commit, hidden_helpers) = stash_history_helpers(repo)?;
-    // Git must page raw commits before our filter. Fetch enough raw rows to page
-    // the visible history instead, including one row for has_more.
-    let count = offset
+    let needs_filtering = !hidden_helpers.is_empty();
+    // Only re-read earlier commits when hidden stash helpers shift page offsets.
+    let requested_end = offset
         .checked_add(limit + 1)
-        .and_then(|count| count.checked_add(hidden_helpers.len()))
         .ok_or("History offset is too large")?;
+    let count = if needs_filtering {
+        requested_end
+            .checked_add(hidden_helpers.len())
+            .ok_or("History offset is too large")?
+    } else {
+        limit + 1
+    };
     let count_arg = format!("--max-count={count}");
-    let mut args = vec![
-        "log",
-        "HEAD",
-        "--all",
-        &count_arg,
+    let skip_arg = format!("--skip={offset}");
+    let mut args = vec!["log", "HEAD", "--all"];
+    if !needs_filtering {
+        args.push(&skip_arg);
+    }
+    args.extend([
+        count_arg.as_str(),
         "--format=%H%x00%P%x00%s%x00%an%x00%at%x00%D%x1e",
-    ];
+    ]);
     let pathspec;
     if let Some((kind, term)) = filter {
         match kind {
@@ -627,8 +684,13 @@ fn log(
                 .collect(),
         });
     }
-    let has_more = commits.len() > offset + limit;
-    let commits: Vec<_> = commits.into_iter().skip(offset).take(limit).collect();
+    let visible_offset = if needs_filtering { offset } else { 0 };
+    let has_more = commits.len() > visible_offset + limit;
+    let commits: Vec<_> = commits
+        .into_iter()
+        .skip(visible_offset)
+        .take(limit)
+        .collect();
     Ok((commits, has_more))
 }
 
@@ -954,6 +1016,84 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
 
 pub fn diff(path: &str, target: &str, file: &str) -> Result<DiffResult, String> {
     diff_with_options(path, target, file, false)
+}
+
+fn editable_path(root: &Path, file: &str) -> Result<PathBuf, String> {
+    literal_path(file)?;
+    let path = root.join(file);
+    let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+    if !metadata.file_type().is_file() {
+        return Err("Only regular files can be edited in GitFerry".to_string());
+    }
+    let canonical = path.canonicalize().map_err(|error| error.to_string())?;
+    if !canonical.starts_with(root) {
+        return Err("File is outside the repository".to_string());
+    }
+    Ok(path)
+}
+
+fn editable_content(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_EDIT_BYTES {
+        return Err("File is too large for the in-app editor (1 MiB limit)".to_string());
+    }
+    if bytes.contains(&0) {
+        return Err("Binary files cannot be edited in GitFerry".to_string());
+    }
+    let content = String::from_utf8(bytes)
+        .map_err(|_| "Only UTF-8 text files can be edited in GitFerry".to_string())?;
+    let without_crlf = content.replace("\r\n", "");
+    let kinds = u8::from(content.contains("\r\n"))
+        + u8::from(without_crlf.contains('\n'))
+        + u8::from(without_crlf.contains('\r'));
+    if kinds > 1 {
+        return Err("Files with mixed line endings cannot be edited in GitFerry".to_string());
+    }
+    Ok(content)
+}
+
+pub fn read_file(path: &str, file: &str) -> Result<EditableFile, String> {
+    let root = repo_root(path)?;
+    let file_path = editable_path(&root, file)?;
+    Ok(EditableFile {
+        content: editable_content(&file_path)?,
+    })
+}
+
+pub fn save_file(
+    path: &str,
+    file: &str,
+    content: &str,
+    expected_content: &str,
+    stage: bool,
+) -> Result<SavedFile, String> {
+    if content.len() > MAX_EDIT_BYTES {
+        return Err("File is too large for the in-app editor (1 MiB limit)".to_string());
+    }
+    if content.contains('\0') {
+        return Err("Binary files cannot be edited in GitFerry".to_string());
+    }
+    let root = repo_root(path)?;
+    let file_path = editable_path(&root, file)?;
+    if editable_content(&file_path)? != expected_content {
+        return Err(
+            "File changed on disk since editing began. Copy your edits before reloading it."
+                .to_string(),
+        );
+    }
+    std::fs::write(&file_path, content).map_err(|error| error.to_string())?;
+    let warning = if stage {
+        let literal_file = literal_path(file)?;
+        git(&root, &["add", "--", &literal_file])
+            .err()
+            .map(|error| format!("File saved, but staging failed: {error}"))
+    } else {
+        None
+    };
+    Ok(SavedFile {
+        staged: stage && warning.is_none(),
+        warning,
+    })
 }
 
 pub fn diff_with_options(
@@ -1365,6 +1505,16 @@ pub fn action_with_progress(
         RepoAction::Checkout { branch } => {
             validate_branch(&root, &branch)?;
             git(&root, &["switch", &branch])?
+        }
+        RepoAction::TrackRemoteBranch { remote, branch } => {
+            validate_remote(&root, &remote)?;
+            validate_branch(&root, &branch)?;
+            if branch == "HEAD" {
+                return Err("Choose a remote branch, not its HEAD alias".to_string());
+            }
+            let reference = format!("refs/remotes/{remote}/{branch}");
+            git(&root, &["show-ref", "--verify", "--quiet", &reference])?;
+            git(&root, &["switch", "--track", &format!("{remote}/{branch}")])?
         }
         RepoAction::CreateBranch { branch } => {
             validate_branch(&root, &branch)?;

@@ -1,10 +1,10 @@
 use gitferry_agent::{
     action_with_progress, blame, cancel_operation, commit_details, diff_with_options, file_history,
-    rebase_plan, search, snapshot, state, tracked_files, watch,
+    read_file, rebase_plan, save_file, search, snapshot, state, tracked_files, watch,
 };
 use gitferry_proto::{
-    BlameResult, CommitDetails, DiffResult, FileHistoryResult, RebaseCommit, RepoAction,
-    RepoSnapshot, RepoState, Request, Response, SearchResult,
+    BlameResult, CommitDetails, DiffResult, EditableFile, FileHistoryResult, RebaseCommit,
+    RepoAction, RepoSnapshot, RepoState, Request, Response, SavedFile, SearchResult,
 };
 use tauri::{Emitter, Manager};
 
@@ -351,6 +351,70 @@ async fn repo_diff(
 }
 
 #[tauri::command]
+async fn repo_read_file(
+    app: tauri::AppHandle,
+    path: String,
+    file: String,
+) -> Result<EditableFile, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            match app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::ReadFile {
+                    path: remote_path.to_string(),
+                    file,
+                },
+            )? {
+                Response::EditableFile(result) => Ok(result),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            read_file(&path, &file)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn repo_save_file(
+    app: tauri::AppHandle,
+    path: String,
+    file: String,
+    content: String,
+    expected_content: String,
+    stage: bool,
+) -> Result<SavedFile, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            match app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::SaveFile {
+                    path: remote_path.to_string(),
+                    file,
+                    content,
+                    expected_content,
+                    stage,
+                },
+            )? {
+                Response::SavedFile(result) => Ok(result),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            save_file(&path, &file, &content, &expected_content, stage)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn open_in_editor(
     repo: String,
     file: String,
@@ -438,6 +502,8 @@ pub fn run() {
             repo_blame,
             repo_tracked_files,
             repo_diff,
+            repo_read_file,
+            repo_save_file,
             open_in_editor,
             repo_action,
             repo_cancel
