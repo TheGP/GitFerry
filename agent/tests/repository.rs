@@ -63,6 +63,138 @@ fn restores_selected_stash_and_only_pop_removes_it() {
 }
 
 #[test]
+fn stages_only_selected_changed_lines_and_rejects_stale_diffs() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    let path = temp.path().to_str().unwrap();
+    let file = temp.path().join("lines.txt");
+    let original = (1..=30)
+        .map(|number| format!("line {number}\n"))
+        .collect::<String>();
+    std::fs::write(&file, &original).unwrap();
+    git(temp.path(), &["add", "lines.txt"]);
+    git(temp.path(), &["commit", "-qm", "Initial"]);
+    let changed = original
+        .replace("line 3\n", "NEW 3\n")
+        .replace("line 25\n", "NEW 25\n");
+    std::fs::write(&file, &changed).unwrap();
+    let before = diff(path, "working", "lines.txt").unwrap().text;
+    let added_three = before
+        .split('\n')
+        .position(|line| line == "+NEW 3")
+        .unwrap();
+    action(
+        path,
+        RepoAction::StageLines {
+            path: "lines.txt".into(),
+            lines: vec![added_three],
+            diff: before,
+        },
+    )
+    .unwrap();
+    let staged = diff(path, "staged", "lines.txt").unwrap().text;
+    assert!(staged.contains("+NEW 3"));
+    assert!(!staged.contains("-line 3"));
+    assert!(!staged.contains("NEW 25"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), changed);
+
+    let next = diff(path, "working", "lines.txt").unwrap().text;
+    let selected = next
+        .split('\n')
+        .enumerate()
+        .filter_map(|(index, line)| ["-line 25", "+NEW 25"].contains(&line).then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(selected.len(), 2);
+    action(
+        path,
+        RepoAction::StageLines {
+            path: "lines.txt".into(),
+            lines: selected,
+            diff: next,
+        },
+    )
+    .unwrap();
+    let staged = diff(path, "staged", "lines.txt").unwrap().text;
+    assert!(staged.contains("+NEW 25"));
+    assert!(staged.contains("-line 25"));
+
+    let stale = diff(path, "working", "lines.txt").unwrap().text;
+    let old_three = stale
+        .split('\n')
+        .position(|line| line == "-line 3")
+        .unwrap();
+    std::fs::write(&file, changed.replace("line 12\n", "NEW 12\n")).unwrap();
+    let error = action(
+        path,
+        RepoAction::StageLines {
+            path: "lines.txt".into(),
+            lines: vec![old_three],
+            diff: stale,
+        },
+    )
+    .unwrap_err();
+    assert!(error.contains("Diff changed"));
+}
+
+#[test]
+fn rejects_partial_line_stage_without_final_newline() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    let path = temp.path().to_str().unwrap();
+    std::fs::write(temp.path().join("tail.txt"), "old").unwrap();
+    git(temp.path(), &["add", "tail.txt"]);
+    git(temp.path(), &["commit", "-qm", "Initial"]);
+    std::fs::write(temp.path().join("tail.txt"), "new").unwrap();
+    let current = diff(path, "working", "tail.txt").unwrap().text;
+    let added = current.split('\n').position(|line| line == "+new").unwrap();
+    let error = action(
+        path,
+        RepoAction::StageLines {
+            path: "tail.txt".into(),
+            lines: vec![added],
+            diff: current,
+        },
+    )
+    .unwrap_err();
+    assert!(error.contains("whole hunk"));
+    let staged = diff(path, "staged", "tail.txt").unwrap().text;
+    assert_eq!(staged, "");
+}
+
+#[test]
+fn stages_a_selected_deletion_without_other_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    let path = temp.path().to_str().unwrap();
+    std::fs::write(temp.path().join("lines.txt"), "one\ntwo\nthree\n").unwrap();
+    git(temp.path(), &["add", "lines.txt"]);
+    git(temp.path(), &["commit", "-qm", "Initial"]);
+    std::fs::write(temp.path().join("lines.txt"), "one\nthree\n").unwrap();
+    let current = diff(path, "working", "lines.txt").unwrap().text;
+    let deleted = current.split('\n').position(|line| line == "-two").unwrap();
+    action(
+        path,
+        RepoAction::StageLines {
+            path: "lines.txt".into(),
+            lines: vec![deleted],
+            diff: current,
+        },
+    )
+    .unwrap();
+    assert!(diff(path, "staged", "lines.txt")
+        .unwrap()
+        .text
+        .contains("-two"));
+    assert_eq!(diff(path, "working", "lines.txt").unwrap().text, "");
+}
+
+#[test]
 fn reads_empty_repo_and_working_changes() {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "-q"]);

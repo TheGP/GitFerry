@@ -2,6 +2,7 @@ use gitferry_proto::{
     ChangedFile, CommitDetails, CommitSummary, DiffResult, RefEntry, RepoAction, RepoSnapshot,
     RepoState, Request, Response, SearchResult, StatusEntry,
 };
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -550,6 +551,7 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
             };
             git_with_input(&root, &args, selected.as_bytes())?
         }
+        RepoAction::StageLines { path, lines, diff } => stage_lines(&root, &path, &lines, &diff)?,
         RepoAction::UnstageFile { path } => {
             let path = literal_path(&path)?;
             if head(&root).is_some() {
@@ -598,6 +600,116 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
     let stdout = text(&output.stdout);
     let stderr = text(&output.stderr);
     Ok(format!("{}{}", stdout, stderr).trim().to_string())
+}
+
+fn stage_lines(
+    repo: &Path,
+    file: &str,
+    selected: &[usize],
+    expected_diff: &str,
+) -> Result<Output, String> {
+    let path = literal_path(file)?;
+    let output = git(repo, &["diff", "--no-ext-diff", "--no-color", "--", &path])?;
+    if output.stdout.len() > MAX_DIFF_BYTES {
+        return Err("Diff is too large for line staging".to_string());
+    }
+    let current_diff = text(&output.stdout);
+    if current_diff != expected_diff {
+        return Err("Diff changed; reopen the file before staging lines".to_string());
+    }
+    if current_diff.contains("\\ No newline at end of file") {
+        return Err("Stage the whole hunk when a file has no final newline".to_string());
+    }
+    let requested: HashSet<usize> = selected.iter().copied().collect();
+    if requested.is_empty() {
+        return Err("Select changed lines to stage".to_string());
+    }
+    let lines: Vec<&str> = current_diff.split('\n').collect();
+    let hunks: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.starts_with("@@ ").then_some(index))
+        .collect();
+    let first_hunk = *hunks.first().ok_or("This diff has no stageable lines")?;
+    if lines[..first_hunk].iter().any(|line| {
+        [
+            "new file mode",
+            "deleted file mode",
+            "rename from",
+            "rename to",
+            "copy from",
+            "copy to",
+            "old mode",
+            "new mode",
+        ]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+    }) {
+        return Err("Stage the whole file for this kind of change".to_string());
+    }
+    let mut patch = lines[..first_hunk].join("\n");
+    patch.push('\n');
+    let mut used = HashSet::new();
+    for (number, &start) in hunks.iter().enumerate() {
+        let end = hunks.get(number + 1).copied().unwrap_or(lines.len());
+        let mut body = String::new();
+        let mut has_selected = false;
+        let mut keep_marker = false;
+        for index in start + 1..end {
+            let line = lines[index];
+            if line.is_empty() && index + 1 == lines.len() {
+                continue;
+            }
+            match line.as_bytes().first() {
+                Some(b'+') => {
+                    keep_marker = requested.contains(&index);
+                    if keep_marker {
+                        body.push_str(line);
+                        body.push('\n');
+                        used.insert(index);
+                        has_selected = true;
+                    }
+                }
+                Some(b'-') => {
+                    keep_marker = true;
+                    if requested.contains(&index) {
+                        body.push_str(line);
+                        used.insert(index);
+                        has_selected = true;
+                    } else {
+                        body.push(' ');
+                        body.push_str(&line[1..]);
+                    }
+                    body.push('\n');
+                }
+                Some(b' ') => {
+                    body.push_str(line);
+                    body.push('\n');
+                    keep_marker = true;
+                }
+                Some(b'\\') => {
+                    if keep_marker {
+                        body.push_str(line);
+                        body.push('\n');
+                    }
+                }
+                _ => return Err("Cannot stage lines from this diff format".to_string()),
+            }
+        }
+        if has_selected {
+            patch.push_str(lines[start]);
+            patch.push('\n');
+            patch.push_str(&body);
+        }
+    }
+    if used.len() != requested.len() {
+        return Err("Select only added or deleted lines".to_string());
+    }
+    git_with_input(
+        repo,
+        &["apply", "--cached", "--recount", "--unidiff-zero", "-"],
+        patch.as_bytes(),
+    )
 }
 
 fn force_push_with_lease(repo: &Path) -> Result<Output, String> {

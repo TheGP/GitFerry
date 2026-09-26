@@ -14,7 +14,7 @@ type Details = { hash: string; subject: string; body: string; author: string; au
 type Choice = { path: string; status: string; target: string };
 type Diff = { text: string; truncated: boolean };
 type RefNode = { label: string; path: string; ref?: Ref; children: RefNode[]; count: number; containsHead: boolean };
-type Operation = { kind: "stage_all" | "fetch" | "pull" | "push" | "force_push_with_lease" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch"; value: { branch: string } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash"; value: { hash: string } };
+type Operation = { kind: "stage_all" | "fetch" | "pull" | "push" | "force_push_with_lease" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "stage_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch"; value: { branch: string } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash"; value: { hash: string } };
 const recentKey = "gitferry.recent";
 const tabsKey = "gitferry.openTabs";
 const activeKey = "gitferry.activeTab";
@@ -78,12 +78,45 @@ function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrid
 
 function parseDiffLines(value: Diff | null) {
   let hunk = -1;
-  return (value?.text ?? "").split("\n").map(line => ({ line, hunk: line.startsWith("@@") ? ++hunk : -1 }));
+  let inHunk = false;
+  return (value?.text ?? "").split("\n").map(line => {
+    if (line.startsWith("diff --git ")) inHunk = false;
+    if (line.startsWith("@@ ")) { inHunk = true; return { line, hunk: ++hunk, kind: "hunk" }; }
+    return { line, hunk: -1, kind: line.startsWith("diff --git ") ? "diff-title" : inHunk && line.startsWith("+") ? "added" : inHunk && line.startsWith("-") ? "deleted" : "" };
+  });
 }
 
 function DiffText(props: { value: Diff; item: Choice; working: boolean; actionBusy: boolean; onAction: (operation: Operation) => void }) {
   const lines = createMemo(() => parseDiffLines(props.value));
-  return <><div class="diff-content"><For each={lines()}>{({ line, hunk }, index) => <div class={`diff-line ${line.startsWith("+") && !line.startsWith("+++") ? "added" : line.startsWith("-") && !line.startsWith("---") ? "deleted" : line.startsWith("@@") ? "hunk" : line.startsWith("diff --git") ? "diff-title" : ""}`}><span class="line-number">{index() + 1}</span><span class="line-text">{line || " "}</span><Show when={hunk >= 0 && props.working && (props.item.target === "working" || props.item.target === "staged")}><button class="hunk-action" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_hunk", value: { path: props.item.path, index: hunk, reverse: props.item.target === "staged" } })}>{props.item.target === "staged" ? "Unstage hunk" : "Stage hunk"}</button></Show></div>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show></>;
+  const [selectedLines, setSelectedLines] = createSignal<number[]>([]);
+  const selectedSet = createMemo(() => new Set(selectedLines()));
+  const lineStageNote = createMemo(() => props.value.truncated ? "Diff too large for line staging; use Stage file." : props.value.text.includes("\\ No newline at end of file") ? "Stage the whole hunk when a file has no final newline." : /(^|\n)(new file mode|deleted file mode|rename from|rename to|copy from|copy to|old mode|new mode)/.test(props.value.text) ? "Stage the file for rename or mode changes." : "");
+  const stageable = createMemo(() => props.working && props.item.target === "working" && !lineStageNote());
+  const changed = (index: number) => {
+    const kind = lines()[index]?.kind;
+    return stageable() && (kind === "added" || kind === "deleted");
+  };
+  let anchor = -1;
+  let dragStart = -1;
+  let dragged = false;
+  createEffect(() => { void props.value.text; setSelectedLines([]); anchor = -1; });
+  const selectRange = (from: number, to: number) => {
+    const range: number[] = [];
+    for (let index = Math.min(from, to); index <= Math.max(from, to); index++) if (changed(index)) range.push(index);
+    return range;
+  };
+  function selectLine(index: number, event: MouseEvent) {
+    if (dragged) { dragged = false; return; }
+    if (event.shiftKey && anchor >= 0) setSelectedLines(current => [...new Set([...current, ...selectRange(anchor, index)])]);
+    else { setSelectedLines(current => current.includes(index) ? current.filter(item => item !== index) : [...current, index]); anchor = index; }
+  }
+  return <>
+    <Show when={props.working && props.item.target === "working"}><div class="line-selection-toolbar"><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : "Click changed line numbers to select lines · Shift-click for a range")}</span><Show when={selectedLines().length}><button class="clear-lines" onClick={() => setSelectedLines([])}>Clear</button></Show><button class="stage-lines" disabled={!stageable() || !selectedLines().length || props.actionBusy} onClick={() => props.onAction({ kind: "stage_lines", value: { path: props.item.path, lines: [...selectedLines()].sort((a, b) => a - b), diff: props.value.text } })}>Stage Lines</button></div></Show>
+    <div class="diff-content" onPointerUp={() => { dragStart = -1; }}><For each={lines()}>{({ line, hunk, kind }, index) => <div class={`diff-line ${kind} ${selectedSet().has(index()) ? "selected" : ""}`}>
+      <Show when={changed(index())} fallback={<span class="line-number">{index() + 1}</span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select diff line ${index() + 1}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}>{index() + 1}</button></Show>
+      <span class="line-text">{line || " "}</span><Show when={hunk >= 0 && props.working && (props.item.target === "working" || props.item.target === "staged")}><button class="hunk-action" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_hunk", value: { path: props.item.path, index: hunk, reverse: props.item.target === "staged" } })}>{props.item.target === "staged" ? "Unstage hunk" : "Stage hunk"}</button></Show>
+    </div>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
+  </>;
 }
 
 function demoDiff(item: Choice): Diff {

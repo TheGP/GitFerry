@@ -100,6 +100,11 @@ pub enum RepoAction {
         index: usize,
         reverse: bool,
     },
+    StageLines {
+        path: String,
+        lines: Vec<usize>,
+        diff: String,
+    },
     UnstageFile {
         path: String,
     },

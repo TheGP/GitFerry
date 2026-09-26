@@ -150,14 +150,24 @@ button { cursor: pointer; }
 .file-chevron { color: #7c8d97; font-size: 19px; }
 .diff-heading { display: flex; justify-content: space-between; gap: 20px; padding: 11px 31px; background: #242d34; border-top: 1px solid #1a232a; border-bottom: 1px solid #1a232a; color: #cbd8df; font-family: Consolas, monospace; font-size: 11px; }
 .diff-heading span:last-child { color: #7d9fa5; font-family: Inter, "Segoe UI", sans-serif; font-size: 9px; letter-spacing: 1px; }
-.diff-content { overflow-x: auto; padding: 12px 0 30px; font-family: Consolas, "SFMono-Regular", monospace; font-size: 11px; line-height: 19px; }
+.diff-content { overflow-x: auto; padding: 12px 0 30px; font-family: "Cascadia Code", Consolas, "SFMono-Regular", monospace; font-size: 14px; line-height: 23px; }
 .diff-line { display: flex; min-width: max-content; white-space: pre; color: #b3bec7; }
-.diff-line.added { background: #29463e; color: #b2dfc0; }
-.diff-line.deleted { background: #493436; color: #e4b1b1; }
+.diff-line.added { background: #244638; color: #ddf8e5; }
+.diff-line.deleted { background: #4b3032; color: #ffdcda; }
 .diff-line.hunk { background: #303d4b; color: #8cb8d8; }
 .diff-line.diff-title { color: #e8e0bd; }
-.line-number { width: 46px; flex: none; padding-right: 11px; text-align: right; color: #657481; user-select: none; }
+.line-number { width: 54px; flex: none; padding: 0 11px 0 3px; text-align: right; color: #657481; font-size: 12px; line-height: inherit; user-select: none; }
+.line-number.selectable { border: 0; background: transparent; cursor: pointer; }
+.line-number.selectable:hover { background: var(--theme-accent-soft); color: var(--theme-text); }
+.diff-line.selected { outline: 1px solid var(--theme-accent); outline-offset: -1px; }
+.diff-line.selected .line-number { background: var(--theme-accent); color: var(--theme-chrome); }
 .line-text { padding-right: 24px; }
+.line-selection-toolbar { min-height: 34px; display: flex; align-items: center; gap: 9px; padding: 5px 12px; border-bottom: 1px solid var(--theme-border); background: var(--theme-heading); color: var(--theme-secondary); font: 11.5px Inter, "Segoe UI", sans-serif; }
+.line-selection-toolbar span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.line-selection-toolbar button { flex: none; padding: 4px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 11px; }
+.line-selection-toolbar button:hover:not(:disabled) { background: var(--theme-hover); }
+.line-selection-toolbar button.stage-lines { border-color: var(--theme-accent); background: var(--theme-accent-soft); }
+.line-selection-toolbar button:disabled { opacity: .5; cursor: default; }
 .hunk-action { align-self: center; margin: 0 18px 0 auto; padding: 2px 8px; border: 1px solid #547789; border-radius: 2px; background: #344c5e; color: #bfdbeb; font-family: Inter, "Segoe UI", sans-serif; font-size: 9px; line-height: 15px; }
 .hunk-action:hover { background: #3d6174; }
 .empty-note, .truncated-note { padding: 24px 32px; color: #81919d; font-size: 12px; }
@@ -218,8 +228,7 @@ button { cursor: pointer; }
 .file-row { font-size: 12.5px; }
 .file-group-heading { font-size: 10.5px; }
 .commit-byline { font-size: 12px; }
-.diff-heading, .diff-content { font-size: 12px; }
-.diff-content { line-height: 21px; }
+.diff-heading { font-size: 12px; }
 
 /* Antigravity follows the supplied editor screenshot. The other palettes keep
    the same layout, so switching themes never changes pane geometry. */

@@ -45,6 +45,28 @@ function makeRepo(name, large = false) {
   return folder;
 }
 
+function makeLineRepo() {
+  const folder = path.join(sandbox, "lines");
+  fs.mkdirSync(folder);
+  git(folder, "init", "-b", "main");
+  git(folder, "config", "user.name", "GitFerry Test");
+  git(folder, "config", "user.email", "gitferry@example.test");
+  const original = Array.from({ length: 30 }, (_, index) => `line ${index + 1}\n`).join("");
+  fs.writeFileSync(path.join(folder, "lines.txt"), original);
+  git(folder, "add", "lines.txt");
+  git(folder, "commit", "-m", "Initial lines");
+  fs.writeFileSync(path.join(folder, "lines.txt"), original.replace("line 3\n", "NEW 3\n").replace("line 15\n", "++prefixed\n").replace("line 25\n", "NEW 25\n"));
+  return folder;
+}
+
+async function clickChangedLine(page, text, shift = false) {
+  const label = await page.evaluate(value => [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === value)?.querySelector("button.line-number")?.getAttribute("aria-label"), text);
+  assert.ok(label, `Selectable line ${text} must exist`);
+  if (shift) await page.keyboard.down("Shift");
+  await page.click(`button[aria-label='${label}']`);
+  if (shift) await page.keyboard.up("Shift");
+}
+
 function rpc(method, params) {
   return new Promise((resolve, reject) => {
     const id = ++nextId;
@@ -118,6 +140,7 @@ async function main() {
   assert.ok(fs.existsSync(chromePath), `Chrome not found at ${chromePath}`);
   const small = makeRepo("small");
   const large = makeRepo("large", true);
+  const lineRepo = makeLineRepo();
   const remote = path.join(sandbox, "remote.git");
   fs.mkdirSync(remote);
   git(remote, "init", "--bare", "-b", "main");
@@ -381,6 +404,47 @@ async function main() {
   assert.ok((await page.$eval(".statusbar", element => element.textContent)).includes(large));
   await page.click(".repo-tab:first-child .tab-close");
   assert.equal(await page.$$eval(".repo-tab", tabs => tabs.length), 1);
+  await openRepo(page, lineRepo);
+  await page.click(".file-row");
+  await page.waitForSelector("button.line-number.selectable");
+  assert.ok(Number.parseFloat(await page.$eval(".diff-content", element => getComputedStyle(element).fontSize)) >= 14, "diff code must be readable");
+  const dragLines = await page.evaluate(() => ["-line 3", "+NEW 3"].map(value => {
+    const rect = [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === value)?.querySelector("button.line-number")?.getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  }));
+  await page.mouse.move(dragLines[0].x, dragLines[0].y);
+  await page.mouse.down();
+  await page.mouse.move(dragLines[1].x, dragLines[1].y, { steps: 4 });
+  await page.mouse.up();
+  assert.match(await page.$eval(".line-selection-toolbar", element => element.textContent), /2 lines selected/);
+  await page.click(".clear-lines");
+  await clickChangedLine(page, "-line 3");
+  await clickChangedLine(page, "+NEW 25", true);
+  assert.match(await page.$eval(".line-selection-toolbar", element => element.textContent), /6 lines selected/);
+  await page.click(".clear-lines");
+  await clickChangedLine(page, "+NEW 3");
+  await page.waitForFunction(() => document.querySelector(".line-selection-toolbar")?.textContent.includes("1 line selected"));
+  await page.screenshot({ path: path.join(screenshots, "selected-diff-line.png") });
+  await page.click(".stage-lines");
+  await waitUntil(() => git(lineRepo, "diff", "--cached").includes("+NEW 3"), "single line staging");
+  assert.ok(!git(lineRepo, "diff", "--cached").includes("-line 3"), "adjacent deleted line must remain unstaged");
+  assert.ok(!git(lineRepo, "diff", "--cached").includes("NEW 25"), "other hunk must remain unstaged");
+  await waitForAction(page);
+  await page.evaluate(() => [...document.querySelectorAll(".file-row")].find(row => !row.querySelector(".file-tag"))?.click());
+  await page.waitForSelector("button.line-number.selectable");
+  await clickChangedLine(page, "-line 25");
+  await clickChangedLine(page, "+NEW 25", true);
+  assert.match(await page.$eval(".line-selection-toolbar", element => element.textContent), /2 lines selected/);
+  await page.click(".stage-lines");
+  await waitUntil(() => git(lineRepo, "diff", "--cached").includes("+NEW 25"), "range line staging");
+  assert.ok(git(lineRepo, "diff", "--cached").includes("-line 25"), "selected deletion must stage with selected addition");
+  await waitForAction(page);
+  await page.evaluate(() => [...document.querySelectorAll(".file-row")].find(row => !row.querySelector(".file-tag"))?.click());
+  await page.waitForSelector("button.line-number.selectable");
+  await clickChangedLine(page, "+++prefixed");
+  await page.click(".stage-lines");
+  await waitUntil(() => git(lineRepo, "diff", "--cached").includes("+++prefixed"), "stage prefixed source line");
+  assert.ok(!git(lineRepo, "diff", "--cached").includes("-line 15"), "unselected replacement line must remain unstaged");
   const realPath = process.env.GITFERRY_REAL_REPO;
   let realRepo;
   if (realPath) {
@@ -409,7 +473,7 @@ main().catch(error => { console.error(error); process.exitCode = 1; }).finally(a
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["small", "large", "other", "remote.git"]) {
+  for (const name of ["small", "large", "lines", "other", "remote.git"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {
