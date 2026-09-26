@@ -150,11 +150,14 @@ button { cursor: pointer; }
 .files-title { min-width: 0; font-weight: inherit; white-space: nowrap; }
 .files-heading span { color: #71828e; }
 .files-list { margin: 0 25px 25px; border: 1px solid #1d252c; border-radius: 4px; overflow: hidden; }
-.file-group-heading { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 10px; border-bottom: 1px solid #222b33; background: #252f37; color: #8195a1; font-size: 13px; font-weight: 800; letter-spacing: 1px; }
+.file-group-heading { min-height: 34px; display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid #222b33; background: #252f37; color: #8195a1; font-size: 13px; font-weight: 800; letter-spacing: 1px; }
 .file-group-heading:not(:first-child) { border-top: 1px solid #1c252c; }
 .file-group-heading span { margin-left: 5px; color: #6d8791; }
-.group-open-all { flex: none; padding: 4px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; font-weight: 700; letter-spacing: 0; cursor: pointer; }
-.group-open-all:hover, .group-open-all:focus-visible { border-color: var(--theme-border); background: var(--theme-hover); color: var(--theme-text); }
+.group-disclosure { width: 22px; height: 24px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--theme-secondary); }
+.group-disclosure svg { width: 12px; height: 12px; transition: transform .12s ease; }
+.group-disclosure[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.group-disclosure:hover, .group-disclosure:focus-visible { background: var(--theme-hover); color: var(--theme-text); }
+.group-disclosure:focus-visible { outline: 1px solid var(--theme-accent); }
 .file-row { width: 100%; height: 37px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-bottom: 1px solid #222b33; text-align: left; color: #c3d0d8; background: #2d363e; font-size: 13px; }
 .file-row:last-child { border-bottom: 0; }
 .file-row:hover, .file-row.selected { background: #3b4850; }

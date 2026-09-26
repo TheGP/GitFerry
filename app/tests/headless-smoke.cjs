@@ -287,6 +287,14 @@ async function main() {
   }, name);
   assert.deepEqual(await groupExpanded("UNSTAGED"), ["true"]);
   assert.deepEqual(await groupExpanded("UNTRACKED"), ["true", "true"]);
+  const groupControl = await page.evaluate(() => {
+    const heading = [...document.querySelectorAll(".file-group-heading")].find(item => item.textContent.trim().startsWith("UNTRACKED"));
+    const button = heading.querySelector(".group-disclosure");
+    return { text: button.textContent.trim(), hasIcon: Boolean(button.querySelector("svg")), width: button.getBoundingClientRect().width, left: button.getBoundingClientRect().left, titleLeft: heading.querySelector(".file-group-title").getBoundingClientRect().left };
+  });
+  assert.equal(groupControl.text, "", "group toggle must not show Open all or Close all text");
+  assert.equal(groupControl.hasIcon, true);
+  assert.ok(groupControl.width <= 24 && groupControl.left < groupControl.titleLeft, "small toggle icon must be left of the group title");
   await page.click("button[aria-label='Close all unstaged changes']");
   assert.deepEqual(await groupExpanded("UNSTAGED"), ["false"]);
   assert.deepEqual(await groupExpanded("UNTRACKED"), ["true", "true"]);
