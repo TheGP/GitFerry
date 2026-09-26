@@ -96,7 +96,8 @@ button { cursor: pointer; }
 .working-row { min-height: 68px; padding: 0 14px 0 23px; align-items: center; gap: 14px; }
 .working-node { color: #70cbd0; font-size: 17px; }
 .commit-main { min-width: 0; flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
-.commit-main strong, .commit-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.commit-main strong, .commit-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 400; }
+.commit-row.selected .commit-subject { font-weight: 700; }
 .commit-main small { color: #83929f; font-size: 11px; }
 .count-badge { align-self: center; border-radius: 3px; padding: 2px 6px; color: #b8c7cf; background: #46535d; font-size: 10px; }
 .virtual-commits { position: relative; }
