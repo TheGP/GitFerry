@@ -297,12 +297,25 @@ async function main() {
   await page.waitForFunction(() => document.querySelector(".commit-scroll")?.textContent.includes("Test UI commit") || document.querySelector(".error-bar"));
   assert.ok((await page.$eval(".commit-scroll", element => element.textContent)).includes("Test UI commit"));
   await page.click(".search-box button");
+  const longBranch = "feat/x-mac-warmup-gologin-driver-visibility-check";
   await page.click(".branch-chip");
-  await page.locator(".branch-menu form input").fill("feature/ui-smoke");
+  await page.locator(".branch-menu form input").fill(longBranch);
   await page.click(".branch-menu form button");
-  await waitUntil(() => git(small, "branch", "--show-current") === "feature/ui-smoke", "branch creation").catch(async error => { throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}`); });
-  await page.waitForFunction(() => document.querySelector(".branch-chip")?.textContent.includes("feature/ui-smoke"));
-  assert.equal(git(small, "branch", "--show-current"), "feature/ui-smoke");
+  await waitUntil(() => git(small, "branch", "--show-current") === longBranch, "branch creation").catch(async error => { throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}`); });
+  await page.waitForFunction(branch => document.querySelector(".branch-name")?.textContent === branch, {}, longBranch);
+  assert.equal(git(small, "branch", "--show-current"), longBranch);
+  const branchFits = () => page.$eval(".branch-chip", chip => { const name = chip.querySelector(".branch-name"); return { text: name.textContent, clipped: name.scrollWidth > name.clientWidth || name.scrollHeight > name.clientHeight, chipRight: chip.getBoundingClientRect().right, viewport: innerWidth, document: document.documentElement.scrollWidth }; });
+  for (const width of [1429, 960]) {
+    await page.setViewport({ width, height: 918, deviceScaleFactor: 1 });
+    const layout = await branchFits();
+    assert.equal(layout.text, longBranch);
+    assert.equal(layout.clipped, false, `branch name must be fully visible at ${width}px`);
+    assert.ok(layout.chipRight <= layout.viewport, `branch chip must fit at ${width}px`);
+    assert.equal(layout.document, layout.viewport, `toolbar must not overflow at ${width}px`);
+    if (width === 1429) await page.screenshot({ path: path.join(screenshots, "long-branch-desktop.png") });
+  }
+  await page.screenshot({ path: path.join(screenshots, "long-branch-compact.png") });
+  await page.setViewport({ width: 1429, height: 918, deviceScaleFactor: 1 });
   await page.click(".branch-chip");
   await page.evaluate(() => [...document.querySelectorAll(".branch-menu-row button")].find(button => button.textContent.trim() === "main")?.click());
   await page.waitForFunction(() => document.querySelector(".branch-chip")?.textContent.includes("main"));
@@ -310,8 +323,8 @@ async function main() {
   await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
   await page.click(".branch-chip");
   page.once("dialog", dialog => dialog.accept());
-  await page.evaluate(() => [...document.querySelectorAll(".branch-menu-row")].find(row => row.textContent.includes("feature/ui-smoke"))?.querySelector(".branch-delete")?.click());
-  await waitUntil(() => !git(small, "branch", "--list", "feature/ui-smoke"), "branch deletion");
+  await page.evaluate(branch => [...document.querySelectorAll(".branch-menu-row")].find(row => row.textContent.includes(branch))?.querySelector(".branch-delete")?.click(), longBranch);
+  await waitUntil(() => !git(small, "branch", "--list", longBranch), "branch deletion");
   await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
   await page.click(".working-row");
   fs.writeFileSync(path.join(small, "base.txt"), "temporary unwanted change\n");

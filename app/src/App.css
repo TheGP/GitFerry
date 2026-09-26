@@ -27,21 +27,22 @@ button { cursor: pointer; }
 .toolbar-spacer { flex: 1; }
 .app-name { align-self: center; margin-right: 18px; color: #86919c; letter-spacing: 2px; font-size: 13px; font-weight: 800; }
 .app-name span { margin-left: 5px; color: #5c6873; letter-spacing: 1px; font-weight: 500; }
-.toolbar { height: 49px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 14px 0 6px; background: #252b32; border-bottom: 1px solid #14191e; white-space: nowrap; }
+.toolbar { min-height: 49px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 14px 0 6px; background: #252b32; border-bottom: 1px solid #14191e; white-space: nowrap; }
 .toolbar-icon { width: 35px; height: 32px; border: 0; border-radius: 4px; background: none; color: #9eacb9; font-size: 19px; }
 .toolbar-icon:hover, .toolbar-button:hover { background: #3b444d; }
 .layout-toggle { font-size: 17px; }
 .toolbar-title { color: #8c98a4; font-size: 13px; }
-.branch-chip { max-width: 210px; display: flex; gap: 8px; align-items: center; padding: 6px 11px; border-radius: 4px; background: #343e48; color: #dce9e9; font-size: 13px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.branch-chip span { color: #7bd3d5; font-size: 17px; }
+.branch-chip { max-width: 360px; display: flex; gap: 8px; align-items: center; padding: 6px 11px; border-radius: 4px; background: #343e48; color: #dce9e9; font-size: 13px; font-weight: 600; }
+.branch-icon { flex: none; color: #7bd3d5; font-size: 17px; }
+.branch-name { min-width: 0; overflow-wrap: anywhere; white-space: normal; text-align: left; }
 .branch-control { position: relative; flex: none; }
 .branch-chip { border: 0; cursor: pointer; }
 .branch-chip:hover { background: #3c4b54; }
-.branch-chip .branch-arrow { color: #839ba4; font-size: 13px; }
-.branch-menu { position: absolute; top: 37px; left: 0; width: 250px; padding: 12px; z-index: 8; border: 1px solid #50616a; border-radius: 5px; background: #2d363e; box-shadow: 0 16px 40px #0008; }
+.branch-chip .branch-arrow { flex: none; color: #839ba4; font-size: 13px; }
+.branch-menu { position: absolute; top: calc(100% + 4px); left: 0; width: min(420px, calc(100vw - 120px)); max-height: min(600px, 70vh); overflow-y: auto; padding: 12px; z-index: 8; border: 1px solid #50616a; border-radius: 5px; background: #2d363e; box-shadow: 0 16px 40px #0008; }
 .branch-menu .eyebrow { padding: 3px 4px 9px; font-size: 13px; }
 .branch-menu-row { display: flex; align-items: center; }
-.branch-menu-row button { flex: 1; border: 0; padding: 7px 5px; text-align: left; background: transparent; color: #c9d8dc; font-size: 13px; }
+.branch-menu-row button { flex: 1; min-width: 0; border: 0; padding: 7px 5px; text-align: left; overflow-wrap: anywhere; white-space: normal; background: transparent; color: #c9d8dc; font-size: 13px; }
 .branch-menu-row button:hover { background: #3b4c54; }
 .branch-menu-row .branch-delete { width: 25px; flex: none; text-align: center; color: #b3a09e; }
 .branch-menu form { display: flex; gap: 5px; margin-top: 11px; padding-top: 11px; border-top: 1px solid #45515a; }
@@ -335,7 +336,7 @@ button { cursor: pointer; }
 .toolbar-icon:hover, .toolbar-button:hover { background: var(--theme-hover); }
 .branch-chip, .toolbar-button, .search-box { background: var(--theme-raised); border-color: var(--theme-border); color: var(--theme-text); }
 .branch-chip:hover { background: var(--theme-hover); }
-.branch-chip span, .branch-chip .branch-arrow { color: var(--theme-accent); }
+.branch-icon, .branch-chip .branch-arrow { color: var(--theme-accent); }
 .branch-menu { background: var(--theme-modal); border-color: var(--theme-border); }
 .branch-menu-row button { color: var(--theme-text); }
 .branch-menu-row button:hover { background: var(--theme-hover); }
@@ -466,4 +467,4 @@ button { cursor: pointer; }
 .theme-control select { max-width: 142px; padding: 5px 17px 5px 3px; border: 0; outline: 0; background: var(--theme-chrome); color: var(--theme-text); font-size: 13px; cursor: pointer; }
 .theme-control select:focus-visible { outline: 1px solid var(--theme-accent); }
 .theme-control option { background: var(--theme-modal); color: var(--theme-text); }
-@media (max-width: 1100px) { .app-name, .theme-caption { display: none; } .theme-control { padding: 0 8px; } .theme-control select { max-width: 130px; } .toolbar { gap: 7px; } .toolbar-button:not(.primary) { padding: 0 7px; } .push-control .toolbar-button span, .toolbar-button[title="Stash"] span, .stash-control .toolbar-button span { display: inline; } .search-box { width: 145px; } }
+@media (max-width: 1100px) { .app-name, .theme-caption { display: none; } .theme-control { padding: 0 8px; } .theme-control select { max-width: 130px; } .toolbar { gap: 7px; } .branch-chip { max-width: 300px; } .toolbar-button:not(.primary) { padding: 0 7px; } .push-control .toolbar-button span, .toolbar-button[title="Stash"] span, .stash-control .toolbar-button span { display: inline; } .search-box { width: 145px; } }
