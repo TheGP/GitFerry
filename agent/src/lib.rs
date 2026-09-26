@@ -1,11 +1,16 @@
 use gitferry_proto::{
-    ChangedFile, CommitDetails, CommitSummary, DiffResult, RefEntry, RepoAction, RepoSnapshot,
-    RepoState, Request, Response, SearchResult, StatusEntry,
+    ChangedFile, CommitDetails, CommitSummary, DiffResult, RebaseCommit, RebaseStep, RefEntry,
+    RepoAction, RepoSnapshot, RepoState, Request, Response, SearchResult, StatusEntry,
 };
+use notify::{EventKind, RecursiveMode, Watcher};
 use std::collections::HashSet;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 const MAX_DIFF_BYTES: usize = 512 * 1024;
 
@@ -27,6 +32,8 @@ pub fn handle(request: Request) -> Response {
             limit,
         } => snapshot(&path, offset, limit).map(Response::Snapshot),
         Request::State { path } => state(&path).map(Response::State),
+        Request::Watch { path, timeout_ms } => watch(&path, timeout_ms).map(Response::Changed),
+        Request::RebasePlan { path, onto } => rebase_plan(&path, &onto).map(Response::RebasePlan),
         Request::Search {
             path,
             query,
@@ -36,11 +43,19 @@ pub fn handle(request: Request) -> Response {
         Request::CommitDetails { path, hash } => {
             commit_details(&path, &hash).map(Response::CommitDetails)
         }
-        Request::Diff { path, target, file } => diff(&path, &target, &file).map(Response::Diff),
+        Request::Diff {
+            path,
+            target,
+            file,
+            ignore_whitespace,
+        } => diff_with_options(&path, &target, &file, ignore_whitespace).map(Response::Diff),
         Request::Action {
             path,
             action: operation,
-        } => action(&path, operation).map(Response::Action),
+            cancel_token,
+        } => action_with_progress(&path, operation, cancel_token.as_deref(), |_| {})
+            .map(Response::Action),
+        Request::Cancel { token } => cancel_operation(&token).map(Response::Action),
     };
     result.unwrap_or_else(Response::Error)
 }
@@ -64,6 +79,182 @@ fn git(repo: &Path, args: &[&str]) -> Result<Output, String> {
     }
 }
 
+struct OperationMarker {
+    active: PathBuf,
+    cancel: PathBuf,
+}
+
+impl Drop for OperationMarker {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.active);
+        let _ = std::fs::remove_file(&self.cancel);
+    }
+}
+
+fn marker_paths(token: &str) -> Result<(PathBuf, PathBuf), String> {
+    if token.len() != 36
+        || !token.bytes().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        return Err("Invalid operation token".to_string());
+    }
+    let directory = std::env::temp_dir().join("gitferry-ops");
+    Ok((
+        directory.join(format!("{token}.active")),
+        directory.join(format!("{token}.cancel")),
+    ))
+}
+
+pub fn cancel_operation(token: &str) -> Result<String, String> {
+    let (active, cancel) = marker_paths(token)?;
+    if !active.is_file() {
+        return Err("Operation already finished".to_string());
+    }
+    std::fs::write(cancel, []).map_err(|error| error.to_string())?;
+    Ok("Cancelling operation".to_string())
+}
+
+fn git_with_progress(
+    repo: &Path,
+    args: &[&str],
+    cancel_token: Option<&str>,
+    progress: &mut impl FnMut(&str),
+) -> Result<Output, String> {
+    let marker = cancel_token
+        .map(|token| {
+            let (active, cancel) = marker_paths(token)?;
+            std::fs::create_dir_all(active.parent().ok_or("Invalid operation marker")?)
+                .map_err(|error| error.to_string())?;
+            let _ = std::fs::remove_file(&cancel);
+            std::fs::write(&active, []).map_err(|error| error.to_string())?;
+            Ok::<_, String>(OperationMarker { active, cancel })
+        })
+        .transpose()?;
+    let mut command = Command::new("git");
+    hide_console(&mut command);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+    }
+    let mut child = command
+        .arg("--no-optional-locks")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Cannot run Git: {error}"))?;
+    let mut stdout = child.stdout.take().ok_or("Git stdout unavailable")?;
+    let stderr_pipe = child.stderr.take().ok_or("Git stderr unavailable")?;
+    let child = Arc::new(Mutex::new(child));
+    let finished = Arc::new(AtomicBool::new(false));
+    let watcher = marker.as_ref().map(|marker| {
+        let child = Arc::clone(&child);
+        let finished = Arc::clone(&finished);
+        let cancel = marker.cancel.clone();
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::Relaxed) {
+                if cancel.is_file() {
+                    #[cfg(windows)]
+                    {
+                        let pid = child.lock().ok().map(|process| process.id());
+                        if let Some(pid) = pid {
+                            let mut command = Command::new(r"C:\Windows\System32\taskkill.exe");
+                            hide_console(&mut command);
+                            let _ = command
+                                .args(["/T", "/F", "/PID", &pid.to_string()])
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .status();
+                        }
+                    }
+                    #[cfg(unix)]
+                    if let Ok(process) = child.lock() {
+                        unsafe {
+                            libc::kill(-(process.id() as i32), libc::SIGKILL);
+                        }
+                    }
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+    });
+    let output_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let mut stderr = Vec::new();
+    let mut line = Vec::new();
+    let mut last = String::new();
+    let mut stream = std::io::BufReader::new(stderr_pipe);
+    let mut byte = [0];
+    let read_result = loop {
+        match stream.read(&mut byte) {
+            Ok(0) => break Ok(()),
+            Ok(_) => {
+                stderr.push(byte[0]);
+                if byte[0] == b'\r' || byte[0] == b'\n' {
+                    let message = text(&line).trim().to_string();
+                    if !message.is_empty() && message != last {
+                        progress(&message);
+                        last = message;
+                    }
+                    line.clear();
+                } else {
+                    line.push(byte[0]);
+                }
+            }
+            Err(error) => break Err(error.to_string()),
+        }
+    };
+    finished.store(true, Ordering::Relaxed);
+    if let Some(watcher) = watcher {
+        let _ = watcher.join();
+    }
+    read_result?;
+    let output = Output {
+        status: child
+            .lock()
+            .map_err(|error| error.to_string())?
+            .wait()
+            .map_err(|error| error.to_string())?,
+        stdout: output_reader
+            .join()
+            .map_err(|_| "Git stdout reader failed".to_string())?
+            .map_err(|error| error.to_string())?,
+        stderr,
+    };
+    if marker
+        .as_ref()
+        .is_some_and(|marker| marker.cancel.is_file())
+    {
+        return Err("Operation cancelled".to_string());
+    }
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(text(&output.stderr).trim().to_string())
+    }
+}
+
 fn repo_root(path: &str) -> Result<PathBuf, String> {
     let candidate = Path::new(path)
         .canonicalize()
@@ -76,6 +267,61 @@ fn repo_root(path: &str) -> Result<PathBuf, String> {
     PathBuf::from(root)
         .canonicalize()
         .map_err(|error| error.to_string())
+}
+
+pub fn watch(path: &str, timeout_ms: u64) -> Result<bool, String> {
+    let root = repo_root(path)?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut watcher = notify::recommended_watcher(sender).map_err(|error| error.to_string())?;
+    watcher
+        .watch(&root, RecursiveMode::Recursive)
+        .map_err(|error| error.to_string())?;
+    let git_dir = git(&root, &["rev-parse", "--absolute-git-dir"])?;
+    let git_dir = PathBuf::from(text(&git_dir.stdout).trim());
+    if !git_dir.starts_with(&root) {
+        watcher
+            .watch(&git_dir, RecursiveMode::Recursive)
+            .map_err(|error| error.to_string())?;
+    }
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(timeout_ms.clamp(1_000, 60_000));
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        match receiver.recv_timeout(remaining) {
+            Ok(Ok(event)) => {
+                if matches!(event.kind, EventKind::Access(_)) {
+                    continue;
+                }
+                let relevant = event.paths.is_empty()
+                    || event.paths.iter().any(|path| {
+                        let mut in_git_dir = false;
+                        for part in path.components() {
+                            let name = part.as_os_str().to_string_lossy();
+                            if name == "node_modules"
+                                || name == "target"
+                                || (in_git_dir && (name == "objects" || name == "logs"))
+                            {
+                                return false;
+                            }
+                            if name == ".git" {
+                                in_git_dir = true;
+                            }
+                        }
+                        true
+                    });
+                if relevant {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    return Ok(true);
+                }
+            }
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -99,6 +345,22 @@ fn head(repo: &Path) -> Option<String> {
     git(repo, &["rev-parse", "--verify", "HEAD"])
         .ok()
         .map(|output| text(&output.stdout).trim().to_string())
+}
+
+fn operation(repo: &Path) -> Option<String> {
+    let git_dir = git(repo, &["rev-parse", "--absolute-git-dir"]).ok()?;
+    let dir = PathBuf::from(text(&git_dir.stdout).trim());
+    if dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists() {
+        Some("rebase".to_string())
+    } else if dir.join("MERGE_HEAD").exists() {
+        Some("merge".to_string())
+    } else if dir.join("CHERRY_PICK_HEAD").exists() {
+        Some("cherry_pick".to_string())
+    } else if dir.join("REVERT_HEAD").exists() {
+        Some("revert".to_string())
+    } else {
+        None
+    }
 }
 
 fn status(repo: &Path) -> Result<Vec<StatusEntry>, String> {
@@ -300,6 +562,7 @@ pub fn snapshot(path: &str, offset: usize, limit: usize) -> Result<RepoSnapshot,
         refs: refs(&root, &current_branch)?,
         commits,
         has_more,
+        operation: operation(&root),
     })
 }
 
@@ -309,6 +572,7 @@ pub fn state(path: &str) -> Result<RepoState, String> {
         branch: branch(&root),
         head: head(&root),
         status: status(&root)?,
+        operation: operation(&root),
     })
 }
 
@@ -423,24 +687,34 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
 }
 
 pub fn diff(path: &str, target: &str, file: &str) -> Result<DiffResult, String> {
+    diff_with_options(path, target, file, false)
+}
+
+pub fn diff_with_options(
+    path: &str,
+    target: &str,
+    file: &str,
+    ignore_whitespace: bool,
+) -> Result<DiffResult, String> {
     let root = repo_root(path)?;
     let literal_file = literal_path(file)?;
+    let run_diff = |args: &[&str]| {
+        let mut args = args.to_vec();
+        if ignore_whitespace {
+            args.insert(1, "-w");
+        }
+        git(&root, &args)
+    };
     let output = match target {
-        "working" => git(
-            &root,
-            &["diff", "--no-ext-diff", "--no-color", "--", &literal_file],
-        )?,
-        "staged" => git(
-            &root,
-            &[
-                "diff",
-                "--cached",
-                "--no-ext-diff",
-                "--no-color",
-                "--",
-                &literal_file,
-            ],
-        )?,
+        "working" => run_diff(&["diff", "--no-ext-diff", "--no-color", "--", &literal_file])?,
+        "staged" => run_diff(&[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-color",
+            "--",
+            &literal_file,
+        ])?,
         "untracked" => {
             let file_path = root.join(file);
             let canonical = file_path
@@ -468,31 +742,25 @@ pub fn diff(path: &str, target: &str, file: &str) -> Result<DiffResult, String> 
                 .nth(1)
                 .map(str::to_string);
             if let Some(parent) = parent {
-                git(
-                    &root,
-                    &[
-                        "diff",
-                        "--no-ext-diff",
-                        "--no-color",
-                        &parent,
-                        hash,
-                        "--",
-                        &literal_file,
-                    ],
-                )?
+                run_diff(&[
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-color",
+                    &parent,
+                    hash,
+                    "--",
+                    &literal_file,
+                ])?
             } else {
-                git(
-                    &root,
-                    &[
-                        "show",
-                        "--format=",
-                        "--no-ext-diff",
-                        "--no-color",
-                        hash,
-                        "--",
-                        &literal_file,
-                    ],
-                )?
+                run_diff(&[
+                    "show",
+                    "--format=",
+                    "--no-ext-diff",
+                    "--no-color",
+                    hash,
+                    "--",
+                    &literal_file,
+                ])?
             }
         }
         _ => return Err("Invalid diff target".to_string()),
@@ -505,6 +773,161 @@ pub fn diff(path: &str, target: &str, file: &str) -> Result<DiffResult, String> 
 }
 
 pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
+    action_with_progress(path, action, None, |_| {})
+}
+
+pub fn rebase_plan(path: &str, onto: &str) -> Result<Vec<RebaseCommit>, String> {
+    let root = repo_root(path)?;
+    validate_branch(&root, onto)?;
+    let base = format!("refs/heads/{onto}");
+    git(&root, &["rev-parse", "--verify", &base])?;
+    let range = format!("{base}..HEAD");
+    if !git(&root, &["rev-list", "--merges", "-n", "1", &range])?
+        .stdout
+        .is_empty()
+    {
+        return Err("Interactive rebase currently supports linear history only".to_string());
+    }
+    let output = git(
+        &root,
+        &[
+            "log",
+            "--reverse",
+            "--topo-order",
+            "--format=%H%x00%s%x1e",
+            &range,
+        ],
+    )?;
+    let commits: Vec<RebaseCommit> = text(&output.stdout)
+        .split('\x1e')
+        .filter_map(|record| record.trim_start_matches(['\r', '\n']).split_once('\0'))
+        .map(|(hash, subject)| RebaseCommit {
+            hash: hash.to_string(),
+            subject: subject.trim_end_matches(['\r', '\n']).to_string(),
+        })
+        .collect();
+    if commits.is_empty() {
+        return Err(format!("No commits on this branch to rebase onto {onto}"));
+    }
+    Ok(commits)
+}
+
+struct TodoFile(PathBuf);
+
+impl Drop for TodoFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn interactive_rebase(
+    repo: &Path,
+    branch: &str,
+    onto: &str,
+    steps: &[RebaseStep],
+) -> Result<Output, String> {
+    if operation(repo).is_some() {
+        return Err("Finish or abort the current Git operation first".to_string());
+    }
+    if !text(&git(repo, &["status", "--porcelain"])?.stdout)
+        .trim()
+        .is_empty()
+    {
+        return Err("Commit or stash working changes before interactive rebase".to_string());
+    }
+    let current = git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map_err(|_| "Check out a branch before interactive rebase".to_string())?;
+    if text(&current.stdout).trim() != branch {
+        return Err("Current branch changed; reopen the rebase plan".to_string());
+    }
+    let expected = rebase_plan(&repo.to_string_lossy(), onto)?;
+    let known: HashSet<&str> = expected.iter().map(|item| item.hash.as_str()).collect();
+    let selected: HashSet<&str> = steps.iter().map(|item| item.hash.as_str()).collect();
+    if steps.len() != expected.len() || selected != known {
+        return Err("Rebase plan changed; reopen it before starting".to_string());
+    }
+    let mut todo = String::new();
+    let mut kept = false;
+    for step in steps {
+        match step.action.as_str() {
+            "pick" => kept = true,
+            "fixup" if kept => {}
+            "fixup" => return Err("Fixup needs an earlier picked commit".to_string()),
+            "drop" => {}
+            _ => return Err("Invalid rebase action".to_string()),
+        }
+        let subject = expected
+            .iter()
+            .find(|item| item.hash == step.hash)
+            .ok_or("Rebase plan changed; reopen it before starting")?
+            .subject
+            .replace(['\r', '\n'], " ");
+        todo.push_str(&format!("{} {} {}\n", step.action, step.hash, subject));
+    }
+    let file = std::env::temp_dir().join(format!(
+        "gitferry-rebase-{}-{}.todo",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos()
+    ));
+    let mut writer = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file)
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_all(todo.as_bytes())
+        .map_err(|error| error.to_string())?;
+    drop(writer);
+    let _cleanup = TodoFile(file.clone());
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable = executable.to_string_lossy().replace('\\', "/");
+    let file = file.to_string_lossy().replace('\\', "/");
+    let editor = format!(
+        "{} --write-todo {}",
+        shell_quote(&executable),
+        shell_quote(&file)
+    );
+    let base = format!("refs/heads/{onto}");
+    git(
+        repo,
+        &[
+            "-c",
+            &format!("sequence.editor={editor}"),
+            "-c",
+            "core.editor=true",
+            "rebase",
+            "--interactive",
+            "--no-autostash",
+            "--reapply-cherry-picks",
+            &base,
+        ],
+    )
+}
+
+pub fn write_rebase_todo(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err("Expected plan and Git todo paths".to_string());
+    }
+    let plan = std::fs::read(&args[0]).map_err(|error| error.to_string())?;
+    if plan.len() > 1024 * 1024 || plan.is_empty() {
+        return Err("Invalid rebase plan size".to_string());
+    }
+    std::fs::write(&args[1], plan).map_err(|error| error.to_string())
+}
+
+pub fn action_with_progress(
+    path: &str,
+    action: RepoAction,
+    cancel_token: Option<&str>,
+    mut progress: impl FnMut(&str),
+) -> Result<String, String> {
     let root = repo_root(path)?;
     let output = match action {
         RepoAction::StageAll => git(&root, &["add", "-A"])?,
@@ -564,10 +987,34 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
             }
             git(&root, &args)?
         }
-        RepoAction::Fetch => git(&root, &["fetch", "--all", "--progress"])?,
-        RepoAction::Pull => git(&root, &["pull", "--ff-only", "--progress"])?,
-        RepoAction::Push => git(&root, &["push", "--progress"])?,
-        RepoAction::ForcePushWithLease => force_push_with_lease(&root)?,
+        RepoAction::Fetch => git_with_progress(
+            &root,
+            &["fetch", "--all", "--progress"],
+            cancel_token,
+            &mut progress,
+        )?,
+        RepoAction::Pull => git_with_progress(
+            &root,
+            &["pull", "--ff-only", "--progress"],
+            cancel_token,
+            &mut progress,
+        )?,
+        RepoAction::PullMerge => git_with_progress(
+            &root,
+            &["pull", "--no-rebase", "--no-edit", "--progress"],
+            cancel_token,
+            &mut progress,
+        )?,
+        RepoAction::PullRebase => git_with_progress(
+            &root,
+            &["pull", "--rebase", "--progress"],
+            cancel_token,
+            &mut progress,
+        )?,
+        RepoAction::Push => push(&root, cancel_token, &mut progress)?,
+        RepoAction::ForcePushWithLease => {
+            force_push_with_lease(&root, cancel_token, &mut progress)?
+        }
         RepoAction::Checkout { branch } => {
             validate_branch(&root, &branch)?;
             git(&root, &["switch", &branch])?
@@ -583,6 +1030,93 @@ pub fn action(path: &str, action: RepoAction) -> Result<String, String> {
         RepoAction::Stash { message } => git(&root, &["stash", "push", "-u", "-m", &message])?,
         RepoAction::ApplyStash { hash } => restore_stash(&root, &hash, false)?,
         RepoAction::PopStash { hash } => restore_stash(&root, &hash, true)?,
+        RepoAction::Merge { branch } => {
+            validate_branch(&root, &branch)?;
+            git(&root, &["merge", "--no-edit", &branch])?
+        }
+        RepoAction::Rebase { branch } => {
+            validate_branch(&root, &branch)?;
+            git(&root, &["rebase", "--no-autostash", &branch])?
+        }
+        RepoAction::InteractiveRebase {
+            branch,
+            onto,
+            steps,
+        } => interactive_rebase(&root, &branch, &onto, &steps)?,
+        RepoAction::AbortOperation => match operation(&root).as_deref() {
+            Some("merge") => git(&root, &["merge", "--abort"])?,
+            Some("rebase") => git(&root, &["rebase", "--abort"])?,
+            Some("cherry_pick") => git(&root, &["cherry-pick", "--abort"])?,
+            Some("revert") => git(&root, &["revert", "--abort"])?,
+            _ => return Err("No merge, rebase, cherry-pick, or revert is in progress".to_string()),
+        },
+        RepoAction::ContinueOperation => match operation(&root).as_deref() {
+            Some("merge") => git(&root, &["-c", "core.editor=true", "merge", "--continue"])?,
+            Some("rebase") => git(&root, &["-c", "core.editor=true", "rebase", "--continue"])?,
+            Some("cherry_pick") => git(
+                &root,
+                &["-c", "core.editor=true", "cherry-pick", "--continue"],
+            )?,
+            Some("revert") => git(&root, &["-c", "core.editor=true", "revert", "--continue"])?,
+            _ => return Err("No merge, rebase, cherry-pick, or revert is in progress".to_string()),
+        },
+        RepoAction::CherryPick { hash } => {
+            if !valid_hash(&hash) {
+                return Err("Invalid commit ID".to_string());
+            }
+            git(&root, &["cherry-pick", &hash])?
+        }
+        RepoAction::Revert { hash } => {
+            if !valid_hash(&hash) {
+                return Err("Invalid commit ID".to_string());
+            }
+            git(&root, &["revert", "--no-edit", &hash])?
+        }
+        RepoAction::Reset { hash, mode } => {
+            if !valid_hash(&hash) {
+                return Err("Invalid commit ID".to_string());
+            }
+            let option = match mode.as_str() {
+                "soft" => "--soft",
+                "mixed" => "--mixed",
+                "hard" => "--hard",
+                _ => return Err("Invalid reset mode".to_string()),
+            };
+            git(&root, &["reset", option, &hash])?
+        }
+        RepoAction::Detach { hash } => {
+            if !valid_hash(&hash) {
+                return Err("Invalid commit ID".to_string());
+            }
+            git(&root, &["switch", "--detach", &hash])?
+        }
+        RepoAction::CreateTag { name, hash } => {
+            validate_tag(&root, &name)?;
+            if !valid_hash(&hash) {
+                return Err("Invalid commit ID".to_string());
+            }
+            git(&root, &["tag", &name, &hash])?
+        }
+        RepoAction::DeleteTag { name } => {
+            validate_tag(&root, &name)?;
+            git(&root, &["tag", "-d", &name])?
+        }
+        RepoAction::ResolveFile { path, side } => {
+            let path = literal_path(&path)?;
+            if git(&root, &["ls-files", "-u", "--", &path])?
+                .stdout
+                .is_empty()
+            {
+                return Err("This file has no unresolved merge entries".to_string());
+            }
+            let option = match side.as_str() {
+                "ours" => "--ours",
+                "theirs" => "--theirs",
+                _ => return Err("Invalid conflict side".to_string()),
+            };
+            git(&root, &["checkout", option, "--", &path])?;
+            git(&root, &["add", "--", &path])?
+        }
     };
     let stdout = text(&output.stdout);
     let stderr = text(&output.stderr);
@@ -772,7 +1306,11 @@ fn apply_lines(
     git_with_input(repo, apply_args, patch.as_bytes())
 }
 
-fn force_push_with_lease(repo: &Path) -> Result<Output, String> {
+fn force_push_with_lease(
+    repo: &Path,
+    cancel_token: Option<&str>,
+    progress: &mut impl FnMut(&str),
+) -> Result<Output, String> {
     let branch = git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
         .map(|output| text(&output.stdout).trim().to_string())
         .map_err(|_| "Select a branch before pushing".to_string())?;
@@ -797,7 +1335,7 @@ fn force_push_with_lease(repo: &Path) -> Result<Output, String> {
     {
         return Err(upstream_error());
     }
-    git(
+    git_with_progress(
         repo,
         &[
             "push",
@@ -807,7 +1345,79 @@ fn force_push_with_lease(repo: &Path) -> Result<Output, String> {
             &remote,
             &format!("HEAD:{target}"),
         ],
+        cancel_token,
+        progress,
     )
+}
+
+fn push(
+    repo: &Path,
+    cancel_token: Option<&str>,
+    progress: &mut impl FnMut(&str),
+) -> Result<Output, String> {
+    let branch = git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map(|output| text(&output.stdout).trim().to_string())
+        .map_err(|_| "Select a branch before pushing".to_string())?;
+    validate_branch(repo, &branch)?;
+    let remote_names = text(&git(repo, &["remote"])?.stdout);
+    let remotes: Vec<&str> = remote_names.lines().collect();
+    let configured = git(
+        repo,
+        &["config", "--get", &format!("branch.{branch}.remote")],
+    )
+    .ok()
+    .map(|output| text(&output.stdout).trim().to_string())
+    .unwrap_or_default();
+    let remote = if remotes.contains(&configured.as_str()) {
+        configured.as_str()
+    } else if remotes.contains(&"origin") {
+        "origin"
+    } else if remotes.len() == 1 {
+        remotes[0]
+    } else {
+        return Err("Choose one remote for this branch with 'git branch --set-upstream-to', or add an origin remote".to_string());
+    };
+    if remote.starts_with('-') {
+        return Err("Invalid remote name".to_string());
+    }
+    let merge = git(
+        repo,
+        &["config", "--get", &format!("branch.{branch}.merge")],
+    )
+    .ok()
+    .map(|output| text(&output.stdout).trim().to_string())
+    .unwrap_or_default();
+    let has_upstream = remote == configured
+        && merge.starts_with("refs/heads/")
+        && merge.len() > "refs/heads/".len();
+    let target = if has_upstream {
+        merge
+    } else {
+        format!("refs/heads/{branch}")
+    };
+    let refspec = format!("HEAD:{target}");
+    if has_upstream {
+        git_with_progress(
+            repo,
+            &["push", "--progress", "--no-follow-tags", remote, &refspec],
+            cancel_token,
+            progress,
+        )
+    } else {
+        git_with_progress(
+            repo,
+            &[
+                "push",
+                "--set-upstream",
+                "--progress",
+                "--no-follow-tags",
+                remote,
+                &refspec,
+            ],
+            cancel_token,
+            progress,
+        )
+    }
 }
 
 fn restore_stash(repo: &Path, hash: &str, pop: bool) -> Result<Output, String> {
@@ -874,4 +1484,11 @@ fn validate_branch(repo: &Path, branch: &str) -> Result<(), String> {
         return Err("Invalid branch name".to_string());
     }
     git(repo, &["check-ref-format", "--branch", branch]).map(|_| ())
+}
+
+fn validate_tag(repo: &Path, name: &str) -> Result<(), String> {
+    if name.is_empty() || name.starts_with('-') {
+        return Err("Invalid tag name".to_string());
+    }
+    git(repo, &["check-ref-format", &format!("refs/tags/{name}")]).map(|_| ())
 }

@@ -9,7 +9,7 @@ const readline = require("node:readline");
 const puppeteer = require("puppeteer-core");
 
 const project = path.resolve(__dirname, "../..");
-const agentPath = path.join(project, "target", "debug", process.platform === "win32" ? "gitferry-agent.exe" : "gitferry-agent");
+const agentPath = process.env.GITFERRY_AGENT_PATH || path.join(process.env.CARGO_TARGET_DIR || path.join(project, "target"), "debug", process.platform === "win32" ? "gitferry-agent.exe" : "gitferry-agent");
 const chromePath = process.env.CHROME_PATH || (process.platform === "win32" ? "C:/Program Files/Google/Chrome/Application/chrome.exe" : "/usr/bin/google-chrome");
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "gitferry-headless-"));
 const screenshots = path.join(sandbox, "screenshots");
@@ -17,6 +17,7 @@ fs.mkdirSync(screenshots);
 let browser, vite, agent;
 let nextId = 0;
 const pending = new Map();
+const progressEvents = [];
 
 function git(cwd, ...args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -59,8 +60,57 @@ function makeLineRepo() {
   return folder;
 }
 
+function makeWhitespaceRepo() {
+  const folder = path.join(sandbox, "whitespace");
+  fs.mkdirSync(folder);
+  git(folder, "init", "-b", "main");
+  git(folder, "config", "user.name", "GitFerry Test");
+  git(folder, "config", "user.email", "gitferry@example.test");
+  fs.writeFileSync(path.join(folder, "space.txt"), "alpha beta\nkeep\n");
+  git(folder, "add", "space.txt");
+  git(folder, "commit", "-m", "Initial whitespace");
+  fs.writeFileSync(path.join(folder, "space.txt"), "alpha    beta\nkeep\n");
+  return folder;
+}
+
+function makeConflictRepo() {
+  const folder = path.join(sandbox, "conflicts");
+  fs.mkdirSync(folder);
+  git(folder, "init", "-b", "main");
+  git(folder, "config", "user.name", "GitFerry Test");
+  git(folder, "config", "user.email", "gitferry@example.test");
+  fs.writeFileSync(path.join(folder, "shared.txt"), "base\n");
+  git(folder, "add", ".");
+  git(folder, "commit", "-m", "Base");
+  git(folder, "switch", "-c", "topic");
+  fs.writeFileSync(path.join(folder, "shared.txt"), "topic\n");
+  git(folder, "commit", "-am", "Topic");
+  git(folder, "switch", "main");
+  fs.writeFileSync(path.join(folder, "shared.txt"), "main\n");
+  git(folder, "commit", "-am", "Main");
+  return folder;
+}
+
+function makeRebaseRepo() {
+  const folder = path.join(sandbox, "rebase-plan");
+  fs.mkdirSync(folder);
+  git(folder, "init", "-b", "main");
+  git(folder, "config", "user.name", "GitFerry Test");
+  git(folder, "config", "user.email", "gitferry@example.test");
+  fs.writeFileSync(path.join(folder, "base.txt"), "base\n");
+  git(folder, "add", ".");
+  git(folder, "commit", "-m", "Base");
+  git(folder, "switch", "-c", "topic");
+  for (const [name, subject] of [["a", "Add A"], ["b", "Add B"], ["c", "Add C"]]) {
+    fs.writeFileSync(path.join(folder, `${name}.txt`), `${name}\n`);
+    git(folder, "add", ".");
+    git(folder, "commit", "-m", subject);
+  }
+  return folder;
+}
+
 async function clickChangedLine(page, text, shift = false) {
-  const label = await page.evaluate(value => [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === value)?.querySelector("button.line-number")?.getAttribute("aria-label"), text);
+  const label = await page.evaluate(value => [...document.querySelectorAll(".diff-line")].find(row => row.dataset.copyPrefix === value[0] && row.querySelector(".line-text")?.textContent === value.slice(1))?.querySelector("button.line-number")?.getAttribute("aria-label"), text);
   assert.ok(label, `Selectable line ${text} must exist`);
   if (shift) await page.keyboard.down("Shift");
   await page.click(`button[aria-label='${label}'] .${label.startsWith("Select old") ? "old-line" : "new-line"}`);
@@ -77,13 +127,22 @@ function rpc(method, params) {
 
 async function bridge(command, args) {
   if (command.startsWith("plugin:event|")) return 1;
+  if (command === "repo_watch") return new Promise((resolve, reject) => {
+    let watcher, timer;
+    try {
+      watcher = fs.watch(args.path, { recursive: true }, () => { clearTimeout(timer); watcher.close(); resolve(true); });
+      timer = setTimeout(() => { watcher.close(); resolve(false); }, 5000);
+    } catch (error) { reject(error); }
+  });
   const commands = {
     repo_snapshot: ["snapshot", { path: args.path, offset: args.offset, limit: 100 }],
     repo_state: ["state", { path: args.path }],
+    repo_rebase_plan: ["rebase_plan", { path: args.path, onto: args.onto }],
     repo_search: ["search", { path: args.path, query: args.query, offset: args.offset, limit: 100 }],
     repo_commit: ["commit_details", { path: args.path, hash: args.hash }],
-    repo_diff: ["diff", { path: args.path, target: args.target, file: args.file }],
-    repo_action: ["action", { path: args.path, action: args.operation }],
+    repo_diff: ["diff", { path: args.path, target: args.target, file: args.file, ignore_whitespace: args.ignoreWhitespace ?? false }],
+    repo_action: ["action", { path: args.path, action: args.operation, cancel_token: args.cancelToken }],
+    repo_cancel: ["cancel", { token: args.token }],
   };
   const entry = commands[command];
   if (!entry) throw new Error(`Unknown command ${command}`);
@@ -127,6 +186,13 @@ async function openRepo(page, folder) {
   await page.waitForFunction(value => document.querySelector(".statusbar")?.textContent.includes(value), {}, folder);
 }
 
+async function openSummaryFile(page, file, target) {
+  await page.click(".details-tab:first-child");
+  await page.waitForFunction(({ file, target }) => [...document.querySelectorAll(".summary-diff-card")].some(card => card.querySelector(".file-path")?.textContent === file && Boolean(card.querySelector(".file-tag")) === (target === "STAGED")), {}, { file, target });
+  await page.evaluate(({ file, target }) => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === file && Boolean(card.querySelector(".file-tag")) === (target === "STAGED"))?.querySelector(".summary-open-tab")?.click(), { file, target });
+  await page.waitForFunction(value => document.querySelector(".diff-heading-target")?.textContent === value, {}, target);
+}
+
 async function metrics(page) {
   return page.evaluate(() => {
     const rect = selector => { const r = document.querySelector(selector)?.getBoundingClientRect(); return r && { top: r.top, bottom: r.bottom, height: r.height }; };
@@ -139,8 +205,12 @@ async function main() {
   assert.ok(fs.existsSync(agentPath), `Build ${agentPath} first`);
   assert.ok(fs.existsSync(chromePath), `Chrome not found at ${chromePath}`);
   const small = makeRepo("small");
+  fs.writeFileSync(path.join(small, "another-untracked.txt"), "second new file\n");
   const large = makeRepo("large", true);
   const lineRepo = makeLineRepo();
+  const whitespaceRepo = makeWhitespaceRepo();
+  const conflictRepo = makeConflictRepo();
+  const rebaseRepo = makeRebaseRepo();
   const remote = path.join(sandbox, "remote.git");
   fs.mkdirSync(remote);
   git(remote, "init", "--bare", "-b", "main");
@@ -149,9 +219,14 @@ async function main() {
   agent = spawn(agentPath, [], { cwd: project, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
   readline.createInterface({ input: agent.stdout }).on("line", line => {
     const response = JSON.parse(line);
+    if (response.kind === "progress") { progressEvents.push(response.value); return; }
     const waiter = pending.get(response.id);
     if (waiter) { pending.delete(response.id); waiter.resolve(response); }
   });
+  const plainWhitespace = await rpc("diff", { path: whitespaceRepo, target: "working", file: "space.txt" });
+  const ignoredWhitespace = await rpc("diff", { path: whitespaceRepo, target: "working", file: "space.txt", ignore_whitespace: true });
+  assert.match(plainWhitespace.value.text, /alpha    beta/);
+  assert.equal(ignoredWhitespace.value.text, "", "ignore-whitespace diff must hide whitespace-only edits");
   const vitePath = path.join(project, "app/node_modules/vite/bin/vite.js");
   vite = spawn(process.execPath, [vitePath, "--host", "127.0.0.1"], { cwd: path.join(project, "app"), windowsHide: true, stdio: "ignore" });
   await waitForServer("http://127.0.0.1:1420/");
@@ -194,6 +269,26 @@ async function main() {
   await page.waitForSelector(".open-modal");
   await page.keyboard.press("Escape");
   await openRepo(page, small);
+  const groupExpanded = name => page.evaluate(groupName => {
+    const heading = [...document.querySelectorAll(".file-group-heading")].find(item => item.textContent.trim().startsWith(groupName));
+    if (!heading) return null;
+    const rows = [];
+    for (let node = heading.nextElementSibling; node && !node.classList.contains("file-group-heading"); node = node.nextElementSibling) {
+      const row = node.querySelector(".file-row");
+      if (row) rows.push(row.getAttribute("aria-expanded"));
+    }
+    return rows;
+  }, name);
+  assert.deepEqual(await groupExpanded("UNSTAGED"), ["true"]);
+  assert.deepEqual(await groupExpanded("UNTRACKED"), ["true", "true"]);
+  await page.click("button[aria-label='Close all unstaged changes']");
+  assert.deepEqual(await groupExpanded("UNSTAGED"), ["false"]);
+  assert.deepEqual(await groupExpanded("UNTRACKED"), ["true", "true"]);
+  await page.click("button[aria-label='Close all untracked changes']");
+  assert.deepEqual(await groupExpanded("UNTRACKED"), ["false", "false"]);
+  await page.click("button[aria-label='Open all unstaged changes']");
+  await page.click("button[aria-label='Open all untracked changes']");
+  await page.screenshot({ path: path.join(screenshots, "summary-open-groups.png") });
   const textSizes = await page.evaluate(() => Object.fromEntries([
     ".commit-editor-actions label", ".commit-editor-actions button", ".commit-editor textarea",
     ".file-row", ".commit-meta", ".section-heading", ".statusbar",
@@ -201,15 +296,18 @@ async function main() {
   for (const [selector, size] of Object.entries(textSizes)) assert.ok(size >= 13, `${selector} must be readable: ${size}px`);
   assert.ok(textSizes[".commit-editor-actions label"] >= 14, "amend control must use larger text");
   assert.ok(textSizes[".commit-editor-actions button"] >= 14, "commit button must use larger text");
-  await page.click(".file-row");
   await page.waitForSelector(".diff-line");
+  await page.click(".whitespace-toggle");
+  await page.waitForFunction(() => document.querySelector(".whitespace-toggle")?.getAttribute("aria-pressed") === "true");
+  assert.equal(await page.$$(".hunk-action").then(items => items.length), 0, "filtered hunks must not be stageable");
+  await page.click(".whitespace-toggle");
+  await page.waitForSelector(".hunk-action");
   assert.ok(await page.$eval(".details-tab:first-child", tab => tab.classList.contains("active")), "opening a Summary file must keep Summary active");
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true");
   assert.match(await page.$eval(".diff-content", element => element.innerText), /two changed|new file/);
   await page.click(".file-row");
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "false");
   await page.click(".file-row");
-  await page.waitForSelector(".diff-line");
   await page.click(".hunk-action");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("STAGED ")) || document.querySelector(".error-bar"));
   assert.ok(git(small, "diff", "--cached", "--", "base.txt").includes("two changed"), JSON.stringify({ status: git(small, "status", "--short"), error: await page.$eval(".error-bar", item => item.textContent).catch(() => "") }));
@@ -230,24 +328,26 @@ async function main() {
   await page.click(".file-actions button");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("UNSTAGED ")));
   await waitForAction(page);
-  await page.click(".details-tab:nth-child(2)");
-  await page.waitForSelector(".all-diff-card");
-  await page.click(".files-heading button");
-  await page.click(".files-heading button");
-  await page.click(".details-tab:first-child");
-  assert.equal(await page.$eval(".files-heading button", item => item.textContent.trim()), "Stage All");
-  await page.click(".files-heading button");
+  assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "changes must use one Summary tab");
+  await page.click(".files-heading button:not(.whitespace-toggle)");
+  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "false");
+  await page.click(".files-heading button:not(.whitespace-toggle)");
+  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true");
+  assert.equal(await page.$eval(".files-heading button:last-child", item => item.textContent.trim()), "Stage All");
+  await page.click(".files-heading button:last-child");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("STAGED ")) || document.querySelector(".error-bar"));
   assert.ok(git(small, "diff", "--cached", "--name-only"), await page.$eval(".error-bar", item => item.textContent).catch(() => "Stage All did not stage files"));
   await waitForAction(page);
   await page.locator(".commit-editor textarea").fill("Test UI commit");
-  await page.locator(".commit-editor-actions button").click();
+  await shortcut(page, "Enter");
   await page.waitForFunction(() => document.querySelector(".commit-subject")?.textContent.includes("Test UI commit"));
   assert.equal(git(small, "log", "-1", "--pretty=%s"), "Test UI commit");
+  await waitForAction(page);
   await page.click("button[title='Push']");
   await page.waitForFunction(() => document.querySelector(".notice-bar")?.textContent.includes("main"));
   await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
   assert.equal(git(remote, "rev-parse", "refs/heads/main"), git(small, "rev-parse", "HEAD"));
+  assert.ok(progressEvents.length, "Git transfer progress must stream before the final RPC response");
   const other = path.join(sandbox, "other");
   git(sandbox, "clone", remote, other);
   git(other, "config", "user.name", "GitFerry Test");
@@ -296,7 +396,9 @@ async function main() {
   await page.waitForFunction(() => document.querySelector(".commits-pane .pane-heading")?.textContent.includes("SEARCH RESULTS"));
   await page.waitForFunction(() => document.querySelector(".commit-scroll")?.textContent.includes("Test UI commit") || document.querySelector(".error-bar"));
   assert.ok((await page.$eval(".commit-scroll", element => element.textContent)).includes("Test UI commit"));
+  assert.equal(await page.$$(".graph-canvas").then(items => items.length), 0, "Search results must not show partial graph lanes");
   await page.click(".search-box button");
+  await page.waitForSelector(".graph-canvas");
   const longBranch = "feat/x-mac-warmup-gologin-driver-visibility-check";
   await page.click(".branch-chip");
   await page.locator(".branch-menu form input").fill(longBranch);
@@ -304,6 +406,12 @@ async function main() {
   await waitUntil(() => git(small, "branch", "--show-current") === longBranch, "branch creation").catch(async error => { throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}`); });
   await page.waitForFunction(branch => document.querySelector(".branch-name")?.textContent === branch, {}, longBranch);
   assert.equal(git(small, "branch", "--show-current"), longBranch);
+  await waitForAction(page);
+  await page.click("button[title='Push']");
+  await waitUntil(() => git(remote, "branch", "--list", longBranch).includes(longBranch), "new branch push");
+  assert.equal(git(remote, "rev-parse", `refs/heads/${longBranch}`), git(small, "rev-parse", "HEAD"));
+  await waitForAction(page);
+  assert.equal(git(small, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"), `origin/${longBranch}`);
   const branchFits = () => page.$eval(".branch-chip", chip => { const name = chip.querySelector(".branch-name"); return { text: name.textContent, clipped: name.scrollWidth > name.clientWidth || name.scrollHeight > name.clientHeight, chipRight: chip.getBoundingClientRect().right, viewport: innerWidth, document: document.documentElement.scrollWidth }; });
   for (const width of [1429, 960]) {
     await page.setViewport({ width, height: 918, deviceScaleFactor: 1 });
@@ -340,7 +448,9 @@ async function main() {
   await page.waitForFunction(() => [...document.querySelectorAll(".file-row")].some(row => row.textContent.includes("stash.tmp")));
   page.once("dialog", dialog => dialog.accept("Headless stash"));
   await page.click("button[title='Stash']");
-  await waitUntil(() => git(small, "status", "--porcelain") === "", "stash");
+  await waitUntil(() => git(small, "status", "--porcelain") === "", "stash").catch(async error => {
+    throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}; status=${git(small, "status", "--short")}`);
+  });
   assert.match(git(small, "stash", "list", "-1"), /Headless stash/);
   await page.waitForFunction(() => !document.querySelector("button[title='Unstash']")?.disabled);
   await page.select(".theme-control select", "claude");
@@ -362,10 +472,75 @@ async function main() {
   assert.equal(fs.readFileSync(path.join(small, "stash.tmp"), "utf8"), "temporary stash\n");
   await page.evaluate(() => [...document.querySelectorAll(".commit-row")].find(button => button.textContent.includes("Test UI commit"))?.click());
   await page.waitForFunction(() => document.querySelector(".detail-header h2")?.textContent.includes("Test UI commit"));
-  await page.click(".file-row");
   await page.waitForSelector(".diff-line");
   assert.ok(await page.$eval(".details-tab:first-child", tab => tab.classList.contains("active")), "committed file must expand in Summary");
   await page.screenshot({ path: path.join(screenshots, "small-commit.png") });
+
+  await openRepo(page, conflictRepo);
+  await page.click("button[title='More pull options']");
+  assert.match(await page.$eval(".push-menu", item => item.textContent), /Pull with merge/);
+  assert.match(await page.$eval(".push-menu", item => item.textContent), /Pull with rebase/);
+  await page.click(".branch-chip");
+  page.once("dialog", dialog => dialog.accept());
+  await page.click("button[title='Rebase main onto topic']");
+  await page.waitForFunction(() => document.querySelector(".operation-panel")?.textContent.includes("rebase"));
+  await page.waitForFunction(() => !document.querySelector(".operation-buttons button:last-child")?.disabled);
+  assert.equal(git(conflictRepo, "status", "--porcelain").includes("UU shared.txt"), true);
+  await page.screenshot({ path: path.join(screenshots, "rebase-conflict.png") });
+  page.once("dialog", dialog => dialog.accept());
+  await page.click(".operation-buttons button:last-child");
+  await page.waitForFunction(() => !document.querySelector(".operation-panel"));
+  await waitForAction(page);
+  assert.equal(git(conflictRepo, "branch", "--show-current"), "main");
+  await page.click(".branch-chip");
+  page.once("dialog", dialog => dialog.accept());
+  await page.click("button[title='Merge topic into main']");
+  await page.waitForFunction(() => document.querySelector(".operation-panel")?.textContent.includes("merge"));
+  await page.waitForFunction(() => !document.querySelector(".conflict-row button:first-of-type")?.disabled);
+  page.once("dialog", dialog => dialog.accept());
+  await page.click(".conflict-row button:first-of-type");
+  await page.waitForFunction(() => document.querySelector(".operation-panel")?.textContent.includes("All conflicts resolved"));
+  await page.waitForFunction(() => !document.querySelector(".operation-buttons button:first-child")?.disabled);
+  assert.equal(fs.readFileSync(path.join(conflictRepo, "shared.txt"), "utf8"), "main\n");
+  await page.click(".operation-buttons button:first-child");
+  await page.waitForFunction(() => !document.querySelector(".operation-panel"));
+  await waitForAction(page);
+  assert.equal(git(conflictRepo, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").length, 3);
+  await page.click(".commit-row");
+  await page.waitForSelector(".commit-actions summary");
+  await page.click(".commit-actions summary");
+  page.once("dialog", dialog => dialog.accept("ui-test-tag"));
+  await page.evaluate(() => [...document.querySelectorAll(".commit-actions button")].find(button => button.textContent === "Create tag")?.click());
+  await page.waitForFunction(() => document.querySelector(".commit-actions")?.textContent.includes("Delete tag ui-test-tag"));
+  assert.equal(git(conflictRepo, "rev-parse", "refs/tags/ui-test-tag"), git(conflictRepo, "rev-parse", "HEAD"));
+  await page.waitForFunction(() => ![...document.querySelectorAll(".commit-actions button")].find(button => button.textContent === "Delete tag ui-test-tag")?.disabled);
+  page.once("dialog", dialog => dialog.accept());
+  await page.evaluate(() => [...document.querySelectorAll(".commit-actions button")].find(button => button.textContent === "Delete tag ui-test-tag")?.click());
+  await waitUntil(() => !git(conflictRepo, "tag", "--list", "ui-test-tag"), "delete tag");
+  await waitForAction(page);
+  await page.click(".repo-tab:nth-child(2) .tab-close");
+
+  await openRepo(page, rebaseRepo);
+  await page.click(".branch-chip");
+  await page.click("button[title='Plan an interactive rebase onto main']");
+  await page.waitForSelector(".rebase-modal .rebase-step:nth-child(3)");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".rebase-modal"));
+  await page.click(".branch-chip");
+  await page.click("button[title='Plan an interactive rebase onto main']");
+  await page.waitForSelector(".rebase-modal .rebase-step:nth-child(3)");
+  assert.match(await page.$eval(".rebase-intro", element => element.textContent), /topic onto main/);
+  await page.click(".rebase-step:nth-child(2) .rebase-move button:first-child");
+  assert.match(await page.$eval(".rebase-step:first-child", element => element.textContent), /Add B/);
+  await page.select(".rebase-step:first-child select", "drop");
+  await page.select(".rebase-step:nth-child(3) select", "fixup");
+  await page.screenshot({ path: path.join(screenshots, "interactive-rebase-plan.png") });
+  await page.click(".rebase-start");
+  await waitForAction(page);
+  await waitUntil(() => git(rebaseRepo, "log", "--format=%s", "main..topic") === "Add A", "interactive rebase");
+  assert.equal(fs.existsSync(path.join(rebaseRepo, "b.txt")), false, "dropped commit must not appear");
+  assert.equal(fs.readFileSync(path.join(rebaseRepo, "c.txt"), "utf8"), "c\n", "fixup content must be kept");
+  await page.click(".repo-tab:nth-child(2) .tab-close");
 
   await openRepo(page, large);
   assert.equal(await page.$$eval(".notice-bar", items => items.length), 0, "switching repositories must clear old action notices");
@@ -387,20 +562,22 @@ async function main() {
   await page.screenshot({ path: path.join(screenshots, "large-summary.png") });
   const start = Date.now();
   await page.click(".file-row");
+  await page.click(".file-row");
   await page.waitForSelector(".diff-line");
   const fileClickMs = Date.now() - start;
   const after = await metrics(page);
   assert.equal(after.footer.bottom, after.viewport, "file diff must not move footer");
   await page.screenshot({ path: path.join(screenshots, "large-diff.png") });
   const allStart = Date.now();
-  await page.click(".details-tab:nth-child(2)");
-  await page.waitForSelector(".all-diff-card");
+  await page.click(".files-heading button:not(.whitespace-toggle)");
+  await page.click(".files-heading button:not(.whitespace-toggle)");
   const allClickMs = Date.now() - allStart;
+  assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "Summary and All Changes must share one tab");
   await page.waitForFunction(() => document.querySelectorAll(".all-diff-card .diff-content").length > 0);
   await page.evaluate(() => { const pane = document.querySelector(".details-scroll"); pane.scrollTop = pane.scrollHeight; });
   await page.waitForFunction(() => [...document.querySelectorAll(".all-diff-card")].at(-1)?.querySelector(".diff-content"));
   await page.evaluate(() => { document.querySelector(".details-scroll").scrollTop = 0; });
-  await page.screenshot({ path: path.join(screenshots, "large-all-changes.png") });
+  await page.screenshot({ path: path.join(screenshots, "large-merged-changes.png") });
   for (const selectedTheme of ["vscode", "sublime", "antigravity", "claude"]) {
     await page.select(".theme-control select", selectedTheme);
     assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), selectedTheme);
@@ -439,13 +616,13 @@ async function main() {
   const gutterNumbers = await page.evaluate(() => {
     const values = ["diff --git a/lines.txt b/lines.txt", " line 1", "-line 3", "+NEW 3", " line 4", "-line 25", "+NEW 25"];
     return values.map(value => {
-      const row = [...document.querySelectorAll(".diff-line")].find(item => item.querySelector(".line-text")?.textContent === value);
+      const row = [...document.querySelectorAll(".diff-line")].find(item => item.dataset.copyPrefix === (value.startsWith("diff --git") ? "" : value[0]) && item.querySelector(".line-text")?.textContent === (value.startsWith("diff --git") ? value : value.slice(1)));
       return [row?.querySelector(".old-line")?.textContent ?? null, row?.querySelector(".new-line")?.textContent ?? null];
     });
   });
   assert.deepEqual(gutterNumbers, [["", ""], ["1", "1"], ["3", ""], ["", "3"], ["4", "4"], ["25", ""], ["", "25"]], "diff gutter must show old and new file line numbers");
   const dragLines = await page.evaluate(() => ["-line 3", "+NEW 3"].map(value => {
-    const rect = [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === value)?.querySelector("button.line-number")?.getBoundingClientRect();
+    const rect = [...document.querySelectorAll(".diff-line")].find(row => row.dataset.copyPrefix === value[0] && row.querySelector(".line-text")?.textContent === value.slice(1))?.querySelector("button.line-number")?.getBoundingClientRect();
     return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
   }));
   await page.mouse.move(dragLines[0].x, dragLines[0].y);
@@ -472,7 +649,7 @@ async function main() {
   assert.ok(!git(lineRepo, "diff", "--cached").includes("-line 3"), "adjacent deleted line must remain unstaged");
   assert.ok(!git(lineRepo, "diff", "--cached").includes("NEW 25"), "other hunk must remain unstaged");
   await waitForAction(page);
-  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => !card.querySelector(".file-tag"))?.querySelector(".summary-open-tab")?.click());
+  await openSummaryFile(page, "lines.txt", "UNSTAGED");
   await page.waitForSelector("button.line-number.selectable");
   await clickChangedLine(page, "-line 25");
   await clickChangedLine(page, "+NEW 25", true);
@@ -481,28 +658,31 @@ async function main() {
   await waitUntil(() => git(lineRepo, "diff", "--cached").includes("+NEW 25"), "range line staging");
   assert.ok(git(lineRepo, "diff", "--cached").includes("-line 25"), "selected deletion must stage with selected addition");
   await waitForAction(page);
-  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => !card.querySelector(".file-tag"))?.querySelector(".summary-open-tab")?.click());
+  await openSummaryFile(page, "lines.txt", "UNSTAGED");
   await page.waitForSelector("button.line-number.selectable");
   await clickChangedLine(page, "+++prefixed");
   await page.click(".stage-lines");
   await waitUntil(() => git(lineRepo, "diff", "--cached").includes("+++prefixed"), "stage prefixed source line");
   assert.ok(!git(lineRepo, "diff", "--cached").includes("-line 15"), "unselected replacement line must remain unstaged");
   await waitForAction(page);
-  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-tag") && card.querySelector(".file-path")?.textContent === "lines.txt")?.querySelector(".summary-open-tab")?.click());
-  await page.waitForSelector("button.line-number.selectable");
+  await openSummaryFile(page, "lines.txt", "STAGED");
+  await page.waitForFunction(() => document.querySelector(".diff-heading-target")?.textContent === "STAGED" && [...document.querySelectorAll(".diff-content .diff-line.added")].some(row => row.querySelector(".line-text")?.textContent === "NEW 3"), { timeout: 8000 }).catch(async error => {
+    const ui = await page.evaluate(() => ({ target: document.querySelector(".diff-heading-target")?.textContent, rows: [...document.querySelectorAll(".diff-content .diff-line")].map(row => [row.className, row.dataset.copyPrefix, row.querySelector(".line-text")?.textContent]).slice(0, 30), cards: [...document.querySelectorAll(".summary-diff-card")].map(card => [card.querySelector(".file-path")?.textContent, card.querySelector(".file-tag")?.textContent]), error: document.querySelector(".error-bar")?.textContent }));
+    throw new Error(`${error.message}: ui=${JSON.stringify(ui)} cached=${git(lineRepo, "diff", "--cached", "--", "lines.txt")}`);
+  });
   await clickChangedLine(page, "+NEW 3");
   assert.match(await page.$eval(".line-selection-toolbar .stage-lines", button => button.textContent), /Unstage Lines/);
   await page.click(".stage-lines");
   await waitUntil(() => !git(lineRepo, "diff", "--cached").includes("+NEW 3"), "line unstaging");
   await waitForAction(page);
-  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => !card.querySelector(".file-tag") && card.querySelector(".file-path")?.textContent === "lines.txt")?.querySelector(".summary-open-tab")?.click());
-  await page.waitForSelector("button.line-number.selectable");
+  await openSummaryFile(page, "lines.txt", "UNSTAGED");
+  await page.waitForFunction(() => document.querySelector(".diff-heading-target")?.textContent === "UNSTAGED" && [...document.querySelectorAll(".diff-content .diff-line.added")].some(row => row.querySelector(".line-text")?.textContent === "NEW 3"));
   await clickChangedLine(page, "+NEW 3");
   page.once("dialog", dialog => dialog.accept());
   await page.click(".discard-selection");
   await waitUntil(() => !fs.readFileSync(path.join(lineRepo, "lines.txt"), "utf8").includes("NEW 3"), "discard selected line");
   await waitForAction(page);
-  await page.evaluate(() => [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === "-line 15")?.querySelector(".line-text")?.click());
+  await page.evaluate(() => [...document.querySelectorAll(".diff-line")].find(row => row.dataset.copyPrefix === "-" && row.querySelector(".line-text")?.textContent === "line 15")?.querySelector(".line-text")?.click());
   assert.equal(await page.$eval(".line-selection-toolbar", element => element.dataset.mode), "hunk");
   assert.match(await page.$eval(".line-selection-toolbar", element => element.textContent), /Hunk 2 of \d+/);
   page.once("dialog", dialog => dialog.accept());
@@ -515,10 +695,11 @@ async function main() {
     await openRepo(page, realPath);
     const realStart = Date.now();
     await page.click(".commit-row");
-    await page.waitForFunction(() => document.querySelector(".detail-header h2")?.textContent !== "Uncommitted changes");
+    await page.waitForSelector(".detail-header h2");
     await page.waitForSelector(".file-row");
     const commitMs = Date.now() - realStart;
     const diffStart = Date.now();
+    await page.click(".file-row");
     await page.click(".file-row");
     await page.waitForSelector(".diff-line");
     const diffMs = Date.now() - diffStart;
@@ -537,7 +718,7 @@ main().catch(error => { console.error(error); process.exitCode = 1; }).finally(a
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["small", "large", "lines", "other", "remote.git"]) {
+  for (const name of ["small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

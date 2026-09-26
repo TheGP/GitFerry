@@ -11,6 +11,7 @@ pub struct RepoSnapshot {
     pub refs: Vec<RefEntry>,
     pub commits: Vec<CommitSummary>,
     pub has_more: bool,
+    pub operation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +20,7 @@ pub struct RepoState {
     pub branch: String,
     pub head: Option<String>,
     pub status: Vec<StatusEntry>,
+    pub operation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,6 +91,20 @@ pub struct DiffResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebaseCommit {
+    pub hash: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebaseStep {
+    pub hash: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum RepoAction {
     StageAll,
@@ -132,6 +148,8 @@ pub enum RepoAction {
     },
     Fetch,
     Pull,
+    PullMerge,
+    PullRebase,
     Push,
     ForcePushWithLease,
     Checkout {
@@ -152,6 +170,43 @@ pub enum RepoAction {
     PopStash {
         hash: String,
     },
+    Merge {
+        branch: String,
+    },
+    Rebase {
+        branch: String,
+    },
+    InteractiveRebase {
+        branch: String,
+        onto: String,
+        steps: Vec<RebaseStep>,
+    },
+    AbortOperation,
+    ContinueOperation,
+    CherryPick {
+        hash: String,
+    },
+    Revert {
+        hash: String,
+    },
+    Reset {
+        hash: String,
+        mode: String,
+    },
+    Detach {
+        hash: String,
+    },
+    CreateTag {
+        name: String,
+        hash: String,
+    },
+    DeleteTag {
+        name: String,
+    },
+    ResolveFile {
+        path: String,
+        side: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -164,6 +219,14 @@ pub enum Request {
     },
     State {
         path: String,
+    },
+    Watch {
+        path: String,
+        timeout_ms: u64,
+    },
+    RebasePlan {
+        path: String,
+        onto: String,
     },
     Search {
         path: String,
@@ -179,10 +242,17 @@ pub enum Request {
         path: String,
         target: String,
         file: String,
+        #[serde(default)]
+        ignore_whitespace: bool,
     },
     Action {
         path: String,
         action: RepoAction,
+        #[serde(default)]
+        cancel_token: Option<String>,
+    },
+    Cancel {
+        token: String,
     },
 }
 
@@ -191,9 +261,12 @@ pub enum Request {
 pub enum Response {
     Snapshot(RepoSnapshot),
     State(RepoState),
+    Changed(bool),
+    RebasePlan(Vec<RebaseCommit>),
     Search(SearchResult),
     CommitDetails(CommitDetails),
     Diff(DiffResult),
+    Progress(String),
     Action(String),
     Error(String),
 }

@@ -1,5 +1,8 @@
-use gitferry_agent::{action, commit_details, diff, search, snapshot};
-use gitferry_proto::RepoAction;
+use gitferry_agent::{
+    action, action_with_progress, cancel_operation, commit_details, diff, rebase_plan, search,
+    snapshot, watch,
+};
+use gitferry_proto::{RebaseStep, RepoAction};
 use std::path::Path;
 use std::process::Command;
 
@@ -641,4 +644,304 @@ fn reports_branch_ahead_and_behind_counts() {
     git(&local, &["push"]);
     git(&local, &["reset", "--hard", "HEAD~1"]);
     assert_eq!((head_ref().ahead, head_ref().behind), (0, 1));
+}
+
+#[test]
+fn pushes_new_branch_with_upstream_without_pushing_other_branches() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("local");
+    let bare = temp.path().join("remote.git");
+    std::fs::create_dir(&local).unwrap();
+    git(&local, &["init", "-q", "-b", "main"]);
+    git(&local, &["config", "user.name", "Test"]);
+    git(&local, &["config", "user.email", "test@example.com"]);
+    std::fs::write(local.join("hello.txt"), "initial\n").unwrap();
+    git(&local, &["add", "."]);
+    git(&local, &["commit", "-qm", "Initial"]);
+    git(
+        temp.path(),
+        &["init", "-q", "--bare", bare.to_str().unwrap()],
+    );
+    git(&local, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    git(&local, &["push", "-u", "origin", "main"]);
+    let original_main = git(&bare, &["rev-parse", "refs/heads/main"]);
+    git(&local, &["config", "push.default", "matching"]);
+    action(
+        local.to_str().unwrap(),
+        RepoAction::CreateBranch {
+            branch: "topic".into(),
+        },
+    )
+    .unwrap();
+    std::fs::write(local.join("topic.txt"), "topic\n").unwrap();
+    git(&local, &["add", "."]);
+    git(&local, &["commit", "-qm", "Topic"]);
+    action(local.to_str().unwrap(), RepoAction::Push).unwrap();
+    assert_eq!(
+        git(&bare, &["rev-parse", "refs/heads/topic"]),
+        git(&local, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(git(&bare, &["rev-parse", "refs/heads/main"]), original_main);
+    assert_eq!(
+        git(
+            &local,
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}"
+            ]
+        ),
+        "origin/topic"
+    );
+}
+
+#[test]
+fn resolves_merge_conflict_and_continues() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("shared.txt"), "base\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "Base"]);
+    git(dir, &["switch", "-c", "topic"]);
+    std::fs::write(dir.join("shared.txt"), "topic\n").unwrap();
+    git(dir, &["commit", "-qam", "Topic"]);
+    git(dir, &["switch", "main"]);
+    std::fs::write(dir.join("shared.txt"), "main\n").unwrap();
+    git(dir, &["commit", "-qam", "Main"]);
+    assert!(action(
+        dir.to_str().unwrap(),
+        RepoAction::Merge {
+            branch: "topic".into()
+        }
+    )
+    .is_err());
+    assert_eq!(
+        snapshot(dir.to_str().unwrap(), 0, 10)
+            .unwrap()
+            .operation
+            .as_deref(),
+        Some("merge")
+    );
+    action(
+        dir.to_str().unwrap(),
+        RepoAction::ResolveFile {
+            path: "shared.txt".into(),
+            side: "theirs".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("shared.txt")).unwrap(),
+        "topic\n"
+    );
+    action(dir.to_str().unwrap(), RepoAction::ContinueOperation).unwrap();
+    let result = snapshot(dir.to_str().unwrap(), 0, 10).unwrap();
+    assert_eq!(result.operation, None);
+    assert_eq!(result.commits[0].parents.len(), 2);
+}
+
+#[test]
+fn aborts_conflicted_rebase_and_supports_history_actions() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("shared.txt"), "base\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "Base"]);
+    let base = git(dir, &["rev-parse", "HEAD"]);
+    git(dir, &["switch", "-c", "topic"]);
+    std::fs::write(dir.join("shared.txt"), "topic\n").unwrap();
+    git(dir, &["commit", "-qam", "Topic"]);
+    let topic = git(dir, &["rev-parse", "HEAD"]);
+    git(dir, &["switch", "main"]);
+    std::fs::write(dir.join("shared.txt"), "main\n").unwrap();
+    git(dir, &["commit", "-qam", "Main"]);
+    git(dir, &["switch", "topic"]);
+    assert!(action(
+        dir.to_str().unwrap(),
+        RepoAction::Rebase {
+            branch: "main".into()
+        }
+    )
+    .is_err());
+    assert_eq!(
+        snapshot(dir.to_str().unwrap(), 0, 10)
+            .unwrap()
+            .operation
+            .as_deref(),
+        Some("rebase")
+    );
+    action(dir.to_str().unwrap(), RepoAction::AbortOperation).unwrap();
+    assert_eq!(
+        snapshot(dir.to_str().unwrap(), 0, 10).unwrap().operation,
+        None
+    );
+    assert_eq!(git(dir, &["rev-parse", "HEAD"]), topic);
+    action(
+        dir.to_str().unwrap(),
+        RepoAction::CreateTag {
+            name: "v-test".into(),
+            hash: topic.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(git(dir, &["rev-parse", "refs/tags/v-test"]), topic);
+    action(
+        dir.to_str().unwrap(),
+        RepoAction::DeleteTag {
+            name: "v-test".into(),
+        },
+    )
+    .unwrap();
+    assert!(git(dir, &["tag", "--list", "v-test"]).is_empty());
+    action(
+        dir.to_str().unwrap(),
+        RepoAction::Reset {
+            hash: base.clone(),
+            mode: "hard".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(git(dir, &["rev-parse", "HEAD"]), base);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("shared.txt")).unwrap(),
+        "base\n"
+    );
+    action(dir.to_str().unwrap(), RepoAction::Detach { hash: topic }).unwrap();
+    assert_eq!(
+        snapshot(dir.to_str().unwrap(), 0, 10).unwrap().branch,
+        "Detached HEAD"
+    );
+}
+
+#[test]
+fn cancels_a_running_fetch() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("file.txt"), "initial\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "Initial"]);
+    git(
+        dir,
+        &["remote", "add", "origin", "ssh://example.invalid/repo"],
+    );
+    #[cfg(windows)]
+    let command = {
+        let script = dir.join("sleep.ps1");
+        std::fs::write(&script, "Start-Sleep -Seconds 30\n").unwrap();
+        format!(
+            "powershell -NoProfile -ExecutionPolicy Bypass -File {}",
+            script.to_string_lossy().replace('\\', "/")
+        )
+    };
+    #[cfg(unix)]
+    let command = {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("sleep.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        script.to_string_lossy().into_owned()
+    };
+    git(dir, &["config", "core.sshCommand", &command]);
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        & 0xffffffffffff;
+    let token = format!("00000000-0000-4000-8000-{suffix:012x}");
+    let active = std::env::temp_dir()
+        .join("gitferry-ops")
+        .join(format!("{token}.active"));
+    let repo = dir.to_str().unwrap().to_string();
+    let token_for_thread = token.clone();
+    let handle = std::thread::spawn(move || {
+        action_with_progress(&repo, RepoAction::Fetch, Some(&token_for_thread), |_| {})
+    });
+    let start = std::time::Instant::now();
+    while !active.is_file() && start.elapsed() < std::time::Duration::from_secs(5) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        active.is_file(),
+        "fetch must expose an active operation marker"
+    );
+    cancel_operation(&token).unwrap();
+    let result = handle.join().unwrap();
+    assert!(result.unwrap_err().contains("cancelled"));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "cancellation should stop the transfer promptly"
+    );
+    assert!(!active.exists(), "operation marker must be cleaned up");
+}
+
+#[test]
+fn watcher_notices_nested_worktree_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::create_dir(dir.join("nested")).unwrap();
+    std::fs::write(dir.join("nested").join("file.txt"), "before\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "Initial"]);
+    let file = dir.join("nested").join("file.txt");
+    let edit = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::fs::write(file, "after\n").unwrap();
+    });
+    assert!(watch(dir.to_str().unwrap(), 5_000).unwrap());
+    edit.join().unwrap();
+}
+
+#[test]
+fn interactive_rebase_plan_is_ordered_and_rejects_stale_steps() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "Base"]);
+    git(dir, &["switch", "-c", "topic"]);
+    for (file, subject) in [("a.txt", "Add A"), ("b.txt", "Add B")] {
+        std::fs::write(dir.join(file), subject).unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-qm", subject]);
+    }
+    let path = dir.to_str().unwrap();
+    let plan = rebase_plan(path, "main").unwrap();
+    assert_eq!(
+        plan.iter()
+            .map(|item| item.subject.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Add A", "Add B"]
+    );
+    let before = git(dir, &["rev-parse", "HEAD"]);
+    let stale = vec![RebaseStep {
+        hash: plan[0].hash.clone(),
+        action: "pick".into(),
+    }];
+    assert!(action(
+        path,
+        RepoAction::InteractiveRebase {
+            branch: "topic".into(),
+            onto: "main".into(),
+            steps: stale
+        }
+    )
+    .unwrap_err()
+    .contains("plan changed"));
+    assert_eq!(git(dir, &["rev-parse", "HEAD"]), before);
 }

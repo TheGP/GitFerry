@@ -38,13 +38,15 @@ button { cursor: pointer; }
 .branch-control { position: relative; flex: none; }
 .branch-chip { border: 0; cursor: pointer; }
 .branch-chip:hover { background: #3c4b54; }
-.branch-chip .branch-arrow { flex: none; color: #839ba4; font-size: 13px; }
+.branch-chip .branch-arrow { width: 12px; height: 12px; flex: none; display: grid; place-items: center; color: #839ba4; }
+.chevron-icon { width: 12px; height: 12px; display: block; flex: none; }
 .branch-menu { position: absolute; top: calc(100% + 4px); left: 0; width: min(420px, calc(100vw - 120px)); max-height: min(600px, 70vh); overflow-y: auto; padding: 12px; z-index: 8; border: 1px solid #50616a; border-radius: 5px; background: #2d363e; box-shadow: 0 16px 40px #0008; }
 .branch-menu .eyebrow { padding: 3px 4px 9px; font-size: 13px; }
 .branch-menu-row { display: flex; align-items: center; }
 .branch-menu-row button { flex: 1; min-width: 0; border: 0; padding: 7px 5px; text-align: left; overflow-wrap: anywhere; white-space: normal; background: transparent; color: #c9d8dc; font-size: 13px; }
 .branch-menu-row button:hover { background: #3b4c54; }
 .branch-menu-row .branch-delete { width: 25px; flex: none; text-align: center; color: #b3a09e; }
+.branch-menu-row button:not(:first-child) { flex: none; white-space: nowrap; font-size: 13px; }
 .branch-menu form { display: flex; gap: 5px; margin-top: 11px; padding-top: 11px; border-top: 1px solid #45515a; }
 .branch-menu input { min-width: 0; width: 100%; padding: 5px; border: 1px solid #596873; border-radius: 3px; background: #20282e; color: white; font-size: 13px; }
 .branch-menu form button { border: 1px solid #4c9ea1; border-radius: 3px; background: #37797d; color: white; font-size: 13px; }
@@ -62,6 +64,10 @@ button { cursor: pointer; }
 .error-bar button { border: 0; background: none; color: inherit; font-size: 18px; }
 .notice-bar { flex: none; display: flex; justify-content: space-between; align-items: center; max-height: 48px; overflow: auto; padding: 7px 14px; color: #bde0cb; background: #284139; font-size: 13px; white-space: pre-wrap; }
 .notice-bar button { border: 0; background: none; color: inherit; font-size: 17px; }
+.progress-bar { flex: none; display: flex; align-items: center; gap: 12px; padding: 7px 14px; background: var(--theme-heading); color: var(--theme-accent); font-size: 13px; }
+.progress-bar span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.progress-bar button { border: 1px solid var(--theme-border); border-radius: 3px; padding: 3px 9px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; }
+.progress-bar button:disabled { opacity: .6; }
 .workspace { flex: 1; min-height: 0; display: flex; background: #20252b; }
 .workspace.alt { display: grid; grid-template-columns: auto 4px minmax(0, 1fr); grid-template-rows: minmax(180px, min(var(--history-height), 40vh)) 4px minmax(0, 1fr); }
 .workspace.alt.no-locations { grid-template-columns: minmax(0, 1fr); }
@@ -84,13 +90,13 @@ button { cursor: pointer; }
 .section-heading span { margin-left: auto; color: #62727e; }
 .ref-item { height: 27px; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 25px; color: #a7b3bd; font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ref-item.current { color: #e0eeee; background: #2d3940; }
-.ref-item > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
 .ref-icon { color: #6fb6bd; font-size: 15px; }
 .ref-tracking { margin-left: auto; color: #a8c5bb; font-size: 13px; white-space: nowrap; }
 .ref-head { margin-left: auto; padding: 2px 4px; border-radius: 2px; color: #79cdd0; background: #244649; font-size: 13px; }
 .locations-footer { margin-top: auto; padding: 13px 16px; border-top: 1px solid #1a2026; color: #62747f; font-size: 13px; letter-spacing: 1px; font-weight: 700; }
 .connection-dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: #66c6a4; box-shadow: 0 0 7px #66c6a466; }
 .commit-scroll, .details-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.commit-scroll:focus, .details-scroll:focus { outline: none; }
 .working-row, .commit-row { width: 100%; display: flex; align-items: stretch; text-align: left; border: 0; border-bottom: 1px solid #1e252c; background: transparent; color: #d4dce2; }
 .working-row:hover, .commit-row:hover { background: #303943; }
 .working-row.selected, .commit-row.selected { background: #34434c; box-shadow: inset 3px 0 #63c8cc; }
@@ -102,50 +108,55 @@ button { cursor: pointer; }
 .commit-main small { color: #83929f; font-size: 13px; }
 .count-badge { align-self: center; border-radius: 3px; padding: 2px 6px; color: #b8c7cf; background: #46535d; font-size: 13px; }
 .virtual-commits { position: relative; }
-.commit-row { position: absolute; left: 0; right: 0; height: 61px; padding: 0 12px 0 0; }
-.graph-canvas { width: 74px; height: 61px; flex: none; }
+.commit-row { position: absolute; left: 0; right: 0; padding: 0 12px 0 0; }
+.commit-row.search-result { padding-left: 18px; }
+.graph-canvas { width: 74px; height: 100%; flex: none; }
 .commit-meta { display: flex; justify-content: space-between; gap: 8px; color: #8f9da9; font-size: 13px; }
 .commit-meta span { color: #697987; white-space: nowrap; }
 .decorations { display: flex; gap: 4px; overflow: hidden; }
-.decoration { padding: 2px 5px; border-radius: 2px; background: #3b4450; color: #a8c2d7; font-size: 13px; white-space: nowrap; }
+.decoration { padding: 1px 5px; border-radius: 2px; background: #3b4450; color: #a8c2d7; font-size: 13px; line-height: 18px; white-space: nowrap; }
 .decoration.head { background: #28575b; color: #a3e7e5; }
 .load-more { width: 100%; padding: 13px; border: 0; background: #29333b; color: #7fcacf; font-size: 13px; }
 .load-more:hover { background: #33434a; }
 .details-tabs { height: 38px; flex: none; display: flex; align-items: stretch; background: #20262d; border-bottom: 1px solid #141a20; }
 .details-tab { min-width: 110px; max-width: 220px; display: flex; align-items: center; padding: 0 16px; border-right: 1px solid #161d23; color: #8e9da8; font-size: 13px; font-weight: 700; letter-spacing: 1px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .details-tab.active { background: #2a3139; border-top: 2px solid #62c4ca; color: #d7e4e9; }
-.detail-header { padding: 27px 32px 24px; border-bottom: 1px solid #1c252d; }
+.detail-header { padding: 12px 25px; border-bottom: 1px solid #1c252d; }
 .eyebrow { color: #6fc2c7; font-size: 13px; font-weight: 800; letter-spacing: 1.7px; }
 .hash { margin-left: 10px; color: #768997; font-family: Consolas, monospace; letter-spacing: 0; }
-.detail-header h2 { margin: 10px 0 9px; color: #ecf2f5; font-size: 21px; font-weight: 650; line-height: 1.35; }
+.detail-header h2 { margin: 5px 0; color: #ecf2f5; font-size: 18px; font-weight: 650; line-height: 1.35; }
 .detail-header p { margin: 0; color: #94a3ae; font-size: 13px; line-height: 1.5; }
 .commit-body { white-space: pre-wrap; }
 .commit-editor { margin: 18px 25px 8px; padding: 12px; border: 1px solid #40505a; border-radius: 4px; background: #263039; }
 .commit-editor textarea { width: 100%; resize: vertical; min-height: 53px; padding: 8px; outline: 0; border: 0; background: #202830; color: #e2e9ec; font-size: 14px; }
 .commit-editor textarea:focus { box-shadow: inset 0 0 0 1px #599fa3; }
 .commit-editor-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
-.commit-editor-actions label { display: flex; align-items: center; gap: 8px; color: #91a2ac; font-size: 14px; }
+.commit-editor-actions label { display: flex; align-items: center; gap: 8px; color: #91a2ac; font-size: 14px; white-space: nowrap; }
 .commit-editor-actions input[type="checkbox"] { width: 16px; height: 16px; flex: none; margin: 0; }
 .commit-editor-actions button, .file-actions button, .files-heading button { padding: 6px 10px; border: 1px solid #4b8990; border-radius: 3px; background: #356e73; color: #e4f1ef; font-size: 13px; }
-.commit-editor-actions button { font-size: 14px; }
+.commit-editor-actions button { font-size: 14px; white-space: nowrap; }
 .commit-editor-actions button:disabled, .file-actions button:disabled, .files-heading button:disabled { opacity: .7; cursor: default; }
 .files-heading button { margin-left: auto; }
 .file-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 7px 25px; background: #263038; border-bottom: 1px solid #1a232a; }
 .file-actions button.danger { border-color: #855454; background: #543a3b; color: #f0c5c1; }
-.commit-byline { display: flex; align-items: center; gap: 10px; margin-top: 22px; color: #cfd9de; font-size: 13px; }
+.commit-byline { display: flex; align-items: center; gap: 10px; margin-top: 9px; color: #cfd9de; font-size: 13px; }
 .commit-byline small { display: block; margin-top: 3px; color: #84939f; font-size: 13px; }
-.parent-hashes { display: flex; align-items: center; gap: 8px; margin-top: 15px; color: #71838e; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
+.parent-hashes { display: flex; align-items: center; gap: 8px; margin-top: 8px; color: #71838e; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
 .parent-hashes span { padding: 3px 6px; border-radius: 2px; background: #37434c; color: #a7c3ca; font-family: Consolas, monospace; font-size: 13px; letter-spacing: 0; }
 .avatar { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #426168; color: #d8f3f1; font-weight: 700; }
 .files-heading { display: flex; gap: 9px; align-items: center; height: 39px; padding: 0 32px; color: #a5b3bd; font-size: 13px; letter-spacing: 1px; font-weight: 800; }
+.files-title { min-width: 0; font-weight: inherit; white-space: nowrap; }
 .files-heading span { color: #71828e; }
 .files-list { margin: 0 25px 25px; border: 1px solid #1d252c; border-radius: 4px; overflow: hidden; }
-.file-group-heading { padding: 9px 10px 7px; border-bottom: 1px solid #222b33; background: #252f37; color: #8195a1; font-size: 13px; font-weight: 800; letter-spacing: 1px; }
+.file-group-heading { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 10px; border-bottom: 1px solid #222b33; background: #252f37; color: #8195a1; font-size: 13px; font-weight: 800; letter-spacing: 1px; }
 .file-group-heading:not(:first-child) { border-top: 1px solid #1c252c; }
 .file-group-heading span { margin-left: 5px; color: #6d8791; }
+.group-open-all { flex: none; padding: 4px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; font-weight: 700; letter-spacing: 0; cursor: pointer; }
+.group-open-all:hover, .group-open-all:focus-visible { border-color: var(--theme-border); background: var(--theme-hover); color: var(--theme-text); }
 .file-row { width: 100%; height: 37px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-bottom: 1px solid #222b33; text-align: left; color: #c3d0d8; background: #2d363e; font-size: 13px; }
 .file-row:last-child { border-bottom: 0; }
 .file-row:hover, .file-row.selected { background: #3b4850; }
+.file-row.keyboard-selected { box-shadow: inset 3px 0 var(--theme-accent); }
 .file-status { width: 17px; font-family: Consolas, monospace; font-weight: 700; color: #e8c27c; }
 .file-status.added { color: #83cea2; }
 .file-status.deleted { color: #e49b9b; }
@@ -153,9 +164,9 @@ button { cursor: pointer; }
 .file-tag { color: #8cc9a7; font-size: 13px; letter-spacing: .6px; }
 .file-chevron { color: #7c8d97; font-size: 19px; }
 .diff-heading { display: flex; justify-content: space-between; gap: 20px; padding: 11px 31px; background: #242d34; border-top: 1px solid #1a232a; border-bottom: 1px solid #1a232a; color: #cbd8df; font-family: Consolas, monospace; font-size: 13px; }
-.diff-heading span:last-child { color: #7d9fa5; font-family: Inter, "Segoe UI", sans-serif; font-size: 13px; letter-spacing: 1px; }
-.diff-content { overflow-x: auto; padding: 12px 0 30px; font-family: "Cascadia Code", Consolas, "SFMono-Regular", monospace; font-size: 14px; line-height: 23px; }
-.diff-line { display: flex; min-width: max-content; white-space: pre; color: #b3bec7; }
+.diff-heading .diff-heading-target { color: #7d9fa5; font-family: Inter, "Segoe UI", sans-serif; font-size: 13px; letter-spacing: 1px; }
+.diff-content { overflow-x: hidden; padding: 12px 0 30px; font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace; font-size: 16px; line-height: 23px; }
+.diff-line { display: flex; min-width: 0; width: 100%; color: #b3bec7; }
 .diff-line.added { background: #244638; color: #ddf8e5; }
 .diff-line.deleted { background: #4b3032; color: #ffdcda; }
 .diff-line.hunk { background: #303d4b; color: #8cb8d8; }
@@ -164,13 +175,23 @@ button { cursor: pointer; }
 .diff-content.has-hunks .diff-line.hunk .line-number, .diff-content.has-hunks .diff-line.hunk .line-text { visibility: hidden; }
 .diff-content.actionable .diff-line.hunk { cursor: pointer; }
 .diff-content.actionable .diff-line .line-text { cursor: pointer; }
-.line-number { width: 86px; flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 8px 0 2px; text-align: right; color: #657481; font-size: 13px; line-height: inherit; user-select: none; }
+.line-number { width: 86px; flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 8px 0 2px; text-align: right; color: #657481; font-size: 15px; line-height: inherit; user-select: none; }
 .line-number span { min-width: 0; padding-right: 4px; }
 .line-number.selectable { border: 0; background: transparent; cursor: pointer; }
 .line-number.selectable:hover { background: var(--theme-accent-soft); color: var(--theme-text); }
 .diff-line.selected { outline: 1px solid var(--theme-accent); outline-offset: -1px; }
 .diff-line.selected .line-number { background: var(--theme-accent); color: var(--theme-chrome); }
-.line-text { padding-right: 24px; }
+.line-text { flex: 1; min-width: 0; padding-right: 24px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-line.added .word-change { background: #39775a; border-radius: 2px; }
+.diff-line.deleted .word-change { background: #96504f; border-radius: 2px; }
+.diff-line .syntax-keyword, .diff-line .syntax-boolean { color: #db9bd1; }
+.diff-line .syntax-string, .diff-line .syntax-char { color: #a9d88f; }
+.diff-line .syntax-number, .diff-line .syntax-constant { color: #ddb78b; }
+.diff-line .syntax-function, .diff-line .syntax-class-name { color: #d8c69a; }
+.diff-line .syntax-comment, .diff-line .syntax-prolog { color: #9caab2; font-style: italic; }
+.diff-line .syntax-property, .diff-line .syntax-attr-name { color: #9bc5e9; }
+.diff-line .syntax-operator, .diff-line .syntax-punctuation { color: #c2cbd0; }
+.diff-line .syntax-tag, .diff-line .syntax-selector { color: #e9a6a0; }
 .line-selection-toolbar { min-height: 34px; display: flex; align-items: center; gap: 9px; padding: 5px 12px; border-bottom: 1px solid var(--theme-border); background: var(--theme-heading); color: var(--theme-secondary); font: 13px Inter, "Segoe UI", sans-serif; }
 .line-selection-toolbar span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .line-selection-toolbar button { flex: none; padding: 4px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; }
@@ -245,6 +266,7 @@ button { cursor: pointer; }
   --theme-raised: #2c2c2c;
   --theme-hover: #393939;
   --theme-selected: #303845;
+  --theme-commit-selected: #344a61;
   --theme-text: #dedede;
   --theme-secondary: #adadad;
   --theme-muted: #898989;
@@ -267,6 +289,7 @@ button { cursor: pointer; }
   --theme-raised: #37373d;
   --theme-hover: #45454a;
   --theme-selected: #264f78;
+  --theme-commit-selected: #28547b;
   --theme-text: #e2e2e2;
   --theme-secondary: #b9b9b9;
   --theme-muted: #959595;
@@ -289,6 +312,7 @@ button { cursor: pointer; }
   --theme-raised: #303841;
   --theme-hover: #414b55;
   --theme-selected: #434045;
+  --theme-commit-selected: #594838;
   --theme-text: #e4e6e8;
   --theme-secondary: #b5bec7;
   --theme-muted: #929faa;
@@ -311,6 +335,7 @@ button { cursor: pointer; }
   --theme-raised: #303030;
   --theme-hover: #393939;
   --theme-selected: #37312f;
+  --theme-commit-selected: #5a3d34;
   --theme-text: #f1efec;
   --theme-secondary: #cbc8c4;
   --theme-muted: #aaa7a3;
@@ -345,7 +370,7 @@ button { cursor: pointer; }
 .branch-menu form button, .toolbar-button.primary, .welcome-open { background: var(--theme-accent-soft); border-color: var(--theme-accent); color: var(--theme-text); }
 .push-control { position: relative; flex: none; display: flex; }
 .push-control > .toolbar-button:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.push-control .push-more { min-width: 23px; padding: 0 5px; border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.push-control > .toolbar-button.push-more { width: 25px; min-width: 25px; display: grid; place-items: center; padding: 0; border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .push-menu { position: absolute; top: 37px; right: 0; z-index: 9; width: 265px; padding: 8px; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-modal); box-shadow: 0 16px 40px #0009; white-space: normal; }
 .push-menu button { width: 100%; padding: 8px; border: 0; border-radius: 3px; background: transparent; color: var(--theme-text); text-align: left; font-size: 13px; }
 .push-menu button:hover { background: var(--theme-hover); }
@@ -382,7 +407,10 @@ button { cursor: pointer; }
 .locations-footer { border-color: var(--theme-border); color: var(--theme-muted); }
 .working-row, .commit-row { color: var(--theme-text); border-color: var(--theme-border); }
 .working-row:hover, .commit-row:hover { background: var(--theme-hover); }
-.working-row.selected, .commit-row.selected { background: var(--theme-selected); box-shadow: inset 3px 0 var(--theme-accent); }
+.working-row.selected { background: var(--theme-selected); box-shadow: inset 3px 0 var(--theme-accent); }
+.commit-row.selected { z-index: 1; background: var(--theme-commit-selected); box-shadow: inset 5px 0 var(--theme-accent), inset 0 1px var(--theme-accent), inset 0 -1px var(--theme-accent), inset -1px 0 var(--theme-accent); }
+.commit-row.selected .commit-subject { color: #fff; }
+.commit-row.selected .commit-meta, .commit-row.selected .commit-meta span { color: var(--theme-text); }
 .working-node, .load-more { color: var(--theme-accent); }
 .commit-main small, .commit-meta, .commit-meta span { color: var(--theme-muted); }
 .count-badge, .decoration { background: var(--theme-raised); color: var(--theme-secondary); }
@@ -406,8 +434,8 @@ button { cursor: pointer; }
 .file-group-heading { color: var(--theme-secondary); }
 .file-group-heading span { color: var(--theme-muted); }
 .file-row { background: var(--theme-raised); border-color: var(--theme-border); color: var(--theme-text); }
-.file-row:hover, .file-row.selected { background: var(--theme-selected); }
-.file-chevron, .diff-heading span:last-child { color: var(--theme-muted); }
+.file-row:hover, .file-row.selected, .file-row.keyboard-selected { background: var(--theme-selected); }
+.file-chevron, .diff-heading .diff-heading-target { color: var(--theme-muted); }
 .diff-heading, .diff-line { color: var(--theme-secondary); }
 .diff-line.hunk { background: var(--theme-accent-soft); color: var(--theme-accent-hover); }
 .line-number, .empty-note, .truncated-note { color: var(--theme-muted); }
@@ -444,14 +472,22 @@ button { cursor: pointer; }
 .details-tab:hover:not(.active) { background: var(--theme-hover); color: var(--theme-text); }
 .files-heading-spacer { flex: 1; }
 .files-heading button { margin-left: 0; }
-.all-diffs { margin: 0 25px 26px; }
-.all-diff-group { padding: 11px 3px 8px; color: var(--theme-secondary); font-size: 13px; font-weight: 800; letter-spacing: 1px; }
-.all-diff-group span { margin-left: 5px; color: var(--theme-muted); }
+.files-heading .whitespace-toggle { white-space: nowrap; background: var(--theme-raised); border-color: var(--theme-border); }
+.files-heading .whitespace-toggle[aria-pressed="true"] { background: var(--theme-accent-soft); border-color: var(--theme-accent); }
+.diff-filter-note { padding: 7px 12px; color: var(--theme-secondary); font-size: 13px; background: var(--theme-heading); }
+.operation-panel, .commit-actions { margin: 12px 25px; padding: 12px; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; }
+.operation-panel { display: flex; flex-direction: column; gap: 9px; }
+.operation-panel > strong { text-transform: capitalize; }
+.operation-panel > span { color: var(--theme-secondary); }
+.operation-buttons, .commit-action-buttons { display: flex; flex-wrap: wrap; gap: 7px; }
+.operation-panel button, .commit-actions button { padding: 6px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-accent-soft); color: var(--theme-text); font-size: 13px; }
+.operation-panel button:disabled, .commit-actions button:disabled { opacity: .5; cursor: default; }
+.operation-panel button.danger, .commit-actions button.danger { border-color: #855454; background: #543a3b; color: #f0c5c1; }
+.conflict-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.conflict-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; }
+.commit-actions summary { cursor: pointer; font-weight: 700; }
+.commit-action-buttons { margin-top: 10px; }
 .all-diff-card { margin-bottom: 8px; overflow: hidden; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-details); }
-.all-diff-heading { width: 100%; min-height: 38px; display: flex; align-items: center; gap: 9px; padding: 5px 12px; border: 0; background: var(--theme-raised); color: var(--theme-text); text-align: left; font-size: 13px; }
-.all-diff-heading:hover { background: var(--theme-hover); }
-.all-diff-heading .file-path { font-size: 13px; }
-.all-diff-heading .diff-target { flex: none; color: var(--theme-muted); font: 700 13px Inter, "Segoe UI", sans-serif; letter-spacing: 1px; }
 .all-diff-card .file-actions { padding-right: 12px; }
 .all-diff-card .diff-content { padding-bottom: 13px; }
 .files-list .summary-diff-card { margin: 0; border: 0; border-bottom: 1px solid var(--theme-border); border-radius: 0; }
@@ -460,6 +496,13 @@ button { cursor: pointer; }
 .summary-diff-heading .file-row { flex: 1; width: auto; min-width: 0; border-bottom: 0; }
 .summary-open-tab { flex: none; width: 34px; border: 0; border-left: 1px solid var(--theme-border); background: var(--theme-raised); color: var(--theme-muted); font-size: 16px; cursor: pointer; }
 .summary-open-tab:hover { background: var(--theme-hover); color: var(--theme-text); }
+.open-editor-button { flex: none; min-width: 45px; padding: 0 8px; border: 0; border-left: 1px solid var(--theme-border); background: var(--theme-raised); color: var(--theme-secondary); font-size: 13px; cursor: pointer; }
+.open-editor-button:hover, .open-editor-button:focus-visible { background: var(--theme-hover); color: var(--theme-text); }
+.diff-heading { align-items: center; gap: 9px; padding: 7px 12px; }
+.diff-heading-path { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.diff-heading-target { flex: none; }
+.diff-open-editor { flex: none; padding: 5px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font: 13px Inter, "Segoe UI", sans-serif; cursor: pointer; }
+.diff-open-editor:hover { background: var(--theme-hover); }
 
 .theme-control { height: 100%; flex: none; display: flex; align-items: center; gap: 7px; padding: 0 14px; border-left: 1px solid var(--theme-border); color: var(--theme-muted); }
 .theme-caption { font-size: 13px; font-weight: 800; letter-spacing: 1px; }
@@ -467,4 +510,49 @@ button { cursor: pointer; }
 .theme-control select { max-width: 142px; padding: 5px 17px 5px 3px; border: 0; outline: 0; background: var(--theme-chrome); color: var(--theme-text); font-size: 13px; cursor: pointer; }
 .theme-control select:focus-visible { outline: 1px solid var(--theme-accent); }
 .theme-control option { background: var(--theme-modal); color: var(--theme-text); }
+.settings-button { width: 40px; flex: none; border: 0; border-left: 1px solid var(--theme-border); background: var(--theme-chrome); color: var(--theme-secondary); font-size: 19px; }
+.settings-button:hover, .settings-button:focus-visible { background: var(--theme-hover); color: var(--theme-text); }
+.settings-modal { width: min(500px, calc(100vw - 32px)); border: 1px solid var(--theme-border); border-radius: 7px; background: var(--theme-modal); box-shadow: 0 24px 80px #0009; }
+.settings-body { display: flex; flex-direction: column; gap: 18px; padding: 22px; }
+.settings-body label { display: flex; flex-direction: column; gap: 7px; color: var(--theme-secondary); font-size: 13px; font-weight: 700; letter-spacing: .6px; }
+.settings-body select, .settings-body input { width: 100%; min-height: 38px; padding: 7px 10px; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-input); color: var(--theme-text); font-size: 14px; letter-spacing: 0; }
+.settings-body p { margin: 0; color: var(--theme-secondary); font-size: 13px; line-height: 1.5; }
+.settings-footer { display: flex; justify-content: flex-end; padding: 12px 22px; border-top: 1px solid var(--theme-border); }
+.settings-footer button { padding: 7px 18px; border: 1px solid var(--theme-accent); border-radius: 3px; background: var(--theme-accent-soft); color: var(--theme-text); font-size: 13px; }
+.rebase-modal { width: min(760px, 94vw); max-height: min(760px, 90vh); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--theme-border); border-radius: 7px; background: var(--theme-modal); box-shadow: 0 24px 80px #000a; }
+.rebase-intro { padding: 16px 20px 12px; color: var(--theme-text); font-size: 14px; }
+.rebase-intro strong { color: var(--theme-accent-hover); }
+.rebase-intro p { margin: 8px 0 0; color: var(--theme-secondary); line-height: 1.45; }
+.rebase-steps { min-height: 0; overflow-y: auto; padding: 0 20px; }
+.rebase-step { min-height: 54px; display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--theme-border); color: var(--theme-text); }
+.rebase-step.dropped .rebase-commit { opacity: .48; text-decoration: line-through; }
+.rebase-move { display: flex; flex-direction: column; gap: 2px; }
+.rebase-move button { width: 24px; height: 21px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-secondary); cursor: pointer; }
+.rebase-move button:hover:not(:disabled) { background: var(--theme-hover); color: var(--theme-text); }
+.rebase-move button:disabled { opacity: .35; cursor: default; }
+.rebase-commit { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 10px; }
+.rebase-commit span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.rebase-commit code { flex: none; color: var(--theme-muted); font-size: 12px; }
+.rebase-step select { width: 90px; flex: none; padding: 6px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-input); color: var(--theme-text); font-size: 13px; }
+.rebase-validation { padding: 8px 20px; color: #f0c5c1; background: #543a3b; font-size: 13px; }
+.rebase-footer { display: flex; align-items: center; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--theme-border); }
+.rebase-footer span { flex: 1; color: var(--theme-secondary); font-size: 13px; }
+.rebase-footer button { padding: 7px 12px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; cursor: pointer; }
+.rebase-footer button.rebase-start { border-color: var(--theme-accent); background: var(--theme-accent-soft); }
+.rebase-footer button:hover { background: var(--theme-hover); }
+.rebase-footer button:disabled { opacity: .5; cursor: default; }
 @media (max-width: 1100px) { .app-name, .theme-caption { display: none; } .theme-control { padding: 0 8px; } .theme-control select { max-width: 130px; } .toolbar { gap: 7px; } .branch-chip { max-width: 300px; } .toolbar-button:not(.primary) { padding: 0 7px; } .push-control .toolbar-button span, .toolbar-button[title="Stash"] span, .stash-control .toolbar-button span { display: inline; } .search-box { width: 145px; } }
+@media (max-width: 1050px) {
+  .detail-header { padding: 22px 18px; }
+  .commit-editor { margin: 14px 12px 8px; padding: 10px; }
+  .commit-editor-actions { flex-wrap: wrap; gap: 8px; }
+  .commit-editor-actions button { margin-left: auto; }
+  .files-heading { height: auto; min-height: 39px; flex-wrap: wrap; gap: 7px; padding: 7px 12px; }
+  .files-heading.multiple-actions .files-title { flex: 0 0 100%; }
+  .files-heading-spacer { display: none; }
+  .files-heading button { white-space: nowrap; }
+  .files-heading button:last-child { margin-left: auto; }
+  .files-list { margin-left: 12px; margin-right: 12px; }
+  .file-actions { padding-left: 12px; padding-right: 12px; }
+  .commit-actions, .operation-panel { margin-left: 12px; margin-right: 12px; }
+}

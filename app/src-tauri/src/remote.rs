@@ -19,28 +19,50 @@ impl RemoteManager {
         resource_dir: &Path,
         request: Request,
     ) -> Result<Response, String> {
+        self.call_with_progress(uri, resource_dir, request, |_| {})
+    }
+
+    pub fn call_with_progress(
+        &self,
+        uri: &str,
+        resource_dir: &Path,
+        request: Request,
+        mut progress: impl FnMut(&str),
+    ) -> Result<Response, String> {
         let (host, _) = parse_uri(uri)?;
-        let connection = {
+        // Keep repository reads responsive while a fetch or push is running.
+        // Actions use a separate session; Git itself still serializes conflicting writes.
+        let channel = match &request {
+            Request::Action { .. } => "action",
+            Request::Cancel { .. } => "cancel",
+            Request::Watch { .. } => "watch",
+            _ => "read",
+        };
+        let key = format!("{uri}#{channel}");
+        let existing = self
+            .0
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(&key)
+            .cloned();
+        let connection = if let Some(connection) = existing {
+            connection
+        } else {
+            let created = Arc::new(Mutex::new(Connection::start(host, resource_dir)?));
             let mut sessions = self.0.lock().map_err(|error| error.to_string())?;
-            if let Some(connection) = sessions.get(uri) {
-                Arc::clone(connection)
-            } else {
-                let connection = Arc::new(Mutex::new(Connection::start(host, resource_dir)?));
-                sessions.insert(uri.to_string(), Arc::clone(&connection));
-                connection
-            }
+            Arc::clone(sessions.entry(key.clone()).or_insert(created))
         };
         let result = connection
             .lock()
             .map_err(|error| error.to_string())?
-            .call(request);
+            .call(request, &mut progress);
         if result.is_err() {
             let mut sessions = self.0.lock().map_err(|error| error.to_string())?;
             if sessions
-                .get(uri)
+                .get(&key)
                 .is_some_and(|current| Arc::ptr_eq(current, &connection))
             {
-                sessions.remove(uri);
+                sessions.remove(&key);
             }
         }
         result
@@ -186,7 +208,11 @@ exec "$agent""#,
         Ok(line.trim_end_matches(['\r', '\n']).to_string())
     }
 
-    fn call(&mut self, request: Request) -> Result<Response, String> {
+    fn call(
+        &mut self,
+        request: Request,
+        progress: &mut impl FnMut(&str),
+    ) -> Result<Response, String> {
         let id = self.next_id;
         self.next_id += 1;
         serde_json::to_writer(&mut self.stdin, &RpcRequest { id, request })
@@ -195,12 +221,17 @@ exec "$agent""#,
             .write_all(b"\n")
             .map_err(|error| error.to_string())?;
         self.stdin.flush().map_err(|error| error.to_string())?;
-        let response: RpcResponse = serde_json::from_str(&self.read_line()?)
-            .map_err(|error| format!("Invalid remote response: {error}"))?;
-        if response.id != id {
-            return Err("Remote response ID mismatch".to_string());
+        loop {
+            let response: RpcResponse = serde_json::from_str(&self.read_line()?)
+                .map_err(|error| format!("Invalid remote response: {error}"))?;
+            if response.id != id {
+                return Err("Remote response ID mismatch".to_string());
+            }
+            match response.response {
+                Response::Progress(message) => progress(&message),
+                other => return Ok(other),
+            }
         }
-        Ok(response.response)
     }
 }
 
@@ -265,6 +296,7 @@ mod tests {
                             path: path.to_string(),
                             target: hash,
                             file: "example.txt".to_string(),
+                            ignore_whitespace: false,
                         },
                     )
                     .unwrap();
@@ -293,6 +325,7 @@ mod tests {
                                     action: gitferry_proto::RepoAction::StageFile {
                                         path: "remote-smoke.txt".to_string(),
                                     },
+                                    cancel_token: None,
                                 },
                             )
                             .unwrap();
@@ -307,6 +340,7 @@ mod tests {
                                         message: "Remote smoke".to_string(),
                                         amend: false,
                                     },
+                                    cancel_token: None,
                                 },
                             )
                             .unwrap();
@@ -319,6 +353,7 @@ mod tests {
                                     Request::Action {
                                         path: path.to_string(),
                                         action: gitferry_proto::RepoAction::Push,
+                                        cancel_token: None,
                                     },
                                 )
                                 .unwrap();

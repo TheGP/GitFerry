@@ -6,6 +6,12 @@ on:
       - '**'
   pull_request:
   workflow_dispatch:
+    inputs:
+      agents_only:
+        description: Build only the Linux SSH agents
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -67,6 +73,7 @@ jobs:
           if-no-files-found: error
 
   desktop:
+    if: ${{ !inputs.agents_only }}
     needs: [checks, agents]
     strategy:
       fail-fast: false

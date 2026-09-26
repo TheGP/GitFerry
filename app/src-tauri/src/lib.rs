@@ -1,10 +1,32 @@
-use gitferry_agent::{action, commit_details, diff, search, snapshot, state};
-use gitferry_proto::{
-    CommitDetails, DiffResult, RepoAction, RepoSnapshot, RepoState, Request, Response, SearchResult,
+use gitferry_agent::{
+    action_with_progress, cancel_operation, commit_details, diff_with_options, rebase_plan, search,
+    snapshot, state, watch,
 };
-use tauri::Manager;
+use gitferry_proto::{
+    CommitDetails, DiffResult, RebaseCommit, RepoAction, RepoSnapshot, RepoState, Request,
+    Response, SearchResult,
+};
+use tauri::{Emitter, Manager};
 
+mod editor;
 mod remote;
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitProgress {
+    path: String,
+    message: String,
+}
+
+fn report_progress(app: &tauri::AppHandle, path: &str, message: &str) {
+    let _ = app.emit(
+        "git-progress",
+        GitProgress {
+            path: path.to_string(),
+            message: message.to_string(),
+        },
+    );
+}
 
 fn agent_resources(app: &tauri::AppHandle) -> std::path::PathBuf {
     let bundled = app.path().resource_dir().unwrap_or_default();
@@ -68,6 +90,62 @@ async fn repo_state(app: tauri::AppHandle, path: String) -> Result<RepoState, St
             }
         } else {
             state(&path)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn repo_watch(app: tauri::AppHandle, path: String, timeout_ms: u64) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            let response = app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::Watch {
+                    path: remote_path.to_string(),
+                    timeout_ms,
+                },
+            )?;
+            match response {
+                Response::Changed(changed) => Ok(changed),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            watch(&path, timeout_ms)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn repo_rebase_plan(
+    app: tauri::AppHandle,
+    path: String,
+    onto: String,
+) -> Result<Vec<RebaseCommit>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            let response = app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::RebasePlan {
+                    path: remote_path.to_string(),
+                    onto,
+                },
+            )?;
+            match response {
+                Response::RebasePlan(commits) => Ok(commits),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            rebase_plan(&path, &onto)
         }
     })
     .await
@@ -143,6 +221,7 @@ async fn repo_diff(
     path: String,
     target: String,
     file: String,
+    ignore_whitespace: bool,
 ) -> Result<DiffResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if path.starts_with("ssh://") {
@@ -154,6 +233,7 @@ async fn repo_diff(
                     path: remote_path.to_string(),
                     target,
                     file,
+                    ignore_whitespace,
                 },
             )?;
             match response {
@@ -162,8 +242,23 @@ async fn repo_diff(
                 _ => Err("Unexpected remote response".to_string()),
             }
         } else {
-            diff(&path, &target, &file)
+            diff_with_options(&path, &target, &file, ignore_whitespace)
         }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn open_in_editor(
+    repo: String,
+    file: String,
+    line: u32,
+    editor: String,
+    executable: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        editor::open(&repo, &file, line, &editor, &executable)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -174,17 +269,20 @@ async fn repo_action(
     app: tauri::AppHandle,
     path: String,
     operation: RepoAction,
+    cancel_token: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if path.starts_with("ssh://") {
             let (_, remote_path) = remote::parse_uri(&path)?;
-            let response = app.state::<remote::RemoteManager>().call(
+            let response = app.state::<remote::RemoteManager>().call_with_progress(
                 &path,
                 &agent_resources(&app),
                 Request::Action {
                     path: remote_path.to_string(),
                     action: operation,
+                    cancel_token: cancel_token.clone(),
                 },
+                |message| report_progress(&app, &path, message),
             )?;
             match response {
                 Response::Action(output) => Ok(output),
@@ -192,7 +290,31 @@ async fn repo_action(
                 _ => Err("Unexpected remote response".to_string()),
             }
         } else {
-            action(&path, operation)
+            action_with_progress(&path, operation, cancel_token.as_deref(), |message| {
+                report_progress(&app, &path, message)
+            })
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn repo_cancel(app: tauri::AppHandle, path: String, token: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let response = app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::Cancel { token },
+            )?;
+            match response {
+                Response::Action(message) => Ok(message),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            cancel_operation(&token)
         }
     })
     .await
@@ -207,10 +329,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             repo_snapshot,
             repo_state,
+            repo_watch,
+            repo_rebase_plan,
             repo_search,
             repo_commit,
             repo_diff,
-            repo_action
+            open_in_editor,
+            repo_action,
+            repo_cancel
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitFerry");

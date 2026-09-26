@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 gitferry-proto = { path = "../proto" }
 serde_json = "1"
+libc = "0.2"
+notify = "8.2"
 
 [dev-dependencies]
 tempfile = "3"

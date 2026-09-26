@@ -1,12 +1,13 @@
 {
   "name": "gitferry",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A fast Git client for local and SSH repositories",
   "type": "module",
   "scripts": {
     "start": "vite",
     "dev": "vite",
     "build": "vite build",
+    "test:layout": "node tests/layout-audit.cjs",
     "test:ui": "cargo build --manifest-path ../Cargo.toml -p gitferry-agent && node tests/headless-smoke.cjs",
     "serve": "vite preview",
     "tauri": "tauri"
@@ -15,10 +16,12 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.3",
+    "prismjs": "^1.30.0",
     "solid-js": "^1.9.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/prismjs": "^1.26.6",
     "puppeteer-core": "^25.12.0",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
