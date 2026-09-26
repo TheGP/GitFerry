@@ -91,6 +91,13 @@ async function waitForAction(page) {
   await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
 }
 
+async function shortcut(page, key) {
+  const modifier = process.platform === "darwin" ? "Meta" : "Control";
+  await page.keyboard.down(modifier);
+  await page.keyboard.press(key);
+  await page.keyboard.up(modifier);
+}
+
 async function openRepo(page, folder) {
   await page.locator("button[title='Open repository']").click();
   await page.locator(".open-modal .modal-body input").fill(folder);
@@ -143,6 +150,26 @@ async function main() {
   const pageErrors = [];
   page.on("pageerror", error => pageErrors.push(error.message));
   await page.goto("http://127.0.0.1:1420/");
+  await shortcut(page, "p");
+  await page.waitForSelector(".palette input");
+  await page.locator(".palette input").fill("Open repository");
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".open-modal");
+  assert.equal(await page.$$eval(".palette", items => items.length), 0);
+  await page.click(".open-kind button:nth-child(2)");
+  await page.locator(".remote-form label:first-child input").fill("tester@example.test");
+  await page.locator(".remote-form label:nth-child(2) input").fill("relative/repo");
+  assert.equal(await page.$eval(".remote-form button[type='submit']", button => button.disabled), true);
+  await page.locator(".remote-form label:nth-child(2) input").fill("/tmp/repo");
+  assert.equal(await page.$eval(".remote-form button[type='submit']", button => button.disabled), false);
+  await page.click(".open-kind button:first-child");
+  await page.locator(".open-modal .modal-body input").fill(path.join(sandbox, "missing"));
+  await page.click(".open-modal .modal-body button[type='submit']");
+  await page.waitForSelector(".modal-error");
+  await page.keyboard.press("Escape");
+  await shortcut(page, "o");
+  await page.waitForSelector(".open-modal");
+  await page.keyboard.press("Escape");
   await openRepo(page, small);
   await page.click(".file-row");
   await page.waitForSelector(".diff-line");
@@ -225,8 +252,7 @@ async function main() {
   await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
   await page.click(".working-row");
   fs.writeFileSync(path.join(small, "base.txt"), "temporary unwanted change\n");
-  await page.click("button[title='Refresh']");
-  await page.waitForFunction(() => [...document.querySelectorAll(".file-row")].some(row => row.textContent.includes("base.txt")));
+  await page.waitForFunction(() => [...document.querySelectorAll(".file-row")].some(row => row.textContent.includes("base.txt")), { timeout: 10000 });
   await page.evaluate(() => [...document.querySelectorAll(".file-row")].find(row => row.textContent.includes("base.txt"))?.click());
   await page.waitForSelector(".file-actions .danger");
   page.once("dialog", dialog => dialog.accept());
@@ -247,7 +273,14 @@ async function main() {
   await page.screenshot({ path: path.join(screenshots, "small-commit.png") });
 
   await openRepo(page, large);
-  assert.equal(await page.$$(".notice-bar").then(items => items.length), 0, "switching repositories must clear old action notices");
+  assert.equal(await page.$$eval(".notice-bar", items => items.length), 0, "switching repositories must clear old action notices");
+  const originalLocationWidth = await page.$eval(".locations", element => element.getBoundingClientRect().width);
+  const splitter = await page.$eval(".locations-splitter", element => { const bounds = element.getBoundingClientRect(); return { x: bounds.x + bounds.width / 2, y: bounds.y + 100 }; });
+  await page.mouse.move(splitter.x, splitter.y);
+  await page.mouse.down();
+  await page.mouse.move(splitter.x + 36, splitter.y, { steps: 4 });
+  await page.mouse.up();
+  assert.ok((await page.$eval(".locations", element => element.getBoundingClientRect().width)) > originalLocationWidth, "locations splitter must resize the pane");
   await page.click(".ref-section:nth-child(2) .ref-folder");
   const remoteFolders = await page.$$(".ref-section:nth-child(2) .ref-folder");
   await remoteFolders[remoteFolders.length - 1].click();
@@ -297,6 +330,12 @@ async function main() {
   assert.ok(bottomWidth.commits <= bottomWidth.viewport, "history pane must fit viewport");
   await page.screenshot({ path: path.join(screenshots, "bottom-layout.png") });
   await page.click("button.layout-toggle");
+  await page.click(".repo-tab:first-child .tab-main");
+  assert.ok((await page.$eval(".statusbar", element => element.textContent)).includes(small));
+  await page.click(".repo-tab:nth-child(2) .tab-main");
+  assert.ok((await page.$eval(".statusbar", element => element.textContent)).includes(large));
+  await page.click(".repo-tab:first-child .tab-close");
+  assert.equal(await page.$$eval(".repo-tab", tabs => tabs.length), 1);
   const realPath = process.env.GITFERRY_REAL_REPO;
   let realRepo;
   if (realPath) {
