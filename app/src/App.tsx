@@ -79,10 +79,25 @@ function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrid
 function parseDiffLines(value: Diff | null) {
   let hunk = -1;
   let inHunk = false;
+  let oldLine = 0;
+  let newLine = 0;
   return (value?.text ?? "").split("\n").map(line => {
     if (line.startsWith("diff --git ")) inHunk = false;
-    if (line.startsWith("@@ ")) { inHunk = true; return { line, hunk: ++hunk, kind: "hunk" }; }
-    return { line, hunk: -1, kind: line.startsWith("diff --git ") ? "diff-title" : inHunk && line.startsWith("+") ? "added" : inHunk && line.startsWith("-") ? "deleted" : "" };
+    if (line.startsWith("@@ ")) {
+      const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      inHunk = Boolean(header);
+      if (header) { oldLine = Number(header[1]); newLine = Number(header[2]); }
+      return { line, hunk: ++hunk, kind: "hunk", oldNumber: null, newNumber: null };
+    }
+    let oldNumber: number | null = null;
+    let newNumber: number | null = null;
+    let kind = line.startsWith("diff --git ") ? "diff-title" : "";
+    if (inHunk) {
+      if (line.startsWith(" ")) { oldNumber = oldLine++; newNumber = newLine++; }
+      else if (line.startsWith("-")) { oldNumber = oldLine++; kind = "deleted"; }
+      else if (line.startsWith("+")) { newNumber = newLine++; kind = "added"; }
+    }
+    return { line, hunk: -1, kind, oldNumber, newNumber };
   });
 }
 
@@ -112,8 +127,8 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; actionBu
   }
   return <>
     <Show when={props.working && props.item.target === "working"}><div class="line-selection-toolbar"><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : "Click changed line numbers to select lines · Shift-click for a range")}</span><Show when={selectedLines().length}><button class="clear-lines" onClick={() => setSelectedLines([])}>Clear</button></Show><button class="stage-lines" disabled={!stageable() || !selectedLines().length || props.actionBusy} onClick={() => props.onAction({ kind: "stage_lines", value: { path: props.item.path, lines: [...selectedLines()].sort((a, b) => a - b), diff: props.value.text } })}>Stage Lines</button></div></Show>
-    <div class="diff-content" onPointerUp={() => { dragStart = -1; }}><For each={lines()}>{({ line, hunk, kind }, index) => <div class={`diff-line ${kind} ${selectedSet().has(index()) ? "selected" : ""}`}>
-      <Show when={changed(index())} fallback={<span class="line-number">{index() + 1}</span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select diff line ${index() + 1}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}>{index() + 1}</button></Show>
+    <div class="diff-content" onPointerUp={() => { dragStart = -1; }}><For each={lines()}>{({ line, hunk, kind, oldNumber, newNumber }, index) => <div class={`diff-line ${kind} ${selectedSet().has(index()) ? "selected" : ""}`}>
+      <Show when={changed(index())} fallback={<span class="line-number"><span class="old-line">{oldNumber ?? ""}</span><span class="new-line">{newNumber ?? ""}</span></span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select ${kind === "added" ? "new" : "old"} line ${kind === "added" ? newNumber : oldNumber}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}><span class="old-line">{oldNumber ?? ""}</span><span class="new-line">{newNumber ?? ""}</span></button></Show>
       <span class="line-text">{line || " "}</span><Show when={hunk >= 0 && props.working && (props.item.target === "working" || props.item.target === "staged")}><button class="hunk-action" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_hunk", value: { path: props.item.path, index: hunk, reverse: props.item.target === "staged" } })}>{props.item.target === "staged" ? "Unstage hunk" : "Stage hunk"}</button></Show>
     </div>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
   </>;

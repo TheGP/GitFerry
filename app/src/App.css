@@ -156,7 +156,8 @@ button { cursor: pointer; }
 .diff-line.deleted { background: #4b3032; color: #ffdcda; }
 .diff-line.hunk { background: #303d4b; color: #8cb8d8; }
 .diff-line.diff-title { color: #e8e0bd; }
-.line-number { width: 54px; flex: none; padding: 0 11px 0 3px; text-align: right; color: #657481; font-size: 12px; line-height: inherit; user-select: none; }
+.line-number { width: 86px; flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 8px 0 2px; text-align: right; color: #657481; font-size: 12px; line-height: inherit; user-select: none; }
+.line-number span { min-width: 0; padding-right: 4px; }
 .line-number.selectable { border: 0; background: transparent; cursor: pointer; }
 .line-number.selectable:hover { background: var(--theme-accent-soft); color: var(--theme-text); }
 .diff-line.selected { outline: 1px solid var(--theme-accent); outline-offset: -1px; }

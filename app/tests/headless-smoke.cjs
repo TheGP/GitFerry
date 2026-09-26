@@ -63,7 +63,7 @@ async function clickChangedLine(page, text, shift = false) {
   const label = await page.evaluate(value => [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === value)?.querySelector("button.line-number")?.getAttribute("aria-label"), text);
   assert.ok(label, `Selectable line ${text} must exist`);
   if (shift) await page.keyboard.down("Shift");
-  await page.click(`button[aria-label='${label}']`);
+  await page.click(`button[aria-label='${label}'] .${label.startsWith("Select old") ? "old-line" : "new-line"}`);
   if (shift) await page.keyboard.up("Shift");
 }
 
@@ -408,6 +408,14 @@ async function main() {
   await page.click(".file-row");
   await page.waitForSelector("button.line-number.selectable");
   assert.ok(Number.parseFloat(await page.$eval(".diff-content", element => getComputedStyle(element).fontSize)) >= 14, "diff code must be readable");
+  const gutterNumbers = await page.evaluate(() => {
+    const values = ["diff --git a/lines.txt b/lines.txt", " line 1", "-line 3", "+NEW 3", " line 4", "-line 25", "+NEW 25"];
+    return values.map(value => {
+      const row = [...document.querySelectorAll(".diff-line")].find(item => item.querySelector(".line-text")?.textContent === value);
+      return [row?.querySelector(".old-line")?.textContent ?? null, row?.querySelector(".new-line")?.textContent ?? null];
+    });
+  });
+  assert.deepEqual(gutterNumbers, [["", ""], ["1", "1"], ["3", ""], ["", "3"], ["4", "4"], ["25", ""], ["", "25"]], "diff gutter must show old and new file line numbers");
   const dragLines = await page.evaluate(() => ["-line 3", "+NEW 3"].map(value => {
     const rect = [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === value)?.querySelector("button.line-number")?.getBoundingClientRect();
     return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
