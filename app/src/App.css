@@ -458,6 +458,12 @@ button { cursor: pointer; }
 .all-diff-heading .diff-target { flex: none; color: var(--theme-muted); font: 700 9px Inter, "Segoe UI", sans-serif; letter-spacing: 1px; }
 .all-diff-card .file-actions { padding-right: 12px; }
 .all-diff-card .diff-content { padding-bottom: 13px; }
+.files-list .summary-diff-card { margin: 0; border: 0; border-bottom: 1px solid var(--theme-border); border-radius: 0; }
+.files-list .summary-diff-card:last-child { border-bottom: 0; }
+.summary-diff-heading { display: flex; align-items: stretch; background: var(--theme-raised); }
+.summary-diff-heading .file-row { flex: 1; width: auto; min-width: 0; border-bottom: 0; }
+.summary-open-tab { flex: none; width: 34px; border: 0; border-left: 1px solid var(--theme-border); background: var(--theme-raised); color: var(--theme-muted); font-size: 16px; cursor: pointer; }
+.summary-open-tab:hover { background: var(--theme-hover); color: var(--theme-text); }
 
 .theme-control { height: 100%; flex: none; display: flex; align-items: center; gap: 7px; padding: 0 14px; border-left: 1px solid var(--theme-border); color: var(--theme-muted); }
 .theme-caption { font-size: 9px; font-weight: 800; letter-spacing: 1px; }
