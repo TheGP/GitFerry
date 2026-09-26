@@ -12,7 +12,8 @@ button, input { font: inherit; }
 button { cursor: pointer; }
 .app-shell { display: flex; flex-direction: column; height: 100vh; min-height: 600px; overflow: hidden; }
 .tabbar { height: 43px; flex: none; display: flex; align-items: stretch; background: #1b2026; border-bottom: 1px solid #0e1217; }
-.brand-mark { width: 48px; flex: none; display: grid; place-items: center; color: #63c9ce; font-size: 29px; font-weight: 800; border-right: 1px solid #10151a; }
+.brand-mark { width: 48px; flex: none; display: grid; place-items: center; border-right: 1px solid #10151a; }
+.brand-mark img { width: 24px; height: 24px; display: block; }
 .repo-tab { display: flex; align-items: stretch; max-width: 250px; min-width: 210px; border-right: 1px solid #14191e; color: #9aa6b2; }
 .repo-tab.active { background: #292f37; color: #edf3f7; border-top: 2px solid #5dc6ca; }
 .tab-main { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; padding: 0 8px 0 15px; border: 0; background: none; color: inherit; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 600; }
@@ -372,7 +373,7 @@ button { cursor: pointer; }
 :root { color: var(--theme-text); background: var(--theme-chrome); }
 .app-shell, .workspace { background: var(--theme-details); }
 .tabbar, .statusbar { background: var(--theme-chrome); border-color: var(--theme-border); }
-.brand-mark { color: var(--theme-accent); border-color: var(--theme-border); }
+.brand-mark { border-color: var(--theme-border); }
 .repo-tab { color: var(--theme-secondary); border-color: var(--theme-border); }
 .repo-tab.active { background: var(--theme-commits); color: var(--theme-text); border-top-color: var(--theme-accent); }
 .tab-main .tab-branch, .app-name span { color: var(--theme-muted); }

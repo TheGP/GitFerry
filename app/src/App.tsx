@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { highlightDiff } from "./diffHighlight";
+import logoUrl from "./assets/logo.svg";
 import "./App.css";
 
 type Status = { path: string; index: string; worktree: string };
@@ -1071,7 +1072,7 @@ function App() {
   return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); } if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); } }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
     <header class="tabbar">
-      <div class="brand-mark">◇</div>
+      <div class="brand-mark"><img src={logoUrl} alt="GitFerry" /></div>
       <div class="tab-strip" ref={tabStrip} onScroll={updateTabScroll} onWheel={event => { if (tabOverflow() && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.preventDefault(); tabStrip.scrollLeft += event.deltaY; } }}>
       <For each={tabs()}>{item => <div class={`repo-tab ${activePath() === item.path ? "active" : ""} ${item.loading ? "loading" : ""} ${item.loadError ? "unavailable" : ""}`} draggable onDragStart={() => { draggedTab = item.path; }} onDragOver={event => event.preventDefault()} onDrop={() => reorderTab(item.path)} onDragEnd={() => { draggedTab = null; }}>
         <button class="tab-main" title={`${item.name} · ${item.branch}`} onClick={() => activateTab(item.path)}><span class="tab-name">{item.name}</span><span class="tab-branch">{item.branch}</span></button>
