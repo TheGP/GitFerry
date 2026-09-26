@@ -38,6 +38,12 @@ async function measure(page) {
   });
 }
 
+async function selectTheme(page, theme) {
+  await page.click("button[title='Settings']");
+  await page.select('select[aria-label="Color theme"]', theme);
+  await page.click(".settings-footer button");
+}
+
 async function main() {
   assert.ok(fs.existsSync(chromePath), `Chrome not found at ${chromePath}`);
   vite = spawn(process.execPath, [path.join(project, "app/node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", "1421", "--strictPort"], { cwd: path.join(project, "app"), windowsHide: true, stdio: "ignore" });
@@ -46,8 +52,17 @@ async function main() {
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
+  page.on("dialog", dialog => { errors.push(`Unexpected browser dialog: ${dialog.type()}`); void dialog.dismiss(); });
   await page.goto(url);
   await page.waitForSelector(".commit-row");
+  const commitDates = await page.evaluate(async () => {
+    const { formatCommitDate } = await import("/src/commitDate.ts");
+    const now = new Date(2026, 8, 26, 12);
+    const display = (year, month, day, hour, minute) => formatCommitDate(new Date(year, month, day, hour, minute).getTime() / 1000, now);
+    return [display(2026, 8, 26, 18, 43), display(2026, 8, 25, 21, 34), display(2026, 8, 19, 21, 34), display(2026, 8, 18, 21, 34), display(2025, 8, 18, 21, 34)];
+  });
+  assert.deepEqual(commitDates, ["18:43", "Fri, 21:34", "Sat, 21:34", "Sep 18", "Sep 18, 2025"]);
+  assert.match(await page.$eval(".commit-row .commit-meta span", element => element.textContent), /^\d{2}:\d{2}$/, "today's commit row must show only the time");
   assert.equal(await page.$(".working-header"), null, "Working-directory intro still takes space above changes");
   const branchLabels = await page.evaluate(() => {
     const branchSection = document.querySelector(".ref-section");
@@ -56,20 +71,63 @@ async function main() {
   });
   assert.equal(branchLabels.icons, 0, "Branch rows still show glyphs");
   assert.ok(Math.abs(branchLabels.mainLeft - branchLabels.folderLeft) <= 1, "Branch labels do not align with folders");
+  const trackingBadges = await page.evaluate(() => ["feature/remote-git", "main"].map(name => {
+    const row = document.querySelector(`.ref-item[title="${name}"]`);
+    const badge = row.querySelector(".ref-tracking");
+    const bounds = row.getBoundingClientRect();
+    const badgeBounds = badge.getBoundingClientRect();
+    return { name, text: badge.textContent, rightGap: bounds.right - badgeBounds.right, radius: getComputedStyle(badge).borderRadius, background: getComputedStyle(badge).backgroundColor,
+      behindHead: !row.querySelector(".ref-head") || badgeBounds.left > row.querySelector(".ref-head").getBoundingClientRect().right };
+  }));
+  assert.deepEqual(trackingBadges.map(item => item.text), ["57↓", "1↑"]);
+  for (const badge of trackingBadges) {
+    assert.ok(badge.rightGap <= 10 && badge.behindHead, `${badge.name} tracking badge must sit at the right after HEAD`);
+    assert.notEqual(badge.radius, "0px", `${badge.name} tracking badge needs rounded corners`);
+    assert.notEqual(badge.background, "rgba(0, 0, 0, 0)", `${badge.name} tracking badge needs a distinct background`);
+  }
+  await page.hover('.ref-item[title="main"]');
+  const hoveredBranch = await page.evaluate(() => {
+    const row = document.querySelector('.ref-item[title="main"]').parentElement;
+    return { badgeRight: row.querySelector(".ref-tracking").getBoundingClientRect().right,
+      actionLeft: row.querySelector(".ref-action-trigger").getBoundingClientRect().left,
+      actionOpacity: getComputedStyle(row.querySelector(".ref-action-trigger")).opacity };
+  });
+  assert.ok(hoveredBranch.badgeRight <= hoveredBranch.actionLeft && hoveredBranch.actionOpacity === "1", "branch actions overlap the tracking badge on hover");
+  await page.mouse.move(800, 100);
   const report = [];
   for (const width of [1429, 1100, 960]) {
     await page.setViewport({ width, height: 918, deviceScaleFactor: 1 });
     for (const theme of ["antigravity", "vscode", "sublime", "claude"]) {
-      await page.select(".theme-control select", theme);
+      await selectTheme(page, theme);
       const layout = await measure(page);
       report.push({ width, theme, ...layout });
       if (theme === "claude") await page.screenshot({ path: path.join(output, `main-${width}.png`) });
     }
   }
+  for (const width of [1429, 960]) {
+    await page.setViewport({ width, height: 918, deviceScaleFactor: 1 });
+    const composer = await page.evaluate(() => {
+      const tabs = document.querySelector(".details-tabs").getBoundingClientRect();
+      const scroll = document.querySelector(".details-scroll");
+      const editor = document.querySelector(".commit-editor");
+      const field = editor.querySelector("textarea").getBoundingClientRect();
+      const style = getComputedStyle(editor);
+      return { topGap: field.top - tabs.bottom, leftGap: field.left - scroll.getBoundingClientRect().left,
+        rightGap: scroll.getBoundingClientRect().left + scroll.clientWidth - field.right,
+        border: style.borderTopWidth, fieldWidth: field.width };
+    });
+    assert.ok(Math.abs(composer.topGap) <= 1 && Math.abs(composer.leftGap) <= 1 && Math.abs(composer.rightGap) <= 1, `Commit field does not meet the pane edges at ${width}px: ${JSON.stringify(composer)}`);
+    assert.equal(composer.border, "0px", "Commit editor still has a card border");
+    await page.screenshot({ path: path.join(output, `commit-editor-flat-${width}.png`) });
+  }
   await page.setViewport({ width: 1600, height: 900, deviceScaleFactor: 1 });
-  await page.select(".theme-control select", "claude");
+  await selectTheme(page, "claude");
   await page.evaluate(() => document.querySelector(".commit-row")?.click());
   await page.waitForSelector(".detail-header h2");
+  await page.waitForSelector(".summary-open-tab");
+  assert.equal(await page.$(".in-app-edit-button"), null, "Committed files must not expose the in-app edit icon");
+  await page.click(".summary-open-tab");
+  assert.equal(await page.$eval(".file-view-switch", controls => [...controls.querySelectorAll("button")].some(button => button.textContent.includes("Edit"))), false, "Committed file tabs must remain read only");
   await page.screenshot({ path: path.join(output, "readme-preview.png") });
   await page.click(".working-row");
   for (const layout of report) {
@@ -86,9 +144,38 @@ async function main() {
     }
   }
   await page.setViewport({ width: 960, height: 918, deviceScaleFactor: 1 });
-  await page.select(".theme-control select", "claude");
+  await selectTheme(page, "claude");
+  await page.click(".branch-chip");
+  const branchMenu = await page.evaluate(() => {
+    const menu = document.querySelector(".branch-menu").getBoundingClientRect();
+    const filter = document.querySelector(".branch-menu-filter").getBoundingClientRect();
+    const headings = [...document.querySelectorAll(".branch-menu-list .eyebrow")].map(item => item.textContent.trim());
+    return { menuRight: menu.right, filterTop: filter.top, menuTop: menu.top, headings };
+  });
+  assert.deepEqual(branchMenu.headings, ["LOCAL BRANCHES", "REMOTE BRANCHES"]);
+  assert.ok(branchMenu.filterTop >= branchMenu.menuTop && branchMenu.menuRight <= 960, "branch filter or menu overflows the viewport");
+  await page.locator(".branch-menu-filter").fill("ORIGIN/MAIN");
+  assert.equal(await page.$$(".branch-menu-row:not(.branch-menu-remote)").then(items => items.length), 0, "branch filter must hide nonmatching local branches");
+  assert.equal(await page.$$(".branch-menu-remote").then(items => items.length), 1, "branch filter must match remote branches case-insensitively");
+  await page.screenshot({ path: path.join(output, "branch-menu-filter-960.png") });
+  await page.keyboard.press("Escape");
   await page.screenshot({ path: path.join(output, "branches-clean-960.png") });
   assert.equal(await page.$eval(".summary-diff-card .file-row", row => row.getAttribute("aria-expanded")), "true", "Working files must start expanded");
+  const fileChevron = () => page.$eval(".summary-diff-card .file-row", row => {
+    const icon = row.querySelector(".file-chevron svg");
+    const rowBounds = row.getBoundingClientRect();
+    const iconBounds = icon.getBoundingClientRect();
+    return { expanded: row.getAttribute("aria-expanded"), hasSvg: Boolean(icon), glyph: row.querySelector(".file-chevron").textContent.trim(),
+      centerOffset: (iconBounds.top + iconBounds.bottom - rowBounds.top - rowBounds.bottom) / 2,
+      transform: getComputedStyle(icon).transform };
+  });
+  const openChevron = await fileChevron();
+  assert.ok(openChevron.hasSvg && !openChevron.glyph && Math.abs(openChevron.centerOffset) <= 1, "open file chevron must be a centered SVG");
+  await page.click(".summary-diff-card .file-row");
+  const closedChevron = await fileChevron();
+  assert.ok(closedChevron.expanded === "false" && Math.abs(closedChevron.centerOffset) <= 1 && closedChevron.transform !== openChevron.transform, "closed file chevron must stay centered and rotate");
+  await page.screenshot({ path: path.join(output, "file-chevron-closed-960.png") });
+  await page.click(".summary-diff-card .file-row");
   await page.waitForSelector(".summary-diff-card .diff-content");
   await page.screenshot({ path: path.join(output, "merged-working-960.png") });
   await page.locator(".search-box input").fill("layout");
@@ -137,7 +224,9 @@ async function main() {
   const compactControls = await page.evaluate(() => [".commit-editor-actions label", ".commit-editor-actions button", ".files-heading button:last-child"].map(selector => ({ selector, height: document.querySelector(selector).getBoundingClientRect().height })));
   for (const control of compactControls) assert.ok(control.height <= 34, `${control.selector} wraps at 960px`);
   await page.click("button[title='Settings']");
-  await page.select(".settings-body select", "vscode");
+  await page.select('select[aria-label="Color theme"]', "sublime");
+  assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.theme")), "sublime");
+  await page.select('select[aria-label="External editor"]', "vscode");
   await page.type(".settings-body input", "C:/Editors/code.cmd");
   assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.editor")), "vscode");
   assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.editorExecutable")), "C:/Editors/code.cmd");
@@ -145,7 +234,8 @@ async function main() {
   await page.click(".settings-footer button");
   await page.click("button[title='Settings']");
   assert.equal(await page.$eval(".settings-body input", input => input.value), "C:/Editors/code.cmd");
-  await page.select(".settings-body select", "antigravity");
+  assert.equal(await page.$eval('select[aria-label="Color theme"]', input => input.value), "sublime");
+  await page.select('select[aria-label="External editor"]', "antigravity");
   await page.$eval(".settings-body input", input => { input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true })); });
   await page.keyboard.press("Escape");
   await page.click(".branch-chip");
@@ -264,7 +354,7 @@ async function main() {
   for (const width of [1429, 960]) {
     await page.setViewport({ width, height: 918, deviceScaleFactor: 1 });
     for (const theme of ["antigravity", "vscode", "sublime", "claude"]) {
-      await page.select(".theme-control select", theme);
+      await selectTheme(page, theme);
       const selected = await page.evaluate(() => {
         const row = document.querySelector(".commit-row.selected");
         const rgb = color => color.match(/\d+/g).slice(0, 3).map(Number);
@@ -293,6 +383,29 @@ async function main() {
   await page.keyboard.press("Enter");
   await page.keyboard.up(modifier);
   assert.equal(await page.evaluate(() => window.__commitClicks), 1, "Ctrl+Enter in search triggered a commit");
+  await page.evaluate(() => document.querySelector(".error-bar button")?.click());
+  await page.setViewport({ width: 1429, height: 918, deviceScaleFactor: 1 });
+  await page.click("button[title='Stash']");
+  await page.waitForSelector(".action-dialog");
+  assert.equal(await page.$eval(".action-dialog input", input => input.value), "Work in progress");
+  await page.screenshot({ path: path.join(output, "stash-dialog.png") });
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$(".action-dialog"), null, "Escape did not close stash dialog");
+  await page.evaluate(() => document.querySelector('[aria-label="Actions for main"]')?.click());
+  await page.waitForSelector(".ref-action-popover");
+  await page.evaluate(() => [...document.querySelectorAll(".ref-action-popover button")].find(button => button.textContent.includes("Rename branch"))?.click());
+  assert.equal(await page.$eval(".action-dialog input", input => input.value), "main", "Rename dialog did not prefill the branch");
+  await page.click(".action-dialog-footer button:first-child");
+  await page.click("button[title='Delete a remote branch by name']");
+  assert.equal(await page.$eval(".action-dialog select", select => select.value), "origin", "Remote dialog did not choose the existing remote");
+  assert.equal(await page.$eval(".action-dialog-submit", button => button.disabled), true, "Remote branch deletion allows an empty name");
+  await page.screenshot({ path: path.join(output, "remote-action-dialog.png") });
+  await page.keyboard.press("Escape");
+  await page.click("button[title='More push options']");
+  await page.click(".push-menu button[title='Force push with lease']");
+  assert.ok(await page.$(".action-dialog-submit.danger"), "Force push confirmation is missing its warning button");
+  await page.screenshot({ path: path.join(output, "confirm-action-dialog.png") });
+  await page.keyboard.press("Escape");
   const tabsPage = await browser.newPage();
   tabsPage.on("pageerror", error => errors.push(error.message));
   await tabsPage.setViewport({ width: 1429, height: 918, deviceScaleFactor: 1 });
@@ -307,13 +420,14 @@ async function main() {
     const strip = document.querySelector(".tab-strip");
     return { pageWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth, stripWidth: strip.clientWidth,
       contentWidth: strip.scrollWidth, scrollLeft: strip.scrollLeft, strip: rect(".tab-strip"),
-      navigation: rect(".tab-navigation"), appName: rect(".app-name"), theme: rect(".theme-control"),
+      navigation: rect(".tab-navigation"), settings: rect(".settings-button"),
       active: rect(".repo-tab.active") };
   });
   let tabs = await tabLayout();
   assert.equal(tabs.pageWidth, tabs.viewportWidth, "Overflowing tabs widen the page");
   assert.ok(tabs.contentWidth > tabs.stripWidth, "Tabs do not overflow their strip");
-  assert.ok(tabs.strip.right <= tabs.navigation.left + 1 && tabs.navigation.right <= tabs.appName.left + 1 && tabs.appName.right <= tabs.theme.left + 1, "Tab header controls overlap");
+  assert.ok(tabs.strip.right <= tabs.navigation.left + 1 && tabs.navigation.right <= tabs.settings.left + 1, "Tab header controls overlap");
+  assert.equal(await tabsPage.$(".app-name, .theme-control"), null, "Removed header labels are still visible");
   await tabsPage.screenshot({ path: path.join(output, "tabs-overflow-1429.png") });
   await tabsPage.click(".tab-list-button");
   assert.equal(await tabsPage.$$eval(".tab-list-menu button", buttons => buttons.length), 9, "Tab list omits repositories");
@@ -338,7 +452,7 @@ async function main() {
   await tabsPage.waitForFunction(() => document.querySelector(".tab-strip").clientWidth < document.querySelector(".tab-strip").scrollWidth);
   tabs = await tabLayout();
   assert.equal(tabs.pageWidth, tabs.viewportWidth, "Narrow tab header widens the page");
-  assert.ok(tabs.strip.right <= tabs.navigation.left + 1 && tabs.navigation.right <= tabs.theme.left + 1, `Narrow tab controls overlap: ${JSON.stringify(tabs)}`);
+  assert.ok(tabs.strip.right <= tabs.navigation.left + 1 && tabs.navigation.right <= tabs.settings.left + 1, `Narrow tab controls overlap: ${JSON.stringify(tabs)}`);
   await tabsPage.screenshot({ path: path.join(output, "tabs-overflow-960.png") });
   await tabsPage.click(".tab-add");
   await tabsPage.waitForSelector(".open-modal");
