@@ -20,10 +20,11 @@ Open a local folder, or enter an SSH host and absolute repository path in the Op
 
 ## Available now
 
-- Repository tabs, recent repositories, branch and remote folders, tags/stashes/submodules sidebar, paged commit history and graph, commit details, working-tree status, and diffs.
+- Repository tabs with overflow scrolling and an open-tab list, recent repositories, branch and remote folders, tags/stashes/submodules sidebar, paged commit history and graph, commit details, working-tree status, and diffs.
 - Summary shows every changed file's diff in one scrollable view, expanded by default with per-file, per-group, and global expand/collapse controls. File tabs give diffs the full details pane, with syntax colors, changed-word highlights, and wrapped long lines.
 - File, hunk, and line staging/unstaging; commit/amend; fetch, pull with fast-forward/merge/rebase, push with automatic upstream setup, branch switching/creation/safe deletion, and stash.
-- Branch merge and rebase, interactive rebase planning for linear history (reorder, pick, fixup, drop), conflict selection (ours/theirs or manual edit), continue/abort, and commit cherry-pick, revert, reset, detached checkout, and local tag creation/deletion.
+- Branch merge and rebase, interactive rebase planning for linear history (reorder, pick, reword, edit, squash, fixup, drop), conflict selection (ours/theirs or manual edit), continue/abort, and commit cherry-pick, revert, reset, detached checkout, and tag creation/deletion.
+- Rename and force-delete local branches; push or delete remote branches and tags. Browse tracked files, file history, and line blame from the details pane.
 - Ignore-whitespace diff view. Line and hunk actions are disabled while this filter is active so they always use the exact patch shown.
 - Open changed files in an external editor at the first changed line from Summary or a file tab. Choose Antigravity, VS Code, or Sublime Text in Settings and optionally set its CLI path. SSH files use the editor's Remote SSH mode (Antigravity or VS Code).
 - Commit search by message; prefix with `author:` or `path:` to search those fields.
@@ -58,4 +59,4 @@ Pushing a `vX.Y.Z` tag matching the versions in `app/package.json` and `app/src-
 
 The macOS bundles use ad-hoc signing and are not notarized; Windows installers are not certificate signed. Operating systems may show an approval warning when installing downloaded builds.
 
-Known gaps against [PLAN.md](PLAN.md): a visual conflict editor, blame, file history, agent forwarding, and a light theme are still pending. Syntax colors currently cover common source and configuration formats. Interactive rebase planning supports linear history only. A filesystem watcher that cannot be established falls back to an 8-second status check while the window is focused.
+Known gaps against [PLAN.md](PLAN.md): a visual conflict editor, agent forwarding, and a light theme are still pending. Syntax colors currently cover common source and configuration formats. Interactive rebase planning supports linear history only. A filesystem watcher that cannot be established falls back to an 8-second status check while the window is focused.

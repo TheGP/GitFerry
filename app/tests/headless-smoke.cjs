@@ -146,6 +146,9 @@ async function bridge(command, args) {
     repo_rebase_plan: ["rebase_plan", { path: args.path, onto: args.onto }],
     repo_search: ["search", { path: args.path, query: args.query, offset: args.offset, limit: 100 }],
     repo_commit: ["commit_details", { path: args.path, hash: args.hash }],
+    repo_file_history: ["file_history", { path: args.path, file: args.file, revision: args.revision, offset: args.offset, limit: 100 }],
+    repo_blame: ["blame", { path: args.path, file: args.file, revision: args.revision, start_line: args.startLine, limit: 300 }],
+    repo_tracked_files: ["tracked_files", { path: args.path, query: args.query, limit: 100 }],
     repo_diff: ["diff", { path: args.path, target: args.target, file: args.file, ignore_whitespace: args.ignoreWhitespace ?? false }],
     repo_action: ["action", { path: args.path, action: args.operation, cancel_token: args.cancelToken }],
     repo_cancel: ["cancel", { token: args.token }],
@@ -343,9 +346,9 @@ async function main() {
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("UNSTAGED ")));
   await waitForAction(page);
   assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "changes must use one Summary tab");
-  await page.click(".files-heading button:not(.whitespace-toggle)");
+  await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent.trim() === "Collapse all")?.click());
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "false");
-  await page.click(".files-heading button:not(.whitespace-toggle)");
+  await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent.trim() === "Expand all")?.click());
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true");
   assert.equal(await page.$eval(".files-heading button:last-child", item => item.textContent.trim()), "Stage All");
   await page.click(".files-heading button:last-child");
@@ -466,6 +469,8 @@ async function main() {
     throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}; status=${git(small, "status", "--short")}`);
   });
   assert.match(git(small, "stash", "list", "-1"), /Headless stash/);
+  await page.waitForFunction(() => [...document.querySelectorAll(".commit-subject")].some(item => item.textContent.includes("Headless stash")));
+  assert.equal(await page.$$eval(".commit-subject", items => items.some(item => /^(index on|untracked files on) /i.test(item.textContent.trim()))), false, "stash helper commits must be absent from history");
   await page.waitForFunction(() => !document.querySelector("button[title='Unstash']")?.disabled);
   await page.select(".theme-control select", "claude");
   await page.click("button[title='Unstash']");
@@ -513,7 +518,7 @@ async function main() {
   await page.waitForFunction(() => !document.querySelector(".conflict-row button:first-of-type")?.disabled);
   page.once("dialog", dialog => dialog.accept());
   await page.click(".conflict-row button:first-of-type");
-  await page.waitForFunction(() => document.querySelector(".operation-panel")?.textContent.includes("All conflicts resolved"));
+  await page.waitForFunction(() => document.querySelector(".operation-panel") && !document.querySelector(".conflict-row"));
   await page.waitForFunction(() => !document.querySelector(".operation-buttons button:first-child")?.disabled);
   assert.equal(fs.readFileSync(path.join(conflictRepo, "shared.txt"), "utf8"), "main\n");
   await page.click(".operation-buttons button:first-child");
@@ -544,6 +549,15 @@ async function main() {
   await page.click("button[title='Plan an interactive rebase onto main']");
   await page.waitForSelector(".rebase-modal .rebase-step:nth-child(3)");
   assert.match(await page.$eval(".rebase-intro", element => element.textContent), /topic onto main/);
+  assert.deepEqual(await page.$$eval(".rebase-step:first-child select option", options => options.map(option => option.value)), ["pick", "reword", "edit", "squash", "fixup", "drop"]);
+  await page.select(".rebase-step:first-child select", "reword");
+  await page.waitForSelector("textarea[aria-label='New message for Add A']");
+  await page.locator("textarea[aria-label='New message for Add A']").fill("Reworded A\n\nDetails");
+  assert.equal(await page.$eval("textarea[aria-label='New message for Add A']", element => element.value), "Reworded A\n\nDetails");
+  await page.select(".rebase-step:first-child select", "pick");
+  await page.select(".rebase-step:first-child select", "squash");
+  assert.equal(await page.$eval(".rebase-start", button => button.disabled), true);
+  await page.select(".rebase-step:first-child select", "pick");
   await page.click(".rebase-step:nth-child(2) .rebase-move button:first-child");
   assert.match(await page.$eval(".rebase-step:first-child", element => element.textContent), /Add B/);
   await page.select(".rebase-step:first-child select", "drop");
@@ -623,6 +637,26 @@ async function main() {
   await page.click(".repo-tab:first-child .tab-close");
   assert.equal(await page.$$eval(".repo-tab", tabs => tabs.length), 1);
   await openRepo(page, lineRepo);
+  await page.click(".summary-open-tab");
+  await page.waitForSelector("button.line-number.selectable");
+  await page.click(".file-view-switch button:nth-child(2)");
+  await page.waitForSelector(".file-history-row");
+  assert.match(await page.$eval(".file-history-row", row => row.textContent), /Initial lines/);
+  await page.click(".file-view-switch button:nth-child(3)");
+  await page.waitForSelector(".blame-row");
+  assert.equal(await page.$eval(".blame-row .blame-content", code => code.textContent), "line 1");
+  assert.equal(await page.$$eval(".blame-row", rows => rows.length), 30);
+  await page.click(".file-view-switch button:first-child");
+  await page.waitForSelector("button.line-number.selectable");
+  await page.click(".details-tab:first-child");
+  await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent === "Browse files")?.click());
+  await page.waitForSelector(".file-finder-modal");
+  await page.locator(".file-finder-modal input").fill("lines.txt");
+  await page.waitForSelector(".file-finder-list button");
+  await page.click(".file-finder-list button");
+  await page.waitForSelector(".file-history-row");
+  assert.equal(await page.$eval(".diff-heading-target", target => target.textContent), "TRACKED");
+  await page.click(".details-tab:first-child");
   await page.click(".summary-open-tab");
   await page.waitForSelector("button.line-number.selectable");
   assert.ok(await page.$eval(".details-tab:last-child", tab => tab.classList.contains("active")), "the open-tab button must show the dedicated file tab");

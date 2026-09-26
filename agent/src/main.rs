@@ -1,4 +1,4 @@
-use gitferry_agent::{action_with_progress, handle, write_rebase_todo};
+use gitferry_agent::{action_with_progress, amend_rebase_message, handle, write_rebase_todo};
 use gitferry_proto::{Request, Response, RpcRequest, RpcResponse};
 use std::io::{self, BufRead, Write};
 
@@ -6,6 +6,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|arg| arg == "--write-todo") {
         if let Err(error) = write_rebase_todo(&args[1..]) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().is_some_and(|arg| arg == "--amend-message") {
+        if let Err(error) = amend_rebase_message(&args[1..]) {
             eprintln!("{error}");
             std::process::exit(1);
         }

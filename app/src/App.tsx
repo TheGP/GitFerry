@@ -1,4 +1,4 @@
-import { batch, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
@@ -9,16 +9,20 @@ import "./App.css";
 type Status = { path: string; index: string; worktree: string };
 type Ref = { name: string; kind: string; target: string; isHead: boolean; ahead?: number; behind?: number };
 type Commit = { hash: string; parents: string[]; subject: string; author: string; timestamp: number; decorations: string[] };
-type Repo = { path: string; name: string; branch: string; head: string | null; status: Status[]; refs: Ref[]; commits: Commit[]; hasMore: boolean; operation?: string | null; loading?: boolean; loadError?: string };
-type RepoState = { branch: string; head: string | null; status: Status[]; operation?: string | null };
+type Repo = { path: string; name: string; branch: string; head: string | null; status: Status[]; refs: Ref[]; remotes: string[]; commits: Commit[]; hasMore: boolean; operation?: string | null; rebaseEditPause?: boolean; loading?: boolean; loadError?: string };
+type RepoState = { branch: string; head: string | null; status: Status[]; operation?: string | null; rebaseEditPause?: boolean };
 type SearchResult = { commits: Commit[]; hasMore: boolean };
 type Details = { hash: string; subject: string; body: string; author: string; authorEmail: string; timestamp: number; parents: string[]; files: { path: string; status: string }[] };
 type Choice = { path: string; status: string; target: string };
 type Diff = { text: string; truncated: boolean };
-type RebaseCommit = { hash: string; subject: string };
-type RebaseStep = RebaseCommit & { action: "pick" | "fixup" | "drop" };
+type FileHistoryEntry = { hash: string; subject: string; author: string; timestamp: number; path: string };
+type FileHistoryResult = { commits: FileHistoryEntry[]; hasMore: boolean };
+type BlameLine = { line: number; hash: string; author: string; timestamp: number; summary: string; content: string };
+type BlameResult = { lines: BlameLine[]; hasMore: boolean };
+type RebaseCommit = { hash: string; subject: string; message: string };
+type RebaseStep = RebaseCommit & { action: "pick" | "reword" | "edit" | "squash" | "fixup" | "drop"; editedMessage?: string };
 type RefNode = { label: string; path: string; ref?: Ref; children: RefNode[]; count: number; containsHead: boolean };
-type Operation = { kind: "stage_all" | "fetch" | "pull" | "pull_merge" | "pull_rebase" | "push" | "force_push_with_lease" | "abort_operation" | "continue_operation" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "discard_hunk"; value: { path: string; index: number; diff: string } } | { kind: "stage_lines" | "unstage_lines" | "discard_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch" | "merge" | "rebase"; value: { branch: string } } | { kind: "interactive_rebase"; value: { branch: string; onto: string; steps: { hash: string; action: RebaseStep["action"] }[] } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash" | "cherry_pick" | "revert" | "detach"; value: { hash: string } } | { kind: "reset"; value: { hash: string; mode: "soft" | "mixed" | "hard" } } | { kind: "create_tag"; value: { name: string; hash: string } } | { kind: "delete_tag"; value: { name: string } } | { kind: "resolve_file"; value: { path: string; side: "ours" | "theirs" } };
+type Operation = { kind: "stage_all" | "fetch" | "pull" | "pull_merge" | "pull_rebase" | "push" | "force_push_with_lease" | "abort_operation" | "continue_operation" | "amend_no_edit" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "discard_hunk"; value: { path: string; index: number; diff: string } } | { kind: "stage_lines" | "unstage_lines" | "discard_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch" | "force_delete_branch" | "merge" | "rebase"; value: { branch: string } } | { kind: "rename_branch"; value: { branch: string; new_name: string } } | { kind: "push_branch" | "delete_remote_branch"; value: { remote: string; branch: string } } | { kind: "interactive_rebase"; value: { branch: string; onto: string; steps: { hash: string; action: RebaseStep["action"]; message?: string }[] } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash" | "cherry_pick" | "revert" | "detach"; value: { hash: string } } | { kind: "reset"; value: { hash: string; mode: "soft" | "mixed" | "hard" } } | { kind: "create_tag"; value: { name: string; hash: string } } | { kind: "delete_tag"; value: { name: string } } | { kind: "push_tag" | "delete_remote_tag"; value: { remote: string; name: string } } | { kind: "resolve_file"; value: { path: string; side: "ours" | "theirs" } };
 const recentKey = "gitferry.recent";
 const tabsKey = "gitferry.openTabs";
 const activeKey = "gitferry.activeTab";
@@ -51,7 +55,7 @@ function savedSession(): { tabs: Repo[]; activePath: string | null } {
     const paths = [...new Set(stored.filter((path): path is string => typeof path === "string" && Boolean(path.trim())))];
     const tabs = paths.map(path => ({
       path, name: path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path,
-      branch: "Loading…", head: null, status: [], refs: [], commits: [], hasMore: false, loading: true,
+      branch: "Loading…", head: null, status: [], refs: [], remotes: [], commits: [], hasMore: false, loading: true,
     }));
     const selected = localStorage.getItem(activeKey);
     return { tabs, activePath: selected && paths.includes(selected) ? selected : paths[0] ?? null };
@@ -94,14 +98,14 @@ function groupRefs(refs: Ref[], folders: boolean): RefNode[] {
   return root.children;
 }
 
-function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrides: Record<string, boolean>; onToggle: (key: string, open: boolean) => void; onSelect: (hash: string) => void }) {
-  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${(props.kind === "branch" ? 34 : 25) + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)}>
+function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrides: Record<string, boolean>; onToggle: (key: string, open: boolean) => void; onSelect: (hash: string) => void; onMenu: (ref: Ref, anchor: HTMLElement) => void }) {
+  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<div class="ref-entry"><button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${(props.kind === "branch" ? 34 : 25) + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)}>
     <Show when={props.kind !== "branch"}><span class="ref-icon">{props.kind === "remote" ? "☁" : props.kind === "stash" ? "◷" : props.kind === "submodule" ? "▣" : "◇"}</span></Show><span class="ref-name">{node.label}</span><Show when={node.ref?.ahead || node.ref?.behind}><span class="ref-tracking">{node.ref?.ahead ? `↑${node.ref.ahead}` : ""} {node.ref?.behind ? `↓${node.ref.behind}` : ""}</span></Show><Show when={node.ref?.isHead}><span class="ref-head">HEAD</span></Show>
-  </button>}>
+  </button><Show when={["branch", "remote", "tag"].includes(props.kind) && !(props.kind === "remote" && node.ref?.name.endsWith("/HEAD"))}><button class="ref-action-trigger" title={`Actions for ${node.path}`} aria-label={`Actions for ${node.path}`} onClick={event => props.onMenu(node.ref!, event.currentTarget)}>⋯</button></Show></div>}>
     {(() => {
       const key = `${props.kind}:${node.path}`;
       const open = () => props.overrides[key] ?? node.containsHead;
-      return <><button class="ref-folder" style={{ "padding-left": `${14 + props.depth * 14}px` }} aria-expanded={open()} onClick={() => props.onToggle(key, !open())}><span class="ref-disclosure">{open() ? "⌄" : "›"}</span><span class="ref-folder-name">{node.label}</span><span class="ref-folder-count">{node.count}</span></button><Show when={open()}><RefTree nodes={node.children} kind={props.kind} depth={props.depth + 1} overrides={props.overrides} onToggle={props.onToggle} onSelect={props.onSelect} /></Show></>;
+      return <><button class="ref-folder" style={{ "padding-left": `${14 + props.depth * 14}px` }} aria-expanded={open()} onClick={() => props.onToggle(key, !open())}><span class="ref-disclosure">{open() ? "⌄" : "›"}</span><span class="ref-folder-name">{node.label}</span><span class="ref-folder-count">{node.count}</span></button><Show when={open()}><RefTree nodes={node.children} kind={props.kind} depth={props.depth + 1} overrides={props.overrides} onToggle={props.onToggle} onSelect={props.onSelect} onMenu={props.onMenu} /></Show></>;
     })()}
   </Show>}</For>;
 }
@@ -298,6 +302,16 @@ function App() {
   const [details, setDetails] = createSignal<Details | null>(null);
   const [choice, setChoice] = createSignal<Choice | null>(null);
   const [diff, setDiff] = createSignal<Diff | null>(null);
+  const [fileView, setFileView] = createSignal<"diff" | "history" | "blame">("diff");
+  const [fileHistory, setFileHistory] = createSignal<FileHistoryResult | null>(null);
+  const [fileBlame, setFileBlame] = createSignal<BlameResult | null>(null);
+  const [fileInfoLoading, setFileInfoLoading] = createSignal(false);
+  const [fileInfoError, setFileInfoError] = createSignal("");
+  const [fileFinderOpen, setFileFinderOpen] = createSignal(false);
+  const [fileFinderQuery, setFileFinderQuery] = createSignal("");
+  const [fileFinderResults, setFileFinderResults] = createSignal<string[]>([]);
+  const [fileFinderBusy, setFileFinderBusy] = createSignal(false);
+  const [fileFinderError, setFileFinderError] = createSignal("");
   const [ignoreWhitespace, setIgnoreWhitespace] = createSignal(false);
   const [allExpanded, setAllExpanded] = createSignal(true);
   const [summaryDiffs, setSummaryDiffs] = createSignal<Record<string, boolean>>({});
@@ -314,7 +328,13 @@ function App() {
   const [commitMessage, setCommitMessage] = createSignal("");
   const [amend, setAmend] = createSignal(false);
   const [branchMenu, setBranchMenu] = createSignal(false);
+  const [tabListOpen, setTabListOpen] = createSignal(false);
+  const [tabOverflow, setTabOverflow] = createSignal(false);
+  const [canScrollTabsLeft, setCanScrollTabsLeft] = createSignal(false);
+  const [canScrollTabsRight, setCanScrollTabsRight] = createSignal(false);
+  const [refMenu, setRefMenu] = createSignal<{ ref: Ref; x: number; y: number } | null>(null);
   const [rebasePlan, setRebasePlan] = createSignal<{ onto: string; branch: string; steps: RebaseStep[] } | null>(null);
+  const [rebaseAmendMessage, setRebaseAmendMessage] = createSignal("");
   const [rebaseLoading, setRebaseLoading] = createSignal(false);
   const [pushMenu, setPushMenu] = createSignal(false);
   const [pullMenu, setPullMenu] = createSignal(false);
@@ -349,12 +369,41 @@ function App() {
     localStorage.setItem(editorExecutableKey, editorExecutable());
   });
   let request = 0;
+  let fileInfoRequest = 0;
+  let fileFinderRequest = 0;
+  let fileFinderTimer: ReturnType<typeof setTimeout> | undefined;
   let stateBusy = false;
   let navigationArea: "commits" | "files" = "commits";
   let draggedTab: string | null = null;
+  let tabStrip!: HTMLDivElement;
   let commitScroll!: HTMLDivElement;
   let detailsScroll!: HTMLDivElement;
   const repo = createMemo(() => tabs().find(item => item.path === activePath()) ?? null);
+  function updateTabScroll() {
+    if (!tabStrip) return;
+    setTabOverflow(tabStrip.scrollWidth > tabStrip.clientWidth + 1);
+    setCanScrollTabsLeft(tabStrip.scrollLeft > 1);
+    setCanScrollTabsRight(tabStrip.scrollLeft + tabStrip.clientWidth < tabStrip.scrollWidth - 1);
+  }
+  function revealActiveTab() {
+    if (!tabStrip) return;
+    const active = tabStrip.querySelector<HTMLElement>(".repo-tab.active");
+    if (!active) return;
+    const viewport = tabStrip.getBoundingClientRect();
+    const tab = active.getBoundingClientRect();
+    if (tab.left < viewport.left) tabStrip.scrollLeft += tab.left - viewport.left;
+    else if (tab.right > viewport.right) tabStrip.scrollLeft += tab.right - viewport.right;
+    updateTabScroll();
+  }
+  function activateTab(path: string) {
+    setActivePath(path); setNotice(""); setStashMenu(false); setTabListOpen(false);
+    setScrollTop(0); setSearchQuery(""); setSearchInput("");
+    if (commitScroll) commitScroll.scrollTop = 0;
+    selectWorking(); saveTabs();
+  }
+  createEffect(() => { tabs(); requestAnimationFrame(updateTabScroll); });
+  createEffect(() => { activePath(); requestAnimationFrame(revealActiveTab); });
+  createEffect(() => { tabOverflow(); requestAnimationFrame(updateTabScroll); });
   const repoReady = createMemo(() => Boolean(repo() && !repo()?.loading && !repo()?.loadError));
   const stashes = createMemo(() => repo()?.refs.filter(item => item.kind === "stash") ?? []);
   const conflicts = createMemo(() => repo()?.status.filter(item => item.index === "U" || item.worktree === "U" || ["AA", "DD"].includes(item.index + item.worktree)) ?? []);
@@ -425,6 +474,7 @@ function App() {
     ];
     if (repoReady()) {
       commands.push(
+        { label: "Browse tracked files", run: openFileFinder },
         { label: "Stage all files", run: () => { void runAction({ kind: "stage_all" }); } },
         { label: "Fetch all remotes", run: () => { void runAction({ kind: "fetch" }); } },
         { label: "Pull fast-forward", run: () => { void runAction({ kind: "pull" }); } },
@@ -472,7 +522,11 @@ function App() {
     onCleanup(() => { stopped = true; });
   });
 
-  function selectWorking() { navigationArea = "commits"; request++; setSelected("working"); setDetails(null); setChoice(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
+  function resetFileInfo() {
+    fileInfoRequest++;
+    setFileView("diff"); setFileHistory(null); setFileBlame(null); setFileInfoLoading(false); setFileInfoError("");
+  }
+  function selectWorking() { navigationArea = "commits"; request++; resetFileInfo(); setSelected("working"); setDetails(null); setChoice(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
   function saveRecent(path: string) {
     const next = [path, ...recent().filter(item => item !== path)].slice(0, 12);
     setRecent(next);
@@ -537,7 +591,7 @@ function App() {
       const update = await invoke<RepoState>("repo_state", { path });
       const current = tabs().find(item => item.path === path);
       if (!current) return;
-      if (update.head !== current.head || update.branch !== current.branch || update.operation !== current.operation) {
+      if (update.head !== current.head || update.branch !== current.branch || update.operation !== current.operation || update.rebaseEditPause !== current.rebaseEditPause) {
         if (activePath() === path) await refresh();
       } else if (JSON.stringify(update.status) !== JSON.stringify(current.status)) {
         setTabs(items => items.map(item => item.path === path ? { ...item, status: update.status } : item));
@@ -588,6 +642,7 @@ function App() {
     const path = activePath();
     if (!path) return;
     navigationArea = "commits";
+    resetFileInfo();
     setSelected(hash); setDetails(null); setChoice(null); setDiff(null); setKeyboardFileKey(null);
     if (detailsScroll) detailsScroll.scrollTop = 0;
     const id = ++request;
@@ -605,6 +660,7 @@ function App() {
     const path = activePath();
     if (!path) return;
     navigationArea = "files";
+    resetFileInfo();
     setChoice(item); setDiff(null); setKeyboardFileKey(summaryKey(item));
     const id = ++request;
     if (demoMode) {
@@ -622,8 +678,8 @@ function App() {
     if (!path) return;
     setError("");
     try {
-      const value = loadedDiff ?? (demoMode ? demoDiff(item) : await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: false }));
-      const line = item.target === "untracked" ? 1 : firstChangedLine(value);
+      const value = item.target === "tracked" ? null : loadedDiff ?? (demoMode ? demoDiff(item) : await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: false }));
+      const line = item.target === "untracked" || item.target === "tracked" ? 1 : firstChangedLine(value!);
       if (demoMode) { setNotice(`Open ${item.path}:${line} in ${editorOptions.find(option => option.id === editor())?.label}`); return; }
       await invoke("open_in_editor", { repo: path, file: item.path, line, editor: editor(), executable: editorExecutable() });
     } catch (cause) { setError(String(cause)); }
@@ -640,14 +696,14 @@ function App() {
     if (!path || actionBusy() || (confirmation && !window.confirm(confirmation))) return;
     const scopedAction = ["stage_lines", "unstage_lines", "discard_lines", "stage_hunk", "discard_hunk"].includes(operation.kind);
     const previousFile = scopedAction ? choice() : null;
-    const token = ["fetch", "pull", "pull_merge", "pull_rebase", "push", "force_push_with_lease"].includes(operation.kind) ? crypto.randomUUID() : null;
+    const token = ["fetch", "pull", "pull_merge", "pull_rebase", "push", "force_push_with_lease", "push_branch", "delete_remote_branch", "push_tag", "delete_remote_tag"].includes(operation.kind) ? crypto.randomUUID() : null;
     setActionBusy(true); setError(""); setNotice(""); setProgress(""); setCancelToken(token); setCancelRequested(false);
     try {
       const output = await invoke<string>("repo_action", { path, operation, cancelToken: token });
       setNotice(output || "Done");
       if (["merge", "rebase", "interactive_rebase", "pull", "pull_merge", "pull_rebase", "cherry_pick", "revert", "reset", "detach", "continue_operation", "abort_operation"].includes(operation.kind)) selectWorking();
       if (!previousFile) setChoice(null);
-      setDiff(null); setBranchMenu(false); setPushMenu(false); setPullMenu(false); setStashMenu(false);
+      setDiff(null); setBranchMenu(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false);
       await refresh();
       if (previousFile) {
         const nextFile = workingFiles().find(item => item.path === previousFile.path && item.target === previousFile.target)
@@ -657,7 +713,7 @@ function App() {
       }
       if (searchQuery()) await performSearch(searchQuery());
     } catch (cause) {
-      setBranchMenu(false); setPullMenu(false); setPushMenu(false); setStashMenu(false);
+      setBranchMenu(false); setRefMenu(null); setPullMenu(false); setPushMenu(false); setStashMenu(false);
       if (["merge", "rebase", "interactive_rebase", "pull_merge", "pull_rebase", "cherry_pick", "revert", "continue_operation"].includes(operation.kind)) selectWorking();
       await refresh();
       setError(repo()?.operation && conflicts().length ? "Conflict detected. Resolve the files below, then Continue or Abort." : String(cause));
@@ -698,13 +754,145 @@ function App() {
   function setRebaseAction(hash: string, action: RebaseStep["action"]) {
     setRebasePlan(previous => previous && ({ ...previous, steps: previous.steps.map(item => item.hash === hash ? { ...item, action } : item) }));
   }
+  function chooseRemote(): string | null {
+    const remotes = repo()?.remotes ?? [];
+    if (!remotes.length) { setError("Add a Git remote before pushing or deleting remote refs."); return null; }
+    const remote = window.prompt(`Remote (${remotes.join(", ")})`, remotes.includes("origin") ? "origin" : remotes[0])?.trim();
+    if (!remote) return null;
+    if (!remotes.includes(remote)) { setError(`Unknown remote: ${remote}`); return null; }
+    return remote;
+  }
+  function remoteBranch(ref: Ref): { remote: string; branch: string } | null {
+    const remote = [...(repo()?.remotes ?? [])].sort((a, b) => b.length - a.length).find(name => ref.name.startsWith(`${name}/`));
+    if (!remote) { setError(`Cannot find the remote for ${ref.name}.`); return null; }
+    const branch = ref.name.slice(remote.length + 1);
+    return branch === "HEAD" ? null : { remote, branch };
+  }
+  function renameBranch(branch: string) {
+    setRefMenu(null);
+    const newName = window.prompt(`Rename branch ${branch} to`, branch)?.trim();
+    if (newName && newName !== branch) void runAction({ kind: "rename_branch", value: { branch, new_name: newName } });
+  }
+  function pushRef(ref: Ref) {
+    setRefMenu(null);
+    const remote = chooseRemote();
+    if (!remote) return;
+    if (ref.kind === "branch") void runAction({ kind: "push_branch", value: { remote, branch: ref.name } });
+    if (ref.kind === "tag") void runAction({ kind: "push_tag", value: { remote, name: ref.name } });
+  }
+  function deleteRemoteTag(name?: string) {
+    setRefMenu(null);
+    const remote = chooseRemote();
+    if (!remote) return;
+    const tag = name ?? window.prompt(`Tag to delete from ${remote}`)?.trim();
+    if (tag) void runAction({ kind: "delete_remote_tag", value: { remote, name: tag } }, `Delete tag ${tag} from ${remote}? This removes the tag from the remote repository.`);
+  }
+  function deleteRemoteBranchByName() {
+    setRefMenu(null);
+    const remote = chooseRemote();
+    if (!remote) return;
+    const branch = window.prompt(`Branch to delete from ${remote}`)?.trim();
+    if (branch) void runAction({ kind: "delete_remote_branch", value: { remote, branch } }, `Delete branch ${branch} from ${remote}?`);
+  }
+  function openRefMenu(ref: Ref, anchor: HTMLElement) {
+    const rect = anchor.getBoundingClientRect();
+    setRefMenu({ ref, x: Math.max(8, Math.min(rect.right - 8, innerWidth - 222)), y: Math.max(8, Math.min(rect.top + 20, innerHeight - 218)) });
+  }
+  async function loadFileHistory(offset: number) {
+    const path = activePath();
+    const item = choice();
+    if (!path || !item || fileInfoLoading()) return;
+    const id = ++fileInfoRequest;
+    const revision = selected() === "working" ? "HEAD" : selected();
+    setFileInfoLoading(true); setFileInfoError("");
+    try {
+      const result: FileHistoryResult = selected() === "working" && (!repo()?.head || item.target === "untracked" || item.status === "A")
+        ? { commits: [], hasMore: false }
+        : demoMode
+          ? { commits: [{ hash: repo()?.head ?? "0".repeat(40), subject: "Initial commit", author: "GitFerry", timestamp: Math.floor(Date.now() / 1000), path: item.path }], hasMore: false }
+          : await invoke<FileHistoryResult>("repo_file_history", { path, file: item.path, revision, offset });
+      if (id === fileInfoRequest) setFileHistory(previous => offset && previous ? { commits: [...previous.commits, ...result.commits], hasMore: result.hasMore } : result);
+    } catch (cause) { if (id === fileInfoRequest) setFileInfoError(String(cause)); }
+    finally { if (id === fileInfoRequest) setFileInfoLoading(false); }
+  }
+  async function loadFileBlame(startLine: number) {
+    const path = activePath();
+    const item = choice();
+    if (!path || !item || fileInfoLoading()) return;
+    const id = ++fileInfoRequest;
+    const revision = selected() === "working" ? "HEAD" : selected();
+    setFileInfoLoading(true); setFileInfoError("");
+    try {
+      const result: BlameResult = selected() === "working" && (!repo()?.head || item.target === "untracked" || item.status === "A")
+        ? { lines: [], hasMore: false }
+        : demoMode
+          ? { lines: [{ line: 1, hash: repo()?.head ?? "0".repeat(40), author: "GitFerry", timestamp: Math.floor(Date.now() / 1000), summary: "Initial commit", content: "// Example file" }], hasMore: false }
+          : await invoke<BlameResult>("repo_blame", { path, file: item.path, revision, startLine });
+      if (id === fileInfoRequest) setFileBlame(previous => startLine > 1 && previous ? { lines: [...previous.lines, ...result.lines], hasMore: result.hasMore } : result);
+    } catch (cause) { if (id === fileInfoRequest) setFileInfoError(String(cause)); }
+    finally { if (id === fileInfoRequest) setFileInfoLoading(false); }
+  }
+  function openFileView(view: "diff" | "history" | "blame") {
+    fileInfoRequest++;
+    setFileView(view); setFileInfoError(""); setFileInfoLoading(false);
+    if (detailsScroll) detailsScroll.scrollTop = 0;
+    if (view === "history" && !fileHistory()) void loadFileHistory(0);
+    if (view === "blame" && !fileBlame()) void loadFileBlame(1);
+  }
+  async function openHistoryCommit(entry: FileHistoryEntry) {
+    await selectCommit(entry.hash);
+    const file = details()?.hash === entry.hash ? details()?.files.find(item => item.path === entry.path) : null;
+    if (file) await selectFile({ ...file, target: entry.hash });
+  }
+  function closeFileFinder() {
+    fileFinderRequest++;
+    if (fileFinderTimer) clearTimeout(fileFinderTimer);
+    setFileFinderOpen(false); setFileFinderBusy(false);
+  }
+  async function loadTrackedFiles(query: string, id: number) {
+    const path = activePath();
+    if (!path) return;
+    try {
+      const result = demoMode ? ["src/components/RepositoryView.tsx", "src/styles/diff.css", "docs/notes.md"].filter(file => file.toLowerCase().includes(query.toLowerCase())) : await invoke<string[]>("repo_tracked_files", { path, query });
+      if (id === fileFinderRequest && fileFinderOpen() && activePath() === path) setFileFinderResults(result);
+    } catch (cause) { if (id === fileFinderRequest) setFileFinderError(String(cause)); }
+    finally { if (id === fileFinderRequest) setFileFinderBusy(false); }
+  }
+  function searchTrackedFiles(query: string) {
+    setFileFinderQuery(query); setFileFinderResults([]); setFileFinderError(""); setFileFinderBusy(true);
+    if (fileFinderTimer) clearTimeout(fileFinderTimer);
+    const id = ++fileFinderRequest;
+    fileFinderTimer = setTimeout(() => void loadTrackedFiles(query, id), query ? 220 : 0);
+  }
+  function openFileFinder() {
+    if (!repoReady()) return;
+    setFileFinderOpen(true); setFileFinderQuery("");
+    searchTrackedFiles("");
+  }
+  function inspectTrackedFile(file: string) {
+    closeFileFinder();
+    selectWorking();
+    setChoice({ path: file, status: "", target: "tracked" });
+    setDiff(null);
+    openFileView("history");
+  }
+  function setRebaseMessage(hash: string, message: string) {
+    setRebasePlan(previous => previous && ({ ...previous, steps: previous.steps.map(item => item.hash === hash ? { ...item, editedMessage: message } : item) }));
+  }
+  function rebasePlanError(steps: RebaseStep[]) {
+    const firstKept = steps.find(item => item.action !== "drop");
+    if (firstKept?.action === "fixup" || firstKept?.action === "squash") return "The first kept commit cannot be Fixup or Squash.";
+    if (steps.some(item => item.action === "reword" && !(item.editedMessage ?? item.message).trim())) return "Reword needs a commit message.";
+    if (steps.some(item => item.action === "reword" && new TextEncoder().encode(item.editedMessage ?? item.message).length > 8 * 1024)) return "Reword messages must be at most 8 KiB.";
+    return "";
+  }
   function startPlannedRebase() {
     const plan = rebasePlan();
     if (!plan) return;
-    const firstKept = plan.steps.find(item => item.action !== "drop");
-    if (firstKept?.action === "fixup") return;
+    if (rebasePlanError(plan.steps)) return;
+    setRebaseAmendMessage("");
     setRebasePlan(null);
-    void runAction({ kind: "interactive_rebase", value: { branch: plan.branch, onto: plan.onto, steps: plan.steps.map(({ hash, action }) => ({ hash, action })) } });
+    void runAction({ kind: "interactive_rebase", value: { branch: plan.branch, onto: plan.onto, steps: plan.steps.map(({ hash, action, message, editedMessage }) => ({ hash, action, message: action === "reword" ? editedMessage ?? message : undefined })) } });
   }
   async function commitChanges() {
     if (!commitMessage().trim()) return;
@@ -828,10 +1016,14 @@ function App() {
         path: "ssh://root@warmer/srv/atelier", name: "atelier", branch: "feature/remote-git", head: hashes[0],
         status: [{ path: "src/components/RepositoryView.tsx", index: " ", worktree: "M" }, { path: "src/styles/diff.css", index: "M", worktree: " " }, { path: "docs/notes.md", index: "?", worktree: "?" }],
         refs: [{ name: "feature/remote-git", kind: "branch", target: hashes[0], isHead: true }, { name: "main", kind: "branch", target: hashes[3], isHead: false }, { name: "origin/main", kind: "remote", target: hashes[3], isHead: false }, { name: "v0.9.0", kind: "tag", target: hashes[6], isHead: false }],
+        remotes: ["origin"],
         commits: ["Refine repository overview layout", "Add persistent SSH transport", "Handle binary file previews", "Merge branch feature/graph", "Improve diff readability", "Create agent protocol", "Initialize project scaffold"].map((subject, index) => ({ hash: hashes[index], parents: index === 3 ? [hashes[4], hashes[5]] : index < 6 ? [hashes[index + 1]] : [], subject, author: index % 2 ? "Alex Morgan" : "Sam Rivera", timestamp: Date.now() / 1000 - index * 86400, decorations: index === 0 ? ["HEAD -> feature/remote-git"] : index === 3 ? ["origin/main"] : [] })),
         hasMore: false,
       };
-      setTabs([sample]); setActivePath(sample.path);
+      const requestedTabs = Number(new URLSearchParams(location.search).get("tabs")) || 1;
+      const count = Math.min(12, Math.max(1, Math.floor(requestedTabs)));
+      setTabs(Array.from({ length: count }, (_, index) => index === 0 ? sample : { ...sample, path: `${sample.path}-${index + 1}`, name: `repository-${index + 1}`, branch: `feature/tab-overflow-${index + 1}` }));
+      setActivePath(sample.path);
     }
     try {
       const saved = JSON.parse(localStorage.getItem(recentKey) ?? "[]");
@@ -841,9 +1033,9 @@ function App() {
     const interval = window.setInterval(() => { if (watchFallback() && document.hasFocus()) void refreshState(); }, 8000);
     const focus = () => void refresh();
     const keys = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); setRebasePlan(null); setBranchMenu(false); setPushMenu(false); setPullMenu(false); setStashMenu(false); return; }
+      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); closeFileFinder(); setRebasePlan(null); setBranchMenu(false); setTabListOpen(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false); return; }
       const target = event.target instanceof Element ? event.target : null;
-      const modalOpen = paletteOpen() || showOpen() || showSettings() || Boolean(rebasePlan()) || branchMenu() || pushMenu() || pullMenu() || stashMenu();
+      const modalOpen = paletteOpen() || showOpen() || showSettings() || Boolean(rebasePlan()) || Boolean(refMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || stashMenu();
       const editable = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !modalOpen) {
         const inCommitEditor = Boolean(target?.closest(".commit-editor textarea"));
@@ -871,22 +1063,21 @@ function App() {
       if (area === "files") moveFile(direction); else void moveCommit(direction);
     };
     window.addEventListener("focus", focus); window.addEventListener("keydown", keys);
-    const resize = () => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); };
+    const resize = () => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); requestAnimationFrame(updateTabScroll); };
     window.addEventListener("resize", resize);
     onCleanup(() => { unlistenDrop?.(); unlistenProgress?.(); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); window.removeEventListener("resize", resize); });
   });
 
-  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); } if (!event.target.closest(".stash-control")) setStashMenu(false); } }}>
+  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); } if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); } }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
     <header class="tabbar">
       <div class="brand-mark">◇</div>
-      <div class="tab-strip">
+      <div class="tab-strip" ref={tabStrip} onScroll={updateTabScroll} onWheel={event => { if (tabOverflow() && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.preventDefault(); tabStrip.scrollLeft += event.deltaY; } }}>
       <For each={tabs()}>{item => <div class={`repo-tab ${activePath() === item.path ? "active" : ""} ${item.loading ? "loading" : ""} ${item.loadError ? "unavailable" : ""}`} draggable onDragStart={() => { draggedTab = item.path; }} onDragOver={event => event.preventDefault()} onDrop={() => reorderTab(item.path)} onDragEnd={() => { draggedTab = null; }}>
-        <button class="tab-main" onClick={() => { setActivePath(item.path); setNotice(""); setStashMenu(false); setScrollTop(0); setSearchQuery(""); setSearchInput(""); if (commitScroll) commitScroll.scrollTop = 0; selectWorking(); saveTabs(); }}>{item.name}<span>{item.branch}</span></button>
+        <button class="tab-main" title={`${item.name} · ${item.branch}`} onClick={() => activateTab(item.path)}><span class="tab-name">{item.name}</span><span class="tab-branch">{item.branch}</span></button>
         <button class="tab-close" aria-label={`Close ${item.name}`} onClick={() => closeTab(item.path)}>×</button>
       </div>}</For>
-      <button class="tab-add" title="Open repository" onClick={() => setShowOpen(true)}>＋</button>
-      </div><div class="app-name">GITFERRY <span>LOCAL + SSH</span></div>
+      </div><div class="tab-navigation"><Show when={tabOverflow()}><button class="tab-scroll-button" title="Scroll tabs left" aria-label="Scroll tabs left" disabled={!canScrollTabsLeft()} onClick={() => tabStrip.scrollBy({ left: -Math.max(180, tabStrip.clientWidth * .7), behavior: "smooth" })}>‹</button><button class="tab-scroll-button" title="Scroll tabs right" aria-label="Scroll tabs right" disabled={!canScrollTabsRight()} onClick={() => tabStrip.scrollBy({ left: Math.max(180, tabStrip.clientWidth * .7), behavior: "smooth" })}>›</button><button class="tab-list-button" title="List open repositories" aria-label="List open repositories" aria-expanded={tabListOpen()} onClick={() => setTabListOpen(!tabListOpen())}>⌄</button></Show><button class="tab-add" title="Open repository" aria-label="Open repository" onClick={() => setShowOpen(true)}>＋</button><Show when={tabListOpen()}><div class="tab-list-menu"><For each={tabs()}>{item => <button class={activePath() === item.path ? "active" : ""} title={item.path} onClick={() => activateTab(item.path)}><strong>{item.name}</strong><span>{item.branch}</span></button>}</For></div></Show></div><div class="app-name">GITFERRY <span>LOCAL + SSH</span></div>
       <label class="theme-control"><span class="theme-caption">THEME</span><span class="theme-swatch" aria-hidden="true" /><select aria-label="Color theme" value={theme()} onChange={event => setTheme(event.currentTarget.value as ThemeId)}><For each={themeOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label><button class="settings-button" title="Settings" aria-label="Settings" onClick={() => setShowSettings(true)}>⚙</button>
     </header>
     <div class="toolbar">
@@ -894,7 +1085,7 @@ function App() {
       <button class="toolbar-icon layout-toggle" title={bottomLayout() ? "Show details beside history" : "Show details below history"} onClick={() => { const next = !bottomLayout(); setBottomLayout(next); localStorage.setItem("gitferry.bottomLayout", String(next)); requestAnimationFrame(() => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); }); }}>{bottomLayout() ? "▤" : "◫"}</button>
       <Show when={repo()} fallback={<span class="toolbar-title">Open a repository to begin</span>}>
         <div class="branch-control"><button class="branch-chip" title={repo()?.branch} disabled={!repoReady()} onClick={() => setBranchMenu(!branchMenu())}><span class="branch-icon">⑂</span><span class="branch-name">{repo()?.branch}</span><span class="branch-arrow"><ChevronDown /></span></button>
-          <Show when={branchMenu()}><div class="branch-menu"><div class="eyebrow">LOCAL BRANCHES</div><For each={repo()?.refs.filter(item => item.kind === "branch")}>{item => <div class="branch-menu-row"><button onClick={() => void runAction({ kind: "checkout", value: { branch: item.name } })}>{item.isHead ? "✓ " : ""}{item.name}</button><Show when={!item.isHead}><button title={`Merge ${item.name} into ${repo()?.branch}`} onClick={() => void runAction({ kind: "merge", value: { branch: item.name } }, `Merge ${item.name} into ${repo()?.branch}?`)}>Merge</button><button title={`Rebase ${repo()?.branch} onto ${item.name}`} onClick={() => void runAction({ kind: "rebase", value: { branch: item.name } }, `Rebase ${repo()?.branch} onto ${item.name}?`)}>Rebase</button><button title={`Plan an interactive rebase onto ${item.name}`} disabled={rebaseLoading()} onClick={() => void openRebasePlan(item.name)}>Plan…</button><button class="branch-delete" title={`Delete ${item.name}`} onClick={() => void runAction({ kind: "delete_branch", value: { branch: item.name } }, `Delete branch ${item.name}?`)}>×</button></Show></div>}</For>
+          <Show when={branchMenu()}><div class="branch-menu"><div class="eyebrow">LOCAL BRANCHES</div><For each={repo()?.refs.filter(item => item.kind === "branch")}>{item => <div class="branch-menu-row"><button onClick={() => void runAction({ kind: "checkout", value: { branch: item.name } })}>{item.isHead ? "✓ " : ""}{item.name}</button><Show when={!item.isHead}><button title={`Merge ${item.name} into ${repo()?.branch}`} onClick={() => void runAction({ kind: "merge", value: { branch: item.name } }, `Merge ${item.name} into ${repo()?.branch}?`)}>Merge</button><button title={`Rebase ${repo()?.branch} onto ${item.name}`} onClick={() => void runAction({ kind: "rebase", value: { branch: item.name } }, `Rebase ${repo()?.branch} onto ${item.name}?`)}>Rebase</button><button title={`Plan an interactive rebase onto ${item.name}`} disabled={rebaseLoading()} onClick={() => void openRebasePlan(item.name)}>Plan…</button><button class="branch-delete" title={`Delete ${item.name}`} onClick={() => void runAction({ kind: "delete_branch", value: { branch: item.name } }, `Delete branch ${item.name}?`)}>×</button></Show><button title={`More actions for ${item.name}`} aria-label={`More actions for ${item.name}`} onClick={event => openRefMenu(item, event.currentTarget)}>⋯</button></div>}</For>
             <form onSubmit={event => { event.preventDefault(); void runAction({ kind: "create_branch", value: { branch: newBranch() } }); setNewBranch(""); }}><input value={newBranch()} onInput={event => setNewBranch(event.currentTarget.value)} placeholder="New branch name" /><button type="submit">Create</button></form></div></Show>
         </div><div class="path-label" title={repo()?.path}>{repo()?.path}</div>
       </Show>
@@ -906,6 +1097,11 @@ function App() {
     <Show when={error()}><div class="error-bar">{error()}<button onClick={() => setError("")}>×</button></div></Show>
     <Show when={actionBusy() && (progress() || cancelToken())}><div class="progress-bar" role="status"><span>{progress() || "Starting Git operation…"}</span><Show when={cancelToken()}><button disabled={cancelRequested()} onClick={() => void cancelAction()}>{cancelRequested() ? "Cancelling…" : "Cancel"}</button></Show></div></Show>
     <Show when={notice()}><div class="notice-bar">{notice()}<button onClick={() => setNotice("")}>×</button></div></Show>
+    <Show when={refMenu()}>{menu => <div class="ref-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label={`Actions for ${menu().ref.name}`}><div class="ref-action-title" title={menu().ref.name}>{menu().ref.name}</div>
+      <Show when={menu().ref.kind === "branch"}><button disabled={actionBusy()} onClick={() => renameBranch(menu().ref.name)}>Rename branch…</button><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push to remote…</button><Show when={!menu().ref.isHead}><button disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_branch", value: { branch } }, `Delete merged branch ${branch}?`); }}>Delete branch</button><button class="danger" disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "force_delete_branch", value: { branch } }, `Force delete branch ${branch}? Unmerged commits may become unreachable.`); }}>Force delete branch</button></Show></Show>
+      <Show when={menu().ref.kind === "remote" && !menu().ref.name.endsWith("/HEAD")}><button class="danger" disabled={actionBusy()} onClick={() => { const target = remoteBranch(menu().ref); setRefMenu(null); if (target) void runAction({ kind: "delete_remote_branch", value: target }, `Delete branch ${target.branch} from ${target.remote}?`); }}>Delete remote branch</button></Show>
+      <Show when={menu().ref.kind === "tag"}><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push tag to remote…</button><button disabled={actionBusy()} onClick={() => { const name = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_tag", value: { name } }, `Delete local tag ${name}?`); }}>Delete local tag</button><button class="danger" disabled={actionBusy()} onClick={() => deleteRemoteTag(menu().ref.name)}>Delete remote tag…</button></Show>
+    </div>}</Show>
     <Show when={repo()} fallback={<main class="welcome">
       <div class="welcome-symbol">◇</div><div class="eyebrow">YOUR REPOSITORIES, ALL IN ONE PLACE</div>
       <h1>Git, wherever it lives.</h1><p>Open a local repository to browse its history, changes, and diffs.</p>
@@ -916,8 +1112,8 @@ function App() {
       <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"}`} style={{ "--history-height": `${commitsHeight()}px` }}>
         <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
           <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
-            <div class="section-heading">⌄ &nbsp; {kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span></div>
-            <RefTree nodes={groupRefs(repo()?.refs.filter(item => item.kind === kind) ?? [], kind === "branch" || kind === "remote")} kind={kind} depth={0} overrides={folderOverrides()} onToggle={(key, open) => setFolderOverrides(previous => ({ ...previous, [key]: open }))} onSelect={hash => void selectCommit(hash)} />
+            <div class="section-heading">⌄ &nbsp; {kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span><Show when={kind === "remote"}><button class="ref-section-action" title="Delete a remote branch by name" onClick={deleteRemoteBranchByName}>Delete…</button></Show><Show when={kind === "tag"}><button class="ref-section-action" title="Delete a remote tag by name" onClick={() => deleteRemoteTag()}>Remote…</button></Show></div>
+            <RefTree nodes={groupRefs(repo()?.refs.filter(item => item.kind === kind) ?? [], kind === "branch" || kind === "remote")} kind={kind} depth={0} overrides={folderOverrides()} onToggle={(key, open) => setFolderOverrides(previous => ({ ...previous, [key]: open }))} onSelect={hash => void selectCommit(hash)} onMenu={openRefMenu} />
           </section>}</For></div><div class="locations-footer"><span class="connection-dot" /> {repo()?.path.startsWith("ssh://") ? "SSH REPOSITORY" : "LOCAL REPOSITORY"}</div>
         </aside><div class="splitter locations-splitter" onPointerDown={event => startResize("locations", event)} /></Show>
         <section class="commits-pane" style={{ width: `${commitsWidth()}px` }} onPointerDown={() => { navigationArea = "commits"; }}><div class="pane-heading">{searchQuery() ? "SEARCH RESULTS" : "COMMITS"} <span class="heading-count">{displayedCommits().length}{hasMore() ? "+" : ""}</span></div>
@@ -928,7 +1124,7 @@ function App() {
           }}>
             <Show when={!searchQuery()}><button class={`working-row ${selected() === "working" ? "selected" : ""}`} onClick={selectWorking}><span class="working-node">●</span><span class="commit-main"><strong>Working Directory</strong><small>{repo()?.status.length ? `${repo()?.status.length} changed files` : "No changes"}</small></span><Show when={repo()?.status.length}><span class="count-badge">{repo()?.status.length}</span></Show></button></Show>
             <div class="virtual-commits" style={{ height: `${displayedCommits().length * commitRowHeight}px` }}>
-              <For each={visibleCommits()}>{({ item, index }) => <button style={{ top: `${index * commitRowHeight}px`, height: `${commitRowHeight}px` }} class={`commit-row ${searchQuery() ? "search-result" : ""} ${selected() === item.hash ? "selected" : ""}`} onClick={() => void selectCommit(item.hash)}>
+              <For each={visibleCommits()}>{({ item, index }) => <button style={{ top: `${index * commitRowHeight}px`, height: `${commitRowHeight}px` }} class={`commit-row ${searchQuery() ? "search-result" : ""} ${selected() === item.hash ? "selected" : ""} ${repo()?.head === item.hash ? "checked-out" : ""}`} onClick={() => void selectCommit(item.hash)}>
                 <Show when={!searchQuery()}><GraphRow step={graph()[index]} theme={theme()} /></Show>
                 <span class="commit-main"><span class="commit-subject">{item.subject}</span><span class="commit-meta">{item.author}<span>{date(item.timestamp)}</span></span>
                   <Show when={item.decorations.length}><span class="decorations"><For each={item.decorations}>{label => <span class={`decoration ${label.startsWith("HEAD") ? "head" : ""}`}>{label.replace(/^HEAD -> /, "")}</span>}</For></span></Show>
@@ -945,14 +1141,24 @@ function App() {
               <div class="detail-header"><div class="eyebrow">COMMIT DETAILS <span class="hash">{details()!.hash.slice(0, 8)}</span></div><h2>{details()!.subject}</h2><Show when={details()!.body}><p class="commit-body">{details()!.body}</p></Show><div class="commit-byline"><span class="avatar">{details()!.author.charAt(0).toUpperCase()}</span><span>{details()!.author}<small>{details()!.authorEmail} · {new Date(details()!.timestamp * 1000).toLocaleString()}</small></span></div><Show when={details()!.parents.length}><div class="parent-hashes">PARENT{details()!.parents.length > 1 ? "S" : ""} <For each={details()!.parents}>{parent => <span>{parent.slice(0, 8)}</span>}</For></div></Show></div>
             </Show></Show>
             <Show when={selected() !== "working" && !choice() && details()}><details class="commit-actions"><summary>Commit actions</summary><div class="commit-action-buttons"><button disabled={actionBusy()} onClick={() => void runAction({ kind: "cherry_pick", value: { hash: details()!.hash } })}>Cherry-pick</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "revert", value: { hash: details()!.hash } }, `Revert commit ${details()!.hash.slice(0, 8)}?`)}>Revert</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "detach", value: { hash: details()!.hash } }, `Check out ${details()!.hash.slice(0, 8)} in detached HEAD?`)}>Check out commit</button><button disabled={actionBusy()} onClick={tagSelectedCommit}>Create tag</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "reset", value: { hash: details()!.hash, mode: "soft" } }, `Soft reset ${repo()?.branch} to ${details()!.hash.slice(0, 8)}?`)}>Reset soft</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "reset", value: { hash: details()!.hash, mode: "mixed" } }, `Mixed reset ${repo()?.branch} to ${details()!.hash.slice(0, 8)}? This will unstage changes.`)}>Reset mixed</button><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "reset", value: { hash: details()!.hash, mode: "hard" } }, `Hard reset ${repo()?.branch} to ${details()!.hash.slice(0, 8)}? This discards tracked working changes and commits after that point.`)}>Reset hard</button><For each={repo()?.refs.filter(item => item.kind === "tag" && item.target === details()!.hash)}>{item => <button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "delete_tag", value: { name: item.name } }, `Delete local tag ${item.name}?`)}>Delete tag {item.name}</button>}</For></div></details></Show>
-            <Show when={repo()?.operation && !choice()}><div class="operation-panel"><strong>{repo()!.operation!.replace("_", "-")} in progress</strong><span>{conflicts().length ? `${conflicts().length} conflicted file${conflicts().length === 1 ? "" : "s"}. Edit or choose a side, then stage each file.` : "All conflicts resolved. Continue or abort the operation."}</span><div class="operation-buttons"><button disabled={actionBusy() || !!conflicts().length} onClick={() => void runAction({ kind: "continue_operation" })}>Continue</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "abort_operation" }, `Abort the ${repo()?.operation?.replace("_", "-")}?`)}>Abort</button></div><For each={conflicts()}>{item => <div class="conflict-row"><span title={item.path}>{item.path}</span><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "ours" } }, `Use Git's ours version of ${item.path} and mark it resolved?`)}>Use ours</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "theirs" } }, `Use Git's theirs version of ${item.path} and mark it resolved?`)}>Use theirs</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: item.path } })}>Mark resolved</button></div>}</For></div></Show>
+            <Show when={repo()?.operation && !choice()}><div class="operation-panel">
+              <strong>{repo()!.operation!.replace("_", "-")} in progress</strong>
+              <span>{conflicts().length ? `${conflicts().length} conflicted file${conflicts().length === 1 ? "" : "s"}. Edit or choose a side, then stage each file.` : repo()?.rebaseEditPause ? "Edit pause: stage and amend the commit, then continue." : "Continue or abort the operation."}</span>
+              <div class="operation-buttons"><button disabled={actionBusy() || !!conflicts().length} onClick={() => void runAction({ kind: "continue_operation" })}>Continue</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "abort_operation" }, `Abort the ${repo()?.operation?.replace("_", "-")}?`)}>Abort</button></div>
+              <Show when={repo()?.rebaseEditPause && !conflicts().length}><div class="rebase-amend"><label>Amend at an Edit pause<textarea aria-label="Amended commit message" placeholder="New message (optional)" value={rebaseAmendMessage()} onInput={event => setRebaseAmendMessage(event.currentTarget.value)} /></label><div class="operation-buttons"><button disabled={actionBusy() || !workingFiles().some(item => item.target === "staged")} onClick={() => void runAction({ kind: "amend_no_edit" })}>Amend staged changes</button><button disabled={actionBusy() || !rebaseAmendMessage().trim()} onClick={() => void runAction({ kind: "commit", value: { message: rebaseAmendMessage(), amend: true } })}>Amend with message</button></div></div></Show>
+              <For each={conflicts()}>{item => <div class="conflict-row"><span title={item.path}>{item.path}</span><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "ours" } }, `Use Git's ours version of ${item.path} and mark it resolved?`)}>Use ours</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "theirs" } }, `Use Git's theirs version of ${item.path} and mark it resolved?`)}>Use theirs</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: item.path } })}>Mark resolved</button></div>}</For>
+            </div></Show>
             <Show when={selected() === "working" && !repo()?.operation && !choice()}><div class="commit-editor"><textarea value={commitMessage()} onInput={event => setCommitMessage(event.currentTarget.value)} placeholder="Commit message" rows="2" /><div class="commit-editor-actions"><label><input type="checkbox" checked={amend()} disabled={!repo()?.head} onChange={event => setAmend(event.currentTarget.checked)} /> Amend previous commit</label><button disabled={!commitMessage().trim() || actionBusy() || (!amend() && !workingFiles().some(item => item.target === "staged"))} onClick={() => void commitChanges()}>Commit changes</button></div></div></Show>
-            <Show when={!choice()}><div class="files-heading multiple-actions"><strong class="files-title">CHANGED FILES <span>{files().length}</span></strong><div class="files-heading-spacer" /><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button><Show when={files().length}><button onClick={() => setEveryDiff(!files().every(isSummaryExpanded))}>{files().every(isSummaryExpanded) ? "Collapse all" : "Expand all"}</button></Show><Show when={selected() === "working" && files().length && !conflicts().length}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_all" })}>Stage All</button></Show></div>
+            <Show when={!choice()}><div class="files-heading multiple-actions"><strong class="files-title">CHANGED FILES <span>{files().length}</span></strong><div class="files-heading-spacer" /><button onClick={openFileFinder}>Browse files</button><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button><Show when={files().length}><button onClick={() => setEveryDiff(!files().every(isSummaryExpanded))}>{files().every(isSummaryExpanded) ? "Collapse all" : "Expand all"}</button></Show><Show when={selected() === "working" && files().length && !conflicts().length}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_all" })}>Stage All</button></Show></div>
             <Show when={files().length} fallback={<div class="empty-note">No files to show</div>}><div class="files-list"><For each={fileGroups()}>{group => <><Show when={group.title}><div class="file-group-heading"><button class="group-disclosure" aria-label={`${isSummaryGroupExpanded(group.items) ? "Close" : "Open"} all ${group.title.toLowerCase()} changes`} aria-expanded={isSummaryGroupExpanded(group.items)} onClick={() => toggleSummaryGroup(group.items)}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h8L6 8z" fill="currentColor" /></svg></button><div class="file-group-title">{group.title} <span>{group.items.length}</span></div></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
-            <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
-              <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
-              <Show when={choice()?.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show>
-              <Show when={ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked"}><div class="diff-filter-note">Line and hunk actions are unavailable while whitespace is ignored.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} actionBusy={actionBusy()} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
+            <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><Show when={fileView() === "diff"}><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button></Show><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
+              <Show when={fileView() === "diff"}>
+                <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
+                <Show when={choice()?.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show>
+                <Show when={ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked"}><div class="diff-filter-note">Line and hunk actions are unavailable while whitespace is ignored.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} actionBusy={actionBusy()} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
+              </Show>
+              <Show when={fileView() === "history"}><div class="file-inspection"><div class="file-inspection-heading">File history · {selected() === "working" ? "HEAD" : selected().slice(0, 8)}</div><Show when={fileInfoError()}>{message => <div class="empty-note">{message()}</div>}</Show><Show when={fileHistory()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading file history…" : "No file history loaded"}</div>}>{history => <><For each={history().commits}>{entry => <button class="file-history-row" title={`${entry.path} · ${entry.hash}`} onClick={() => void openHistoryCommit(entry)}><span class="file-history-subject">{entry.subject}</span><span class="file-history-meta">{entry.author} · {new Date(entry.timestamp * 1000).toLocaleDateString()} · {entry.hash.slice(0, 8)}</span></button>}</For><Show when={!history().commits.length && !fileInfoLoading()}><div class="empty-note">No committed history for this file.</div></Show><Show when={history().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileHistory(history().commits.length)}>{fileInfoLoading() ? "Loading…" : "Load more history"}</button></Show></>}</Show></div></Show>
+              <Show when={fileView() === "blame"}><div class="file-inspection"><div class="file-inspection-heading">Blame · {selected() === "working" ? "HEAD" : selected().slice(0, 8)} · select an attribution to open its commit</div><Show when={fileInfoError()}>{message => <div class="empty-note">{message()}</div>}</Show><Show when={fileBlame()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading blame…" : "No blame loaded"}</div>}>{result => <><div class="blame-lines"><For each={result().lines}>{line => <div class="blame-row"><span class="blame-number">{line.line}</span><button class="blame-attribution" title={`${line.summary} · ${line.author} · ${new Date(line.timestamp * 1000).toLocaleString()}`} onClick={() => void selectCommit(line.hash)}><span>{line.author}</span><code>{line.hash.slice(0, 8)}</code></button><code class="blame-content">{line.content || " "}</code></div>}</For></div><Show when={!result().lines.length && !fileInfoLoading()}><div class="empty-note">No committed lines to blame.</div></Show><Show when={result().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileBlame(result().lines[result().lines.length - 1].line + 1)}>{fileInfoLoading() ? "Loading…" : "Load more lines"}</button></Show></>}</Show></div></Show>
             </Show>
           </div>
         </section>
@@ -962,16 +1168,18 @@ function App() {
     <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span>{actionBusy() ? "RUNNING GIT COMMAND" : repo()?.loading || busy() || searchBusy() ? "LOADING REPOSITORY" : repo()?.loadError ? "REPOSITORY UNAVAILABLE" : "READY"} <i /> GITFERRY 0.1</span></footer>
     <Show when={rebasePlan()}>{plan => <div class="modal-backdrop" onClick={() => setRebasePlan(null)}><div class="rebase-modal" role="dialog" aria-label="Interactive rebase plan" onClick={event => event.stopPropagation()}>
       <div class="modal-title"><span>Interactive rebase</span><button aria-label="Close rebase plan" onClick={() => setRebasePlan(null)}>×</button></div>
-      <div class="rebase-intro"><strong>{plan().branch}</strong> onto <strong>{plan().onto}</strong><p>Commits replay from top to bottom. Move them, then choose Pick, Fixup, or Drop. Fixup combines a commit with the preceding picked commit.</p></div>
-      <div class="rebase-steps"><For each={plan().steps}>{(item, index) => <div class={`rebase-step ${item.action === "drop" ? "dropped" : ""}`}>
-        <div class="rebase-move"><button aria-label={`Move ${item.subject} earlier`} title="Move earlier" disabled={index() === 0} onClick={() => moveRebaseStep(index(), -1)}>↑</button><button aria-label={`Move ${item.subject} later`} title="Move later" disabled={index() === plan().steps.length - 1} onClick={() => moveRebaseStep(index(), 1)}>↓</button></div>
-        <div class="rebase-commit"><span title={item.subject}>{item.subject}</span><code>{item.hash.slice(0, 8)}</code></div>
-        <select aria-label={`Action for ${item.subject}`} value={item.action} onChange={event => setRebaseAction(item.hash, event.currentTarget.value as RebaseStep["action"])}><option value="pick">Pick</option><option value="fixup">Fixup</option><option value="drop">Drop</option></select>
-      </div>}</For></div>
-      <Show when={plan().steps.find(item => item.action !== "drop")?.action === "fixup"}><div class="rebase-validation">The first kept commit must be Pick. Fixup needs an earlier commit.</div></Show>
-      <div class="rebase-footer"><span>{plan().steps.length} commits · {plan().steps.filter(item => item.action === "drop").length} dropped</span><button onClick={() => setRebasePlan(null)}>Cancel</button><button class="rebase-start" disabled={actionBusy() || plan().steps.find(item => item.action !== "drop")?.action === "fixup"} onClick={startPlannedRebase}>Start rebase</button></div>
+      <div class="rebase-intro"><strong>{plan().branch}</strong> onto <strong>{plan().onto}</strong><p>Reorder commits and choose an action. Reword changes a message; Edit pauses so you can amend; Squash combines messages; Fixup discards the later message.</p></div>
+      <div class="rebase-steps"><Index each={plan().steps}>{(item, index) => <div class={`rebase-step ${item().action === "drop" ? "dropped" : ""}`}>
+        <div class="rebase-step-main"><div class="rebase-move"><button aria-label={`Move ${item().subject} earlier`} title="Move earlier" disabled={index === 0} onClick={() => moveRebaseStep(index, -1)}>↑</button><button aria-label={`Move ${item().subject} later`} title="Move later" disabled={index === plan().steps.length - 1} onClick={() => moveRebaseStep(index, 1)}>↓</button></div>
+          <div class="rebase-commit"><span title={item().subject}>{item().subject}</span><code>{item().hash.slice(0, 8)}</code></div>
+          <select aria-label={`Action for ${item().subject}`} value={item().action} onChange={event => setRebaseAction(item().hash, event.currentTarget.value as RebaseStep["action"])}><option value="pick">Pick</option><option value="reword">Reword</option><option value="edit">Edit</option><option value="squash">Squash</option><option value="fixup">Fixup</option><option value="drop">Drop</option></select></div>
+        <Show when={item().action === "reword"}><label class="rebase-message-label">New commit message<textarea aria-label={`New message for ${item().subject}`} value={item().editedMessage ?? item().message} onInput={event => setRebaseMessage(item().hash, event.currentTarget.value)} /></label></Show>
+      </div>}</Index></div>
+      <Show when={rebasePlanError(plan().steps)}>{problem => <div class="rebase-validation">{problem()}</div>}</Show>
+      <div class="rebase-footer"><span>{plan().steps.length} commits · {plan().steps.filter(item => item.action === "drop").length} dropped</span><button onClick={() => setRebasePlan(null)}>Cancel</button><button class="rebase-start" disabled={actionBusy() || Boolean(rebasePlanError(plan().steps))} onClick={startPlannedRebase}>Start rebase</button></div>
     </div></div>}</Show>
     <Show when={paletteOpen()}><div class="modal-backdrop palette-backdrop" onClick={() => setPaletteOpen(false)}><div class="palette" onClick={event => event.stopPropagation()} onKeyDown={paletteKey}><input autofocus value={paletteInput()} onInput={event => setPaletteInput(event.currentTarget.value)} placeholder="Type a command…" /><div class="palette-list"><For each={paletteCommands()}>{command => <button onClick={() => { setPaletteOpen(false); command.run(); }}>{command.label}</button>}</For></div></div></div></Show>
+    <Show when={fileFinderOpen()}><div class="modal-backdrop" onClick={closeFileFinder}><div class="file-finder-modal" role="dialog" aria-label="Browse tracked files" onClick={event => event.stopPropagation()}><div class="modal-title"><span>Browse tracked files</span><button aria-label="Close file browser" onClick={closeFileFinder}>×</button></div><input autofocus aria-label="Find tracked file" value={fileFinderQuery()} onInput={event => searchTrackedFiles(event.currentTarget.value)} onKeyDown={event => { if (event.key === "Enter" && fileFinderResults()[0]) inspectTrackedFile(fileFinderResults()[0]); else if (event.key === "ArrowDown") { event.preventDefault(); document.querySelector<HTMLButtonElement>(".file-finder-list button")?.focus(); } }} placeholder="Search file paths" /><div class="file-finder-list"><For each={fileFinderResults()}>{file => <button title={file} onClick={() => inspectTrackedFile(file)}>{file}</button>}</For><Show when={!fileFinderResults().length}><div class="empty-note">{fileFinderError() || (fileFinderBusy() ? "Searching files…" : "No matching tracked files")}</div></Show></div></div></div></Show>
     <Show when={showSettings()}><div class="modal-backdrop" onClick={() => setShowSettings(false)}><div class="settings-modal" role="dialog" aria-label="Settings" onClick={event => event.stopPropagation()}>
       <div class="modal-title"><span>Settings</span><button aria-label="Close settings" onClick={() => setShowSettings(false)}>×</button></div>
       <div class="settings-body"><label>EDITOR<select aria-label="External editor" value={editor()} onChange={event => setEditor(event.currentTarget.value as EditorId)}><For each={editorOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label>

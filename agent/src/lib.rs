@@ -1,6 +1,7 @@
 use gitferry_proto::{
-    ChangedFile, CommitDetails, CommitSummary, DiffResult, RebaseCommit, RebaseStep, RefEntry,
-    RepoAction, RepoSnapshot, RepoState, Request, Response, SearchResult, StatusEntry,
+    BlameLine, BlameResult, ChangedFile, CommitDetails, CommitSummary, DiffResult,
+    FileHistoryEntry, FileHistoryResult, RebaseCommit, RebaseStep, RefEntry, RepoAction,
+    RepoSnapshot, RepoState, Request, Response, SearchResult, StatusEntry,
 };
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -43,6 +44,23 @@ pub fn handle(request: Request) -> Response {
         Request::CommitDetails { path, hash } => {
             commit_details(&path, &hash).map(Response::CommitDetails)
         }
+        Request::FileHistory {
+            path,
+            file,
+            revision,
+            offset,
+            limit,
+        } => file_history(&path, &file, &revision, offset, limit).map(Response::FileHistory),
+        Request::Blame {
+            path,
+            file,
+            revision,
+            start_line,
+            limit,
+        } => blame(&path, &file, &revision, start_line, limit).map(Response::Blame),
+        Request::TrackedFiles { path, query, limit } => {
+            tracked_files(&path, &query, limit).map(Response::TrackedFiles)
+        }
         Request::Diff {
             path,
             target,
@@ -61,8 +79,19 @@ pub fn handle(request: Request) -> Response {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Output, String> {
+    git_with_env(repo, args, &[])
+}
+
+fn git_with_env(
+    repo: &Path,
+    args: &[&str],
+    environment: &[(&str, &str)],
+) -> Result<Output, String> {
     let mut command = Command::new("git");
     hide_console(&mut command);
+    for &(name, value) in environment {
+        command.env(name, value);
+    }
     let output = command
         .arg("--no-optional-locks")
         .arg("-C")
@@ -363,6 +392,16 @@ fn operation(repo: &Path) -> Option<String> {
     }
 }
 
+fn rebase_edit_pause(repo: &Path) -> bool {
+    let Ok(git_dir) = git(repo, &["rev-parse", "--absolute-git-dir"]) else {
+        return false;
+    };
+    PathBuf::from(text(&git_dir.stdout).trim())
+        .join("rebase-merge")
+        .join("amend")
+        .is_file()
+}
+
 fn status(repo: &Path) -> Result<Vec<StatusEntry>, String> {
     let output = git(
         repo,
@@ -483,6 +522,45 @@ fn refs(repo: &Path, current_branch: &str) -> Result<Vec<RefEntry>, String> {
     Ok(entries)
 }
 
+fn stash_history_helpers(repo: &Path) -> Result<(Option<String>, HashSet<String>), String> {
+    let stash = text(
+        &git(
+            repo,
+            &["for-each-ref", "--format=%(objectname)", "refs/stash"],
+        )?
+        .stdout,
+    )
+    .trim()
+    .to_string();
+    if stash.is_empty() {
+        return Ok((None, HashSet::new()));
+    }
+    let output = git(repo, &["rev-list", "--parents", "-n", "1", &stash])?;
+    let parents = text(&output.stdout);
+    let mut hidden = HashSet::new();
+    let current_head = head(repo);
+    for helper in parents.split_whitespace().skip(2) {
+        if current_head.as_deref() == Some(helper) {
+            continue;
+        }
+        let containing_refs = git(
+            repo,
+            &[
+                "for-each-ref",
+                &format!("--contains={helper}"),
+                "--format=%(refname)",
+                "refs/heads",
+                "refs/remotes",
+                "refs/tags",
+            ],
+        )?;
+        if containing_refs.stdout.is_empty() {
+            hidden.insert(helper.to_string());
+        }
+    }
+    Ok((Some(stash), hidden))
+}
+
 fn log(
     repo: &Path,
     offset: usize,
@@ -490,13 +568,18 @@ fn log(
     filter: Option<(&str, &str)>,
 ) -> Result<(Vec<CommitSummary>, bool), String> {
     let limit = limit.clamp(1, 200);
-    let skip_arg = format!("--skip={offset}");
-    let count_arg = format!("--max-count={}", limit + 1);
+    let (stash_commit, hidden_helpers) = stash_history_helpers(repo)?;
+    // Git must page raw commits before our filter. Fetch enough raw rows to page
+    // the visible history instead, including one row for has_more.
+    let count = offset
+        .checked_add(limit + 1)
+        .and_then(|count| count.checked_add(hidden_helpers.len()))
+        .ok_or("History offset is too large")?;
+    let count_arg = format!("--max-count={count}");
     let mut args = vec![
         "log",
         "HEAD",
         "--all",
-        &skip_arg,
         &count_arg,
         "--format=%H%x00%P%x00%s%x00%an%x00%at%x00%D%x1e",
     ];
@@ -519,12 +602,20 @@ fn log(
         if fields.len() < 6 || fields[0].is_empty() {
             continue;
         }
+        let hash = text(fields[0]);
+        if hidden_helpers.contains(&hash) {
+            continue;
+        }
+        let mut parents: Vec<String> = text(fields[1])
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        if stash_commit.as_deref() == Some(hash.as_str()) {
+            parents.truncate(1);
+        }
         commits.push(CommitSummary {
-            hash: text(fields[0]),
-            parents: text(fields[1])
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
+            hash,
+            parents,
             subject: text(fields[2]),
             author: text(fields[3]),
             timestamp: text(fields[4]).parse().unwrap_or_default(),
@@ -536,19 +627,22 @@ fn log(
                 .collect(),
         });
     }
-    let has_more = commits.len() > limit;
-    commits.truncate(limit);
+    let has_more = commits.len() > offset + limit;
+    let commits: Vec<_> = commits.into_iter().skip(offset).take(limit).collect();
     Ok((commits, has_more))
 }
 
 pub fn snapshot(path: &str, offset: usize, limit: usize) -> Result<RepoSnapshot, String> {
     let root = repo_root(path)?;
     let current_branch = branch(&root);
+    let remotes = remote_names(&root)?;
     let (commits, has_more) = if head(&root).is_some() {
         log(&root, offset, limit, None)?
     } else {
         (Vec::new(), false)
     };
+    let operation = operation(&root);
+    let rebase_edit_pause = operation.as_deref() == Some("rebase") && rebase_edit_pause(&root);
     Ok(RepoSnapshot {
         name: root
             .file_name()
@@ -560,19 +654,24 @@ pub fn snapshot(path: &str, offset: usize, limit: usize) -> Result<RepoSnapshot,
         head: head(&root),
         status: status(&root)?,
         refs: refs(&root, &current_branch)?,
+        remotes,
         commits,
         has_more,
-        operation: operation(&root),
+        operation,
+        rebase_edit_pause,
     })
 }
 
 pub fn state(path: &str) -> Result<RepoState, String> {
     let root = repo_root(path)?;
+    let operation = operation(&root);
+    let rebase_edit_pause = operation.as_deref() == Some("rebase") && rebase_edit_pause(&root);
     Ok(RepoState {
         branch: branch(&root),
         head: head(&root),
         status: status(&root)?,
-        operation: operation(&root),
+        operation,
+        rebase_edit_pause,
     })
 }
 
@@ -612,6 +711,173 @@ pub fn search(
 
 fn valid_hash(hash: &str) -> bool {
     (hash.len() == 40 || hash.len() == 64) && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_revision(revision: &str) -> bool {
+    revision == "HEAD" || valid_hash(revision)
+}
+
+pub fn file_history(
+    path: &str,
+    file: &str,
+    revision: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<FileHistoryResult, String> {
+    if !valid_revision(revision) {
+        return Err("Invalid history revision".to_string());
+    }
+    let root = repo_root(path)?;
+    let literal_file = literal_path(file)?;
+    let limit = limit.clamp(1, 100);
+    if offset > 10_000 {
+        return Err("File history page is too deep".to_string());
+    }
+    // Git applies --skip before --follow has traversed older names.
+    let count = format!("--max-count={}", offset + limit + 1);
+    let output = git(
+        &root,
+        &[
+            "log",
+            "--follow",
+            "--name-only",
+            "-z",
+            "--no-decorate",
+            &count,
+            "--format=%x1e%H%x00%s%x00%an%x00%at%x00",
+            revision,
+            "--",
+            &literal_file,
+        ],
+    )?;
+    let mut commits = Vec::new();
+    for record in output.stdout.split(|byte| *byte == 0x1e).skip(1) {
+        let mut fields = record.splitn(5, |byte| *byte == 0);
+        let (Some(hash), Some(subject), Some(author), Some(timestamp), Some(names)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
+            continue;
+        };
+        let historical_path = names
+            .split(|byte| *byte == 0)
+            .filter_map(|name| {
+                let name = name.strip_prefix(b"\n").unwrap_or(name);
+                (!name.is_empty()).then(|| text(name))
+            })
+            .next()
+            .unwrap_or_else(|| file.to_string());
+        commits.push(FileHistoryEntry {
+            hash: text(hash),
+            subject: text(subject),
+            author: text(author),
+            timestamp: text(timestamp).parse().unwrap_or_default(),
+            path: historical_path,
+        });
+    }
+    let has_more = commits.len() > offset + limit;
+    let commits = commits.into_iter().skip(offset).take(limit).collect();
+    Ok(FileHistoryResult { commits, has_more })
+}
+
+pub fn blame(
+    path: &str,
+    file: &str,
+    revision: &str,
+    start_line: usize,
+    limit: usize,
+) -> Result<BlameResult, String> {
+    if !valid_revision(revision) || start_line == 0 {
+        return Err("Invalid blame revision or line".to_string());
+    }
+    let root = repo_root(path)?;
+    literal_path(file)?;
+    let limit = limit.clamp(1, 300);
+    let range = format!("{start_line},+{}", limit + 1);
+    let output = git(
+        &root,
+        &[
+            "blame",
+            "--line-porcelain",
+            "-L",
+            &range,
+            revision,
+            "--",
+            file,
+        ],
+    )?;
+    let mut lines = Vec::new();
+    let mut hash = String::new();
+    let mut line_number = 0;
+    let mut author = String::new();
+    let mut timestamp = 0;
+    let mut summary = String::new();
+    for raw in output.stdout.split(|byte| *byte == b'\n') {
+        let line = text(raw);
+        if let Some(content) = line.strip_prefix('\t') {
+            if valid_hash(&hash) {
+                lines.push(BlameLine {
+                    line: line_number,
+                    hash: hash.clone(),
+                    author: author.clone(),
+                    timestamp,
+                    summary: summary.clone(),
+                    content: content.trim_end_matches('\r').to_string(),
+                });
+            }
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        if let (Some(commit), Some(_original), Some(final_line)) =
+            (parts.next(), parts.next(), parts.next())
+        {
+            let commit = commit.trim_start_matches('^');
+            if valid_hash(commit) {
+                hash = commit.to_string();
+                line_number = final_line.parse().unwrap_or_default();
+                author.clear();
+                timestamp = 0;
+                summary.clear();
+                continue;
+            }
+        }
+        if let Some(value) = line.strip_prefix("author ") {
+            author = value.trim_end_matches('\r').to_string();
+        } else if let Some(value) = line.strip_prefix("author-time ") {
+            timestamp = value.trim().parse().unwrap_or_default();
+        } else if let Some(value) = line.strip_prefix("summary ") {
+            summary = value.trim_end_matches('\r').to_string();
+        }
+    }
+    let has_more = lines.len() > limit;
+    lines.truncate(limit);
+    Ok(BlameResult { lines, has_more })
+}
+
+pub fn tracked_files(path: &str, query: &str, limit: usize) -> Result<Vec<String>, String> {
+    if query.len() > 256 {
+        return Err("File search is too long".to_string());
+    }
+    let root = repo_root(path)?;
+    let output = git(&root, &["ls-files", "-z", "--cached", "--full-name"])?;
+    let query = query.to_lowercase();
+    let mut files = Vec::new();
+    for file in output.stdout.split(|byte| *byte == 0) {
+        if file.is_empty() {
+            continue;
+        }
+        let file = text(file);
+        if file.to_lowercase().contains(&query) && files.last() != Some(&file) {
+            files.push(file);
+            if files.len() >= limit.clamp(1, 100) {
+                break;
+            }
+        }
+    }
+    Ok(files)
 }
 
 pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
@@ -794,16 +1060,21 @@ pub fn rebase_plan(path: &str, onto: &str) -> Result<Vec<RebaseCommit>, String> 
             "log",
             "--reverse",
             "--topo-order",
-            "--format=%H%x00%s%x1e",
+            "--format=%H%x00%s%x00%B%x1e",
             &range,
         ],
     )?;
     let commits: Vec<RebaseCommit> = text(&output.stdout)
         .split('\x1e')
-        .filter_map(|record| record.trim_start_matches(['\r', '\n']).split_once('\0'))
-        .map(|(hash, subject)| RebaseCommit {
-            hash: hash.to_string(),
-            subject: subject.trim_end_matches(['\r', '\n']).to_string(),
+        .filter_map(|record| {
+            let record = record.trim_start_matches(['\r', '\n']);
+            let (hash, rest) = record.split_once('\0')?;
+            let (subject, message) = rest.split_once('\0')?;
+            Some(RebaseCommit {
+                hash: hash.to_string(),
+                subject: subject.to_string(),
+                message: message.trim_end_matches(['\r', '\n']).to_string(),
+            })
         })
         .collect();
     if commits.is_empty() {
@@ -822,6 +1093,14 @@ impl Drop for TodoFile {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn encode_message(message: &str) -> String {
+    message
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn interactive_rebase(
@@ -850,13 +1129,18 @@ fn interactive_rebase(
     if steps.len() != expected.len() || selected != known {
         return Err("Rebase plan changed; reopen it before starting".to_string());
     }
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable = executable.to_string_lossy().replace('\\', "/");
+    let repo_path = repo.to_string_lossy().replace('\\', "/");
     let mut todo = String::new();
     let mut kept = false;
     for step in steps {
         match step.action.as_str() {
-            "pick" => kept = true,
-            "fixup" if kept => {}
-            "fixup" => return Err("Fixup needs an earlier picked commit".to_string()),
+            "pick" | "reword" | "edit" => kept = true,
+            "fixup" | "squash" if kept => {}
+            "fixup" | "squash" => {
+                return Err("Fixup and Squash need an earlier kept commit".to_string());
+            }
             "drop" => {}
             _ => return Err("Invalid rebase action".to_string()),
         }
@@ -866,7 +1150,24 @@ fn interactive_rebase(
             .ok_or("Rebase plan changed; reopen it before starting")?
             .subject
             .replace(['\r', '\n'], " ");
-        todo.push_str(&format!("{} {} {}\n", step.action, step.hash, subject));
+        if step.action == "reword" {
+            let message = step
+                .message
+                .as_deref()
+                .ok_or("Reword needs a commit message")?;
+            if message.trim().is_empty() || message.len() > 8 * 1024 || message.contains('\0') {
+                return Err("Reword message must be nonempty and at most 8 KiB".to_string());
+            }
+            todo.push_str(&format!("pick {} {}\n", step.hash, subject));
+            todo.push_str(&format!(
+                "exec {} --amend-message {} {}\n",
+                shell_quote(&executable),
+                shell_quote(&repo_path),
+                encode_message(message)
+            ));
+        } else {
+            todo.push_str(&format!("{} {} {}\n", step.action, step.hash, subject));
+        }
     }
     let file = std::env::temp_dir().join(format!(
         "gitferry-rebase-{}-{}.todo",
@@ -886,8 +1187,6 @@ fn interactive_rebase(
         .map_err(|error| error.to_string())?;
     drop(writer);
     let _cleanup = TodoFile(file.clone());
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let executable = executable.to_string_lossy().replace('\\', "/");
     let file = file.to_string_lossy().replace('\\', "/");
     let editor = format!(
         "{} --write-todo {}",
@@ -895,19 +1194,16 @@ fn interactive_rebase(
         shell_quote(&file)
     );
     let base = format!("refs/heads/{onto}");
-    git(
+    git_with_env(
         repo,
         &[
-            "-c",
-            &format!("sequence.editor={editor}"),
-            "-c",
-            "core.editor=true",
             "rebase",
             "--interactive",
             "--no-autostash",
             "--reapply-cherry-picks",
             &base,
         ],
+        &[("GIT_SEQUENCE_EDITOR", &editor), ("GIT_EDITOR", "true")],
     )
 }
 
@@ -920,6 +1216,54 @@ pub fn write_rebase_todo(args: &[String]) -> Result<(), String> {
         return Err("Invalid rebase plan size".to_string());
     }
     std::fs::write(&args[1], plan).map_err(|error| error.to_string())
+}
+
+pub fn amend_rebase_message(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 || args[1].is_empty() || args[1].len() > 16 * 1024 || args[1].len() % 2 != 0
+    {
+        return Err("Expected a repository and encoded commit message".to_string());
+    }
+    let root = repo_root(&args[0])?;
+    if operation(&root).as_deref() != Some("rebase") {
+        return Err("No interactive rebase is in progress".to_string());
+    }
+    let message: Vec<u8> = args[1]
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let hex = std::str::from_utf8(pair).map_err(|error| error.to_string())?;
+            u8::from_str_radix(hex, 16).map_err(|error| error.to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    if String::from_utf8_lossy(&message).trim().is_empty() || message.contains(&0) {
+        return Err("Commit message cannot be empty".to_string());
+    }
+    let mut command = Command::new("git");
+    hide_console(&mut command);
+    let mut child = command
+        .arg("-C")
+        .arg(&root)
+        .args(["commit", "--amend", "-F", "-"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Cannot run Git: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("Cannot write commit message")?
+        .write_all(&message)
+        .map_err(|error| error.to_string())?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
 
 pub fn action_with_progress(
@@ -981,6 +1325,9 @@ pub fn action_with_progress(
             if amend && head(&root).is_none() {
                 return Err("No commit to amend".to_string());
             }
+            if amend && operation(&root).as_deref() == Some("rebase") && !rebase_edit_pause(&root) {
+                return Err("Amend is available at an Edit pause".to_string());
+            }
             let mut args = vec!["commit", "-m", message.as_str()];
             if amend {
                 args.push("--amend");
@@ -1027,6 +1374,49 @@ pub fn action_with_progress(
             validate_branch(&root, &branch)?;
             git(&root, &["branch", "-d", &branch])?
         }
+        RepoAction::ForceDeleteBranch { branch } => {
+            validate_branch(&root, &branch)?;
+            git(&root, &["branch", "-D", &branch])?
+        }
+        RepoAction::RenameBranch { branch, new_name } => {
+            validate_branch(&root, &branch)?;
+            validate_branch(&root, &new_name)?;
+            git(&root, &["branch", "-m", &branch, &new_name])?
+        }
+        RepoAction::PushBranch { remote, branch } => {
+            validate_remote(&root, &remote)?;
+            validate_branch(&root, &branch)?;
+            let reference = format!("refs/heads/{branch}");
+            git(&root, &["show-ref", "--verify", "--quiet", &reference])?;
+            git_with_progress(
+                &root,
+                &[
+                    "push",
+                    "--progress",
+                    "--no-follow-tags",
+                    &remote,
+                    &format!("{reference}:{reference}"),
+                ],
+                cancel_token,
+                &mut progress,
+            )?
+        }
+        RepoAction::DeleteRemoteBranch { remote, branch } => {
+            validate_remote(&root, &remote)?;
+            validate_branch(&root, &branch)?;
+            git_with_progress(
+                &root,
+                &[
+                    "push",
+                    "--progress",
+                    "--delete",
+                    &remote,
+                    &format!("refs/heads/{branch}"),
+                ],
+                cancel_token,
+                &mut progress,
+            )?
+        }
         RepoAction::Stash { message } => git(&root, &["stash", "push", "-u", "-m", &message])?,
         RepoAction::ApplyStash { hash } => restore_stash(&root, &hash, false)?,
         RepoAction::PopStash { hash } => restore_stash(&root, &hash, true)?,
@@ -1043,6 +1433,12 @@ pub fn action_with_progress(
             onto,
             steps,
         } => interactive_rebase(&root, &branch, &onto, &steps)?,
+        RepoAction::AmendNoEdit => {
+            if !rebase_edit_pause(&root) {
+                return Err("Amend is available at an Edit pause".to_string());
+            }
+            git(&root, &["commit", "--amend", "--no-edit"])?
+        }
         RepoAction::AbortOperation => match operation(&root).as_deref() {
             Some("merge") => git(&root, &["merge", "--abort"])?,
             Some("rebase") => git(&root, &["rebase", "--abort"])?,
@@ -1052,7 +1448,9 @@ pub fn action_with_progress(
         },
         RepoAction::ContinueOperation => match operation(&root).as_deref() {
             Some("merge") => git(&root, &["-c", "core.editor=true", "merge", "--continue"])?,
-            Some("rebase") => git(&root, &["-c", "core.editor=true", "rebase", "--continue"])?,
+            Some("rebase") => {
+                git_with_env(&root, &["rebase", "--continue"], &[("GIT_EDITOR", "true")])?
+            }
             Some("cherry_pick") => git(
                 &root,
                 &["-c", "core.editor=true", "cherry-pick", "--continue"],
@@ -1100,6 +1498,39 @@ pub fn action_with_progress(
         RepoAction::DeleteTag { name } => {
             validate_tag(&root, &name)?;
             git(&root, &["tag", "-d", &name])?
+        }
+        RepoAction::PushTag { remote, name } => {
+            validate_remote(&root, &remote)?;
+            validate_tag(&root, &name)?;
+            let reference = format!("refs/tags/{name}");
+            git(&root, &["show-ref", "--verify", "--quiet", &reference])?;
+            git_with_progress(
+                &root,
+                &[
+                    "push",
+                    "--progress",
+                    &remote,
+                    &format!("{reference}:{reference}"),
+                ],
+                cancel_token,
+                &mut progress,
+            )?
+        }
+        RepoAction::DeleteRemoteTag { remote, name } => {
+            validate_remote(&root, &remote)?;
+            validate_tag(&root, &name)?;
+            git_with_progress(
+                &root,
+                &[
+                    "push",
+                    "--progress",
+                    "--delete",
+                    &remote,
+                    &format!("refs/tags/{name}"),
+                ],
+                cancel_token,
+                &mut progress,
+            )?
         }
         RepoAction::ResolveFile { path, side } => {
             let path = literal_path(&path)?;
@@ -1359,8 +1790,7 @@ fn push(
         .map(|output| text(&output.stdout).trim().to_string())
         .map_err(|_| "Select a branch before pushing".to_string())?;
     validate_branch(repo, &branch)?;
-    let remote_names = text(&git(repo, &["remote"])?.stdout);
-    let remotes: Vec<&str> = remote_names.lines().collect();
+    let remotes = remote_names(repo)?;
     let configured = git(
         repo,
         &["config", "--get", &format!("branch.{branch}.remote")],
@@ -1368,12 +1798,12 @@ fn push(
     .ok()
     .map(|output| text(&output.stdout).trim().to_string())
     .unwrap_or_default();
-    let remote = if remotes.contains(&configured.as_str()) {
+    let remote = if remotes.iter().any(|name| name == &configured) {
         configured.as_str()
-    } else if remotes.contains(&"origin") {
+    } else if remotes.iter().any(|name| name == "origin") {
         "origin"
     } else if remotes.len() == 1 {
-        remotes[0]
+        remotes[0].as_str()
     } else {
         return Err("Choose one remote for this branch with 'git branch --set-upstream-to', or add an origin remote".to_string());
     };
@@ -1491,4 +1921,21 @@ fn validate_tag(repo: &Path, name: &str) -> Result<(), String> {
         return Err("Invalid tag name".to_string());
     }
     git(repo, &["check-ref-format", &format!("refs/tags/{name}")]).map(|_| ())
+}
+
+fn remote_names(repo: &Path) -> Result<Vec<String>, String> {
+    Ok(text(&git(repo, &["remote"])?.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+fn validate_remote(repo: &Path, remote: &str) -> Result<(), String> {
+    if remote.is_empty()
+        || remote.starts_with('-')
+        || !remote_names(repo)?.iter().any(|name| name == remote)
+    {
+        return Err("Choose a configured remote".to_string());
+    }
+    Ok(())
 }

@@ -9,9 +9,13 @@ pub struct RepoSnapshot {
     pub head: Option<String>,
     pub status: Vec<StatusEntry>,
     pub refs: Vec<RefEntry>,
+    #[serde(default)]
+    pub remotes: Vec<String>,
     pub commits: Vec<CommitSummary>,
     pub has_more: bool,
     pub operation: Option<String>,
+    #[serde(default)]
+    pub rebase_edit_pause: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +25,8 @@ pub struct RepoState {
     pub head: Option<String>,
     pub status: Vec<StatusEntry>,
     pub operation: Option<String>,
+    #[serde(default)]
+    pub rebase_edit_pause: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,9 +98,45 @@ pub struct DiffResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FileHistoryEntry {
+    pub hash: String,
+    pub subject: String,
+    pub author: String,
+    pub timestamp: i64,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHistoryResult {
+    pub commits: Vec<FileHistoryEntry>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlameLine {
+    pub line: usize,
+    pub hash: String,
+    pub author: String,
+    pub timestamp: i64,
+    pub summary: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlameResult {
+    pub lines: Vec<BlameLine>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RebaseCommit {
     pub hash: String,
     pub subject: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +144,8 @@ pub struct RebaseCommit {
 pub struct RebaseStep {
     pub hash: String,
     pub action: String,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +205,21 @@ pub enum RepoAction {
     DeleteBranch {
         branch: String,
     },
+    ForceDeleteBranch {
+        branch: String,
+    },
+    RenameBranch {
+        branch: String,
+        new_name: String,
+    },
+    PushBranch {
+        remote: String,
+        branch: String,
+    },
+    DeleteRemoteBranch {
+        remote: String,
+        branch: String,
+    },
     Stash {
         message: String,
     },
@@ -181,6 +240,7 @@ pub enum RepoAction {
         onto: String,
         steps: Vec<RebaseStep>,
     },
+    AmendNoEdit,
     AbortOperation,
     ContinueOperation,
     CherryPick {
@@ -201,6 +261,14 @@ pub enum RepoAction {
         hash: String,
     },
     DeleteTag {
+        name: String,
+    },
+    PushTag {
+        remote: String,
+        name: String,
+    },
+    DeleteRemoteTag {
+        remote: String,
         name: String,
     },
     ResolveFile {
@@ -238,6 +306,25 @@ pub enum Request {
         path: String,
         hash: String,
     },
+    FileHistory {
+        path: String,
+        file: String,
+        revision: String,
+        offset: usize,
+        limit: usize,
+    },
+    Blame {
+        path: String,
+        file: String,
+        revision: String,
+        start_line: usize,
+        limit: usize,
+    },
+    TrackedFiles {
+        path: String,
+        query: String,
+        limit: usize,
+    },
     Diff {
         path: String,
         target: String,
@@ -265,6 +352,9 @@ pub enum Response {
     RebasePlan(Vec<RebaseCommit>),
     Search(SearchResult),
     CommitDetails(CommitDetails),
+    FileHistory(FileHistoryResult),
+    Blame(BlameResult),
+    TrackedFiles(Vec<String>),
     Diff(DiffResult),
     Progress(String),
     Action(String),

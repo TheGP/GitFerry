@@ -185,9 +185,9 @@ async function main() {
   await page.click(".layout-toggle");
   await page.click(".working-row");
   assert.equal(await page.$eval(".summary-diff-card .file-row", row => row.getAttribute("aria-expanded")), "true", "Working files should start expanded");
-  await page.click(".files-heading button:not(.whitespace-toggle)");
+  await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent === "Collapse all").click());
   assert.equal(await page.$eval(".summary-diff-card .file-row", row => row.getAttribute("aria-expanded")), "false", "Collapse all did not close files");
-  await page.click(".files-heading button:not(.whitespace-toggle)");
+  await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent === "Expand all").click());
   assert.equal(await page.$eval(".summary-diff-card .file-row", row => row.getAttribute("aria-expanded")), "true", "Expand all did not reopen files");
   await page.screenshot({ path: path.join(output, "merged-working-1429.png") });
   await page.click(".summary-diff-card .open-editor-button");
@@ -293,6 +293,62 @@ async function main() {
   await page.keyboard.press("Enter");
   await page.keyboard.up(modifier);
   assert.equal(await page.evaluate(() => window.__commitClicks), 1, "Ctrl+Enter in search triggered a commit");
+  const tabsPage = await browser.newPage();
+  tabsPage.on("pageerror", error => errors.push(error.message));
+  await tabsPage.setViewport({ width: 1429, height: 918, deviceScaleFactor: 1 });
+  await tabsPage.goto(`${url}&tabs=9`);
+  await tabsPage.waitForSelector(".repo-tab:nth-child(9)");
+  await tabsPage.waitForSelector(".tab-list-button");
+  const tabLayout = async () => tabsPage.evaluate(() => {
+    const rect = selector => {
+      const box = document.querySelector(selector).getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+    };
+    const strip = document.querySelector(".tab-strip");
+    return { pageWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth, stripWidth: strip.clientWidth,
+      contentWidth: strip.scrollWidth, scrollLeft: strip.scrollLeft, strip: rect(".tab-strip"),
+      navigation: rect(".tab-navigation"), appName: rect(".app-name"), theme: rect(".theme-control"),
+      active: rect(".repo-tab.active") };
+  });
+  let tabs = await tabLayout();
+  assert.equal(tabs.pageWidth, tabs.viewportWidth, "Overflowing tabs widen the page");
+  assert.ok(tabs.contentWidth > tabs.stripWidth, "Tabs do not overflow their strip");
+  assert.ok(tabs.strip.right <= tabs.navigation.left + 1 && tabs.navigation.right <= tabs.appName.left + 1 && tabs.appName.right <= tabs.theme.left + 1, "Tab header controls overlap");
+  await tabsPage.screenshot({ path: path.join(output, "tabs-overflow-1429.png") });
+  await tabsPage.click(".tab-list-button");
+  assert.equal(await tabsPage.$$eval(".tab-list-menu button", buttons => buttons.length), 9, "Tab list omits repositories");
+  await tabsPage.screenshot({ path: path.join(output, "tabs-menu-1429.png") });
+  await tabsPage.locator(".tab-list-menu button:last-child").click();
+  await tabsPage.waitForFunction(() => document.querySelector(".repo-tab.active .tab-name")?.textContent === "repository-9");
+  await tabsPage.waitForFunction(() => {
+    const strip = document.querySelector(".tab-strip").getBoundingClientRect();
+    const active = document.querySelector(".repo-tab.active").getBoundingClientRect();
+    return active.left >= strip.left - 1 && active.right <= strip.right + 1;
+  });
+  tabs = await tabLayout();
+  assert.ok(tabs.scrollLeft > 0 && tabs.active.left >= tabs.strip.left - 1 && tabs.active.right <= tabs.strip.right + 1, `Selected hidden tab was not scrolled into view: ${JSON.stringify(tabs)}`);
+  await tabsPage.screenshot({ path: path.join(output, "tabs-last-selected-1429.png") });
+  await tabsPage.click('[aria-label="Scroll tabs left"]');
+  await tabsPage.waitForFunction(previous => document.querySelector(".tab-strip").scrollLeft < previous - 10, {}, tabs.scrollLeft);
+  const afterLeft = await tabsPage.$eval(".tab-strip", strip => strip.scrollLeft);
+  await tabsPage.hover(".tab-strip");
+  await tabsPage.mouse.wheel({ deltaY: 250 });
+  await tabsPage.waitForFunction(previous => document.querySelector(".tab-strip").scrollLeft > previous + 10, {}, afterLeft);
+  await tabsPage.setViewport({ width: 960, height: 918, deviceScaleFactor: 1 });
+  await tabsPage.waitForFunction(() => document.querySelector(".tab-strip").clientWidth < document.querySelector(".tab-strip").scrollWidth);
+  tabs = await tabLayout();
+  assert.equal(tabs.pageWidth, tabs.viewportWidth, "Narrow tab header widens the page");
+  assert.ok(tabs.strip.right <= tabs.navigation.left + 1 && tabs.navigation.right <= tabs.theme.left + 1, `Narrow tab controls overlap: ${JSON.stringify(tabs)}`);
+  await tabsPage.screenshot({ path: path.join(output, "tabs-overflow-960.png") });
+  await tabsPage.click(".tab-add");
+  await tabsPage.waitForSelector(".open-modal");
+  await tabsPage.keyboard.press("Escape");
+  assert.equal(await tabsPage.$(".open-modal"), null, "Open repository dialog did not close");
+  await tabsPage.goto(`${url}&tabs=2`);
+  await tabsPage.waitForSelector(".repo-tab:nth-child(2)");
+  await tabsPage.waitForFunction(() => !document.querySelector(".tab-list-button"));
+  assert.ok(await tabsPage.$(".tab-add"), "Open repository button disappears without overflow");
+  await tabsPage.close();
   assert.deepEqual(errors, [], `Browser errors: ${errors.join("; ")}`);
   console.log(JSON.stringify({ output, layoutsChecked: report.length, errors }, null, 2));
 }

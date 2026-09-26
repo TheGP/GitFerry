@@ -1,10 +1,10 @@
 use gitferry_agent::{
-    action_with_progress, cancel_operation, commit_details, diff_with_options, rebase_plan, search,
-    snapshot, state, watch,
+    action_with_progress, blame, cancel_operation, commit_details, diff_with_options, file_history,
+    rebase_plan, search, snapshot, state, tracked_files, watch,
 };
 use gitferry_proto::{
-    CommitDetails, DiffResult, RebaseCommit, RepoAction, RepoSnapshot, RepoState, Request,
-    Response, SearchResult,
+    BlameResult, CommitDetails, DiffResult, FileHistoryResult, RebaseCommit, RepoAction,
+    RepoSnapshot, RepoState, Request, Response, SearchResult,
 };
 use tauri::{Emitter, Manager};
 
@@ -216,6 +216,107 @@ async fn repo_commit(
 }
 
 #[tauri::command]
+async fn repo_file_history(
+    app: tauri::AppHandle,
+    path: String,
+    file: String,
+    revision: String,
+    offset: usize,
+) -> Result<FileHistoryResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            let response = app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::FileHistory {
+                    path: remote_path.to_string(),
+                    file,
+                    revision,
+                    offset,
+                    limit: 100,
+                },
+            )?;
+            match response {
+                Response::FileHistory(history) => Ok(history),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            file_history(&path, &file, &revision, offset, 100)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn repo_blame(
+    app: tauri::AppHandle,
+    path: String,
+    file: String,
+    revision: String,
+    start_line: usize,
+) -> Result<BlameResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            let response = app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::Blame {
+                    path: remote_path.to_string(),
+                    file,
+                    revision,
+                    start_line,
+                    limit: 300,
+                },
+            )?;
+            match response {
+                Response::Blame(blame) => Ok(blame),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            blame(&path, &file, &revision, start_line, 300)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn repo_tracked_files(
+    app: tauri::AppHandle,
+    path: String,
+    query: String,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            let response = app.state::<remote::RemoteManager>().call(
+                &path,
+                &agent_resources(&app),
+                Request::TrackedFiles {
+                    path: remote_path.to_string(),
+                    query,
+                    limit: 100,
+                },
+            )?;
+            match response {
+                Response::TrackedFiles(files) => Ok(files),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".to_string()),
+            }
+        } else {
+            tracked_files(&path, &query, 100)
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn repo_diff(
     app: tauri::AppHandle,
     path: String,
@@ -333,6 +434,9 @@ pub fn run() {
             repo_rebase_plan,
             repo_search,
             repo_commit,
+            repo_file_history,
+            repo_blame,
+            repo_tracked_files,
             repo_diff,
             open_in_editor,
             repo_action,

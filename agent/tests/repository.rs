@@ -1,10 +1,11 @@
 use gitferry_agent::{
-    action, action_with_progress, cancel_operation, commit_details, diff, rebase_plan, search,
-    snapshot, watch,
+    action, action_with_progress, blame, cancel_operation, commit_details, diff, file_history,
+    rebase_plan, search, snapshot, tracked_files, watch,
 };
-use gitferry_proto::{RebaseStep, RepoAction};
+use gitferry_proto::{RebaseStep, RepoAction, Request, Response, RpcRequest, RpcResponse};
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -63,6 +64,155 @@ fn restores_selected_stash_and_only_pop_removes_it() {
     );
     assert_eq!(git(temp.path(), &["stash", "list", "--format=%H"]), "");
     assert!(action(path, RepoAction::PopStash { hash }).is_err());
+}
+
+#[test]
+fn hides_stash_helpers_unless_another_ref_reaches_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("tracked.txt"), "base\n").unwrap();
+    git(dir, &["add", "tracked.txt"]);
+    git(dir, &["commit", "-qm", "Initial"]);
+    std::fs::write(dir.join("tracked.txt"), "staged\n").unwrap();
+    git(dir, &["add", "tracked.txt"]);
+    std::fs::write(dir.join("new.txt"), "untracked\n").unwrap();
+    let path = dir.to_str().unwrap();
+    action(
+        path,
+        RepoAction::Stash {
+            message: "WIP".into(),
+        },
+    )
+    .unwrap();
+    let parents: Vec<String> = git(dir, &["rev-list", "--parents", "-n", "1", "refs/stash"])
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        parents.len(),
+        4,
+        "stash should include index and untracked parents"
+    );
+
+    let history = snapshot(path, 0, 20).unwrap();
+    let stash = history
+        .commits
+        .iter()
+        .find(|item| item.hash == parents[0])
+        .unwrap();
+    assert_eq!(stash.parents, vec![parents[1].clone()]);
+    assert!(stash
+        .decorations
+        .iter()
+        .any(|item| item.contains("refs/stash")));
+    assert!(history
+        .refs
+        .iter()
+        .any(|item| item.kind == "stash" && item.target == parents[0]));
+    assert!(!history
+        .commits
+        .iter()
+        .any(|item| item.hash == parents[2] || item.hash == parents[3]));
+    assert!(search(path, "index on", 0, 20).unwrap().commits.is_empty());
+    assert!(search(path, "untracked files on", 0, 20)
+        .unwrap()
+        .commits
+        .is_empty());
+    assert_eq!(
+        search(path, "WIP", 0, 20).unwrap().commits[0].parents,
+        vec![parents[1].clone()]
+    );
+
+    git(dir, &["branch", "keep-index", &parents[2]]);
+    git(dir, &["tag", "keep-untracked", &parents[3]]);
+    let protected = snapshot(path, 0, 20).unwrap();
+    assert!(protected.commits.iter().any(|item| item.hash == parents[2]));
+    assert!(protected.commits.iter().any(|item| item.hash == parents[3]));
+    assert_eq!(
+        protected
+            .commits
+            .iter()
+            .find(|item| item.hash == parents[0])
+            .unwrap()
+            .parents,
+        vec![parents[1].clone()]
+    );
+    git(dir, &["branch", "-D", "keep-index"]);
+    git(
+        dir,
+        &["update-ref", "refs/remotes/origin/keep-index", &parents[2]],
+    );
+    assert!(snapshot(path, 0, 20)
+        .unwrap()
+        .commits
+        .iter()
+        .any(|item| item.hash == parents[2]));
+}
+
+#[test]
+fn stash_helper_filter_keeps_snapshot_and_search_pages_contiguous() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("tracked.txt"), "base\n").unwrap();
+    git(dir, &["add", "tracked.txt"]);
+    git(dir, &["commit", "-qm", "Page base"]);
+    for number in 1..=4 {
+        std::fs::write(dir.join("tracked.txt"), format!("Page {number}\n")).unwrap();
+        git(dir, &["commit", "-qam", &format!("Page {number}")]);
+    }
+    std::fs::write(dir.join("tracked.txt"), "Page staged\n").unwrap();
+    git(dir, &["add", "tracked.txt"]);
+    std::fs::write(dir.join("new.txt"), "Page untracked\n").unwrap();
+    let path = dir.to_str().unwrap();
+    action(
+        path,
+        RepoAction::Stash {
+            message: "Page stash".into(),
+        },
+    )
+    .unwrap();
+
+    let expected: Vec<String> = snapshot(path, 0, 200)
+        .unwrap()
+        .commits
+        .into_iter()
+        .map(|item| item.hash)
+        .collect();
+    let mut actual = Vec::new();
+    loop {
+        let page = snapshot(path, actual.len(), 1).unwrap();
+        assert_eq!(page.commits.len(), 1);
+        actual.push(page.commits[0].hash.clone());
+        if !page.has_more {
+            break;
+        }
+        assert!(actual.len() < 20, "history paging did not finish");
+    }
+    assert_eq!(actual, expected);
+
+    let expected_search: Vec<String> = search(path, "Page", 0, 200)
+        .unwrap()
+        .commits
+        .into_iter()
+        .map(|item| item.hash)
+        .collect();
+    let mut actual_search = Vec::new();
+    loop {
+        let page = search(path, "Page", actual_search.len(), 1).unwrap();
+        assert_eq!(page.commits.len(), 1);
+        actual_search.push(page.commits[0].hash.clone());
+        if !page.has_more {
+            break;
+        }
+        assert!(actual_search.len() < 20, "search paging did not finish");
+    }
+    assert_eq!(actual_search, expected_search);
 }
 
 #[test]
@@ -697,6 +847,147 @@ fn pushes_new_branch_with_upstream_without_pushing_other_branches() {
 }
 
 #[test]
+fn manages_local_and_remote_branches_and_tags() {
+    let temp = tempfile::tempdir().unwrap();
+    let local = temp.path().join("local");
+    let bare = temp.path().join("remote.git");
+    std::fs::create_dir(&local).unwrap();
+    git(&local, &["init", "-q", "-b", "main"]);
+    git(&local, &["config", "user.name", "Test"]);
+    git(&local, &["config", "user.email", "test@example.com"]);
+    std::fs::write(local.join("hello.txt"), "initial\n").unwrap();
+    git(&local, &["add", "hello.txt"]);
+    git(&local, &["commit", "-qm", "Initial"]);
+    git(
+        temp.path(),
+        &["init", "-q", "--bare", bare.to_str().unwrap()],
+    );
+    git(&local, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    let path = local.to_str().unwrap();
+    assert_eq!(snapshot(path, 0, 10).unwrap().remotes, vec!["origin"]);
+
+    git(&local, &["branch", "topic"]);
+    action(
+        path,
+        RepoAction::RenameBranch {
+            branch: "topic".into(),
+            new_name: "renamed".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(git(&local, &["branch", "--list", "renamed"]), "renamed");
+    assert!(action(
+        path,
+        RepoAction::RenameBranch {
+            branch: "renamed".into(),
+            new_name: "main".into()
+        }
+    )
+    .is_err());
+    assert!(action(
+        path,
+        RepoAction::PushBranch {
+            remote: "unknown".into(),
+            branch: "renamed".into()
+        }
+    )
+    .is_err());
+    assert!(action(
+        path,
+        RepoAction::DeleteRemoteBranch {
+            remote: "origin".into(),
+            branch: "-bad".into()
+        }
+    )
+    .is_err());
+    action(
+        path,
+        RepoAction::PushBranch {
+            remote: "origin".into(),
+            branch: "renamed".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        git(&bare, &["rev-parse", "refs/heads/renamed"]),
+        git(&local, &["rev-parse", "HEAD"])
+    );
+    assert!(git(&bare, &["branch", "--list", "main"]).is_empty());
+    action(
+        path,
+        RepoAction::DeleteRemoteBranch {
+            remote: "origin".into(),
+            branch: "renamed".into(),
+        },
+    )
+    .unwrap();
+    assert!(git(&bare, &["branch", "--list", "renamed"]).is_empty());
+    assert_eq!(git(&local, &["branch", "--list", "renamed"]), "renamed");
+
+    git(&local, &["switch", "-q", "-c", "unmerged"]);
+    std::fs::write(local.join("other.txt"), "different\n").unwrap();
+    git(&local, &["add", "other.txt"]);
+    git(&local, &["commit", "-qm", "Unmerged"]);
+    git(&local, &["switch", "-q", "main"]);
+    assert!(action(
+        path,
+        RepoAction::DeleteBranch {
+            branch: "unmerged".into()
+        }
+    )
+    .is_err());
+    action(
+        path,
+        RepoAction::ForceDeleteBranch {
+            branch: "unmerged".into(),
+        },
+    )
+    .unwrap();
+    assert!(git(&local, &["branch", "--list", "unmerged"]).is_empty());
+    action(
+        path,
+        RepoAction::RenameBranch {
+            branch: "main".into(),
+            new_name: "main-renamed".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(git(&local, &["branch", "--show-current"]), "main-renamed");
+
+    git(&local, &["tag", "v-test"]);
+    assert!(action(
+        path,
+        RepoAction::DeleteRemoteTag {
+            remote: "origin".into(),
+            name: "-bad".into()
+        }
+    )
+    .is_err());
+    action(
+        path,
+        RepoAction::PushTag {
+            remote: "origin".into(),
+            name: "v-test".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        git(&bare, &["rev-parse", "refs/tags/v-test"]),
+        git(&local, &["rev-parse", "HEAD"])
+    );
+    action(
+        path,
+        RepoAction::DeleteRemoteTag {
+            remote: "origin".into(),
+            name: "v-test".into(),
+        },
+    )
+    .unwrap();
+    assert!(git(&bare, &["tag", "--list", "v-test"]).is_empty());
+    assert_eq!(git(&local, &["tag", "--list", "v-test"]), "v-test");
+}
+
+#[test]
 fn resolves_merge_conflict_and_continues() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();
@@ -932,6 +1223,7 @@ fn interactive_rebase_plan_is_ordered_and_rejects_stale_steps() {
     let stale = vec![RebaseStep {
         hash: plan[0].hash.clone(),
         action: "pick".into(),
+        message: None,
     }];
     assert!(action(
         path,
@@ -944,4 +1236,141 @@ fn interactive_rebase_plan_is_ordered_and_rejects_stale_steps() {
     .unwrap_err()
     .contains("plan changed"));
     assert_eq!(git(dir, &["rev-parse", "HEAD"]), before);
+}
+
+#[test]
+fn interactive_rebase_rewords_squashes_and_pauses_for_edit() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "Base"]);
+    git(dir, &["switch", "-c", "topic"]);
+    for (file, subject) in [("a.txt", "Add A"), ("b.txt", "Add B"), ("c.txt", "Add C")] {
+        std::fs::write(dir.join(file), format!("{subject}\n")).unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-qm", subject]);
+    }
+    let path = dir.to_str().unwrap();
+    let plan = rebase_plan(path, "main").unwrap();
+    assert_eq!(plan[0].message, "Add A");
+    let steps = [
+        RebaseStep {
+            hash: plan[0].hash.clone(),
+            action: "reword".into(),
+            message: Some("Renamed A\n\nA longer explanation".into()),
+        },
+        RebaseStep {
+            hash: plan[1].hash.clone(),
+            action: "squash".into(),
+            message: None,
+        },
+        RebaseStep {
+            hash: plan[2].hash.clone(),
+            action: "edit".into(),
+            message: None,
+        },
+    ];
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gitferry-agent"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let request = RpcRequest {
+        id: 1,
+        request: Request::Action {
+            path: path.into(),
+            action: RepoAction::InteractiveRebase {
+                branch: "topic".into(),
+                onto: "main".into(),
+                steps: steps.to_vec(),
+            },
+            cancel_token: None,
+        },
+    };
+    let input = child.stdin.as_mut().unwrap();
+    serde_json::to_writer(&mut *input, &request).unwrap();
+    writeln!(input).unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: RpcResponse = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        matches!(&response.response, Response::Action(_)),
+        "{response:?}"
+    );
+    let paused = snapshot(path, 0, 20).unwrap();
+    assert_eq!(paused.operation.as_deref(), Some("rebase"));
+    assert!(paused.rebase_edit_pause);
+    assert_eq!(git(dir, &["log", "-1", "--format=%s"]), "Add C");
+    let combined = git(dir, &["log", "-1", "--format=%B", "HEAD^"]);
+    assert!(
+        combined.contains("Renamed A") && combined.contains("Add B"),
+        "{combined}"
+    );
+    assert!(combined.contains("A longer explanation"));
+    std::fs::write(dir.join("c.txt"), "Edited C\n").unwrap();
+    git(dir, &["add", "c.txt"]);
+    action(path, RepoAction::AmendNoEdit).unwrap();
+    action(path, RepoAction::ContinueOperation).unwrap();
+    let finished = snapshot(path, 0, 20).unwrap();
+    assert_eq!(finished.operation, None);
+    assert!(!finished.rebase_edit_pause);
+    assert_eq!(git(dir, &["log", "-1", "--format=%s"]), "Add C");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("c.txt")).unwrap(),
+        "Edited C\n"
+    );
+}
+
+#[test]
+fn file_history_follows_renames_and_blame_pages_lines() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("original.txt"), "alpha\nbeta\n").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "Add original"]);
+    std::fs::write(dir.join("original.txt"), "alpha\nbravo\n").unwrap();
+    git(dir, &["commit", "-qam", "Change second line"]);
+    git(dir, &["mv", "original.txt", "renamed.txt"]);
+    git(dir, &["commit", "-qm", "Rename file"]);
+
+    let path = dir.to_str().unwrap();
+    let first = file_history(path, "renamed.txt", "HEAD", 0, 2).unwrap();
+    assert_eq!(first.commits.len(), 2);
+    assert!(first.has_more);
+    assert_eq!(first.commits[0].subject, "Rename file");
+    assert_eq!(first.commits[0].path, "renamed.txt");
+    assert_eq!(first.commits[1].subject, "Change second line");
+    assert_eq!(first.commits[1].path, "original.txt");
+    let older = file_history(path, "renamed.txt", "HEAD", 2, 2).unwrap();
+    assert_eq!(older.commits[0].subject, "Add original");
+    assert!(!older.has_more);
+
+    let first_line = blame(path, "renamed.txt", "HEAD", 1, 1).unwrap();
+    assert_eq!(first_line.lines[0].content, "alpha");
+    assert!(first_line.has_more);
+    let second_line = blame(path, "renamed.txt", "HEAD", 2, 1).unwrap();
+    assert_eq!(second_line.lines[0].line, 2);
+    assert_eq!(second_line.lines[0].content, "bravo");
+    assert_eq!(second_line.lines[0].summary, "Change second line");
+    assert!(!second_line.has_more);
+    assert_eq!(
+        tracked_files(path, "RENAMED", 10).unwrap(),
+        vec!["renamed.txt".to_string()]
+    );
+    assert!(tracked_files(path, "original", 10).unwrap().is_empty());
+    assert!(file_history(path, "../outside", "HEAD", 0, 10).is_err());
+    assert!(blame(path, "renamed.txt", "HEAD~1", 1, 10).is_err());
 }
