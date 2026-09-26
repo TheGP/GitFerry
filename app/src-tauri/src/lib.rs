@@ -491,6 +491,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(remote::RemoteManager::new())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             repo_snapshot,
             repo_state,
