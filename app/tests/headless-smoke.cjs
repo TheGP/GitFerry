@@ -194,6 +194,13 @@ async function main() {
   await page.waitForSelector(".open-modal");
   await page.keyboard.press("Escape");
   await openRepo(page, small);
+  const textSizes = await page.evaluate(() => Object.fromEntries([
+    ".commit-editor-actions label", ".commit-editor-actions button", ".commit-editor textarea",
+    ".file-row", ".commit-meta", ".section-heading", ".statusbar",
+  ].map(selector => [selector, Number.parseFloat(getComputedStyle(document.querySelector(selector)).fontSize)])));
+  for (const [selector, size] of Object.entries(textSizes)) assert.ok(size >= 13, `${selector} must be readable: ${size}px`);
+  assert.ok(textSizes[".commit-editor-actions label"] >= 14, "amend control must use larger text");
+  assert.ok(textSizes[".commit-editor-actions button"] >= 14, "commit button must use larger text");
   await page.click(".file-row");
   await page.waitForSelector(".diff-line");
   assert.ok(await page.$eval(".details-tab:first-child", tab => tab.classList.contains("active")), "opening a Summary file must keep Summary active");
