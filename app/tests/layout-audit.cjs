@@ -62,7 +62,7 @@ async function main() {
     return [display(2026, 8, 26, 18, 43), display(2026, 8, 25, 21, 34), display(2026, 8, 19, 21, 34), display(2026, 8, 18, 21, 34), display(2025, 8, 18, 21, 34)];
   });
   assert.deepEqual(commitDates, ["18:43", "Fri, 21:34", "Sat, 21:34", "Sep 18", "Sep 18, 2025"]);
-  assert.match(await page.$eval(".commit-row .commit-meta span", element => element.textContent), /^\d{2}:\d{2}$/, "today's commit row must show only the time");
+  assert.match(await page.$eval(".commit-row .commit-date", element => element.textContent), /^\d{2}:\d{2}$/, "today's commit row must show only the time");
   assert.equal(await page.$(".working-header"), null, "Working-directory intro still takes space above changes");
   const branchLabels = await page.evaluate(() => {
     const branchSection = document.querySelector(".ref-section");
@@ -123,7 +123,7 @@ async function main() {
   await page.setViewport({ width: 1600, height: 900, deviceScaleFactor: 1 });
   await selectTheme(page, "claude");
   await page.evaluate(() => document.querySelector(".commit-row")?.click());
-  await page.waitForSelector(".detail-header h2");
+  await page.waitForSelector(".detail-header .commit-message");
   await page.waitForSelector(".summary-open-tab");
   assert.equal(await page.$(".in-app-edit-button"), null, "Committed files must not expose the in-app edit icon");
   await page.click(".summary-open-tab");
@@ -245,7 +245,7 @@ async function main() {
   await page.screenshot({ path: path.join(output, "stash-menu-960.png") });
   await page.click("button[title='Unstash']");
   await page.click(".commit-row");
-  await page.waitForSelector(".detail-header h2");
+  await page.waitForSelector(".detail-header .commit-message");
   await page.click(".commit-actions summary");
   await page.screenshot({ path: path.join(output, "commit-actions-960.png") });
   assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "Summary and All Changes are still separate tabs");

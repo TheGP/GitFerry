@@ -391,7 +391,9 @@ async function main() {
   await page.click(".file-actions button");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("UNSTAGED ")));
   await waitForAction(page);
-  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "base.txt")?.querySelector(".in-app-edit-button")?.click());
+  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "base.txt")?.querySelector(".summary-open-tab")?.click());
+  await page.waitForSelector(".file-view-switch");
+  await page.evaluate(() => [...document.querySelectorAll(".file-view-switch button")].find(button => button.textContent.trim() === "Edit")?.click());
   await page.waitForSelector('.file-edit-textarea[aria-label="Edit base.txt"]');
   await page.locator(".file-edit-textarea").fill("one\ntwo edited in GitFerry\nthree\n");
   await shortcut(page, "s");
@@ -401,7 +403,9 @@ async function main() {
   await page.click(".details-tab:first-child");
   fs.writeFileSync(path.join(small, "new.txt"), "new file\r\n");
   await page.click("button[title='Refresh']");
-  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "new.txt")?.querySelector(".in-app-edit-button")?.click());
+  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "new.txt")?.querySelector(".summary-open-tab")?.click());
+  await page.waitForSelector(".file-view-switch");
+  await page.evaluate(() => [...document.querySelectorAll(".file-view-switch button")].find(button => button.textContent.trim() === "Edit")?.click());
   await page.waitForSelector('.file-edit-textarea[aria-label="Edit new.txt"]');
   await page.locator(".file-edit-textarea").fill("new file\nsecond\n");
   await shortcut(page, "s");
@@ -418,7 +422,9 @@ async function main() {
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("STAGED ")) || document.querySelector(".error-bar"));
   assert.ok(git(small, "diff", "--cached", "--name-only"), await page.$eval(".error-bar", item => item.textContent).catch(() => "Stage All did not stage files"));
   await waitForAction(page);
-  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "base.txt" && card.querySelector(".file-tag"))?.querySelector(".in-app-edit-button")?.click());
+  await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "base.txt" && card.querySelector(".file-tag"))?.querySelector(".summary-open-tab")?.click());
+  await page.waitForSelector(".file-view-switch");
+  await page.evaluate(() => [...document.querySelectorAll(".file-view-switch button")].find(button => button.textContent.trim() === "Edit")?.click());
   await page.waitForSelector('.file-edit-textarea[aria-label="Edit base.txt"]');
   await page.locator(".file-edit-textarea").fill("one\ntwo staged in GitFerry\nthree\n");
   await shortcut(page, "s");
@@ -605,7 +611,7 @@ async function main() {
   await page.waitForFunction(() => !document.querySelector(".stash-menu"));
   assert.equal(fs.readFileSync(path.join(small, "stash.tmp"), "utf8"), "temporary stash\n");
   await page.evaluate(() => [...document.querySelectorAll(".commit-row")].find(button => button.textContent.includes("Test UI commit"))?.click());
-  await page.waitForFunction(() => document.querySelector(".detail-header h2")?.textContent.includes("Test UI commit"));
+  await page.waitForFunction(() => document.querySelector(".detail-header .commit-message")?.textContent.includes("Test UI commit"));
   await page.waitForSelector(".diff-line");
   assert.ok(await page.$eval(".details-tab:first-child", tab => tab.classList.contains("active")), "committed file must expand in Summary");
   await page.screenshot({ path: path.join(screenshots, "small-commit.png") });
@@ -881,7 +887,7 @@ async function main() {
     await openRepo(page, realPath);
     const realStart = Date.now();
     await page.click(".commit-row");
-    await page.waitForSelector(".detail-header h2");
+    await page.waitForSelector(".detail-header .commit-message");
     await page.waitForSelector(".file-row");
     const commitMs = Date.now() - realStart;
     const diffStart = Date.now();
