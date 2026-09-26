@@ -348,7 +348,14 @@ pub fn watch(path: &str, timeout_ms: u64) -> Result<bool, String> {
                                 in_git_dir = true;
                             }
                         }
-                        true
+                        // Other tools' `git status` briefly creates index.lock without changing anything.
+                        let in_git_dir = in_git_dir || path.starts_with(&git_dir);
+                        !(in_git_dir
+                            && path
+                                .extension()
+                                .is_some_and(|extension| extension == "lock"))
+                            && path != git_dir.as_path()
+                            && path.file_name().is_none_or(|name| name != ".git")
                     });
                 if relevant {
                     std::thread::sleep(std::time::Duration::from_millis(250));
