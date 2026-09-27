@@ -37,6 +37,45 @@ fn agent_resources(app: &tauri::AppHandle) -> std::path::PathBuf {
     }
 }
 
+/// UI settings mirrored from WebView localStorage, which has come back empty after Windows restarts.
+fn settings_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?
+        .join("settings.json"))
+}
+
+#[tauri::command]
+fn load_settings(
+    app: tauri::AppHandle,
+) -> Result<Option<std::collections::HashMap<String, String>>, String> {
+    let path = settings_file(&app)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_settings(
+    app: tauri::AppHandle,
+    settings: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let path = settings_file(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    // Write a sibling file and rename it so a crash never leaves a half-written settings file.
+    let temporary = path.with_extension("json.tmp");
+    let text = serde_json::to_string(&settings).map_err(|error| error.to_string())?;
+    std::fs::write(&temporary, text).map_err(|error| error.to_string())?;
+    std::fs::rename(&temporary, &path).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 async fn repo_snapshot(
     app: tauri::AppHandle,
@@ -535,6 +574,8 @@ pub fn run() {
             repo_search,
             repo_commit,
             repo_compare,
+            load_settings,
+            save_settings,
             repo_file_history,
             repo_blame,
             repo_tracked_files,
