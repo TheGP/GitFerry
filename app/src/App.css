@@ -691,3 +691,14 @@ button { cursor: pointer; }
 .files-heading .files-disclosure:hover { color: var(--theme-text); }
 .files-disclosure svg { width: 12px; height: 12px; flex: none; transition: transform .12s ease; }
 .files-disclosure[aria-expanded="false"] svg { transform: rotate(-90deg); }
+/* File headers stick to the top of the details pane until their diff scrolls past (overflow must stay visible for sticky). */
+.files-list, .files-list .summary-diff-card { overflow: visible; }
+.summary-diff-heading { position: sticky; top: 0; z-index: 3; }
+.full-file-toggle { flex: none; padding: 4px 9px; border: 0; border-radius: 4px; background: var(--theme-heading); color: var(--theme-secondary); font-size: 13px; cursor: pointer; }
+.full-file-toggle:hover { background: var(--theme-hover); color: var(--theme-text); }
+.full-file-toggle.active { background: var(--theme-accent-soft); color: var(--theme-text); }
+.details-tab.file-tab { gap: 4px; padding-right: 4px; }
+.details-tab-label { min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.details-tab-close { width: 22px; height: 22px; flex: none; display: grid; place-items: center; margin-left: auto; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--theme-muted); cursor: pointer; }
+.details-tab-close:hover { background: var(--theme-hover); color: var(--theme-text); }
+.details-tab-close .icon { width: 12px; height: 12px; }

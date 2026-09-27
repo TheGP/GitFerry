@@ -41,6 +41,9 @@ const editorExecutableKey = "gitferry.editorExecutable";
 const tabBranchKey = "gitferry.showTabBranch";
 const expansionKey = "gitferry.expansion";
 const tabStateKey = "gitferry.tabState";
+const testsClosedKey = "gitferry.keepTestsClosed";
+const fullFileKey = "gitferry.fullFile";
+const testFilePattern = /(^|\/)(__tests__|tests?|specs?)\/|\.(test|spec)\.[^/]+$|(^|\/)test_[^/]*$|_(test|spec)\.[^/.]+$/i;
 const editorOptions = [
   { id: "antigravity", label: "Antigravity" },
   { id: "vscode", label: "VS Code" },
@@ -203,7 +206,7 @@ function copyDiffSelection(event: ClipboardEvent) {
   event.preventDefault();
 }
 
-function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWhitespace: boolean; actionBusy: boolean; repoPath: string; onAction: (operation: Operation, confirmation?: string) => void; onEdited: () => void; onError: (error: string) => void }) {
+function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWhitespace: boolean; fullContext?: boolean; actionBusy: boolean; repoPath: string; onAction: (operation: Operation, confirmation?: string) => void; onEdited: () => void; onError: (error: string) => void }) {
   const lines = createMemo(() => parseDiffLines(props.value));
   const highlighted = createMemo(() => highlightDiff(lines(), props.item.path, props.value.text.length));
   // Rows keyed by content keep their DOM when the diff reloads; only changed lines, shifted line numbers and tokens update.
@@ -224,7 +227,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
   const selectedSet = createMemo(() => new Set(selectedLines()));
   const fileOnlyChange = createMemo(() => /(^|\n)(new file mode|deleted file mode|rename from|rename to|copy from|copy to|old mode|new mode)/.test(props.value.text));
   const lineStageNote = createMemo(() => props.value.truncated ? "Diff too large for line actions; use the file action." : props.value.text.includes("\\ No newline at end of file") ? "Use the hunk action when a file has no final newline." : fileOnlyChange() ? "Use the file action for rename or mode changes." : "");
-  const actionable = createMemo(() => props.working && props.item.status !== "U" && !props.ignoreWhitespace && (props.item.target === "working" || props.item.target === "staged"));
+  const actionable = createMemo(() => props.working && props.item.status !== "U" && !props.ignoreWhitespace && !props.fullContext && (props.item.target === "working" || props.item.target === "staged"));
   const lineActionable = createMemo(() => actionable() && !lineStageNote());
   const changed = (index: number) => {
     const kind = lines()[index]?.kind;
@@ -465,6 +468,9 @@ function App() {
   const [theme, setTheme] = createSignal<ThemeId>(initialTheme);
   const [editor, setEditor] = createSignal<EditorId>(initialEditor);
   const [showTabBranch, setShowTabBranch] = createSignal(localStorage.getItem(tabBranchKey) === "true");
+  const [fullFile, setFullFile] = createSignal(localStorage.getItem(fullFileKey) === "true");
+  createEffect(() => localStorage.setItem(fullFileKey, String(fullFile())));
+  const [keepTestsClosed, setKeepTestsClosed] = createSignal(localStorage.getItem(testsClosedKey) === "true");
   const [editorExecutable, setEditorExecutable] = createSignal(localStorage.getItem(editorExecutableKey) ?? "");
   const [showSettings, setShowSettings] = createSignal(false);
   const [actionDialog, setActionDialog] = createSignal<ActionDialog | null>(null);
@@ -474,6 +480,8 @@ function App() {
   const [selected, setSelected] = createSignal("working");
   const [details, setDetails] = createSignal<Details | null>(null);
   const [choice, setChoice] = createSignal<Choice | null>(null);
+  // A file tab left open while viewing the Summary; it closes with its × or when the view changes.
+  const [parkedFile, setParkedFile] = createSignal<Choice | null>(null);
   const [diff, setDiff] = createSignal<Diff | null>(null);
   const [fileView, setFileView] = createSignal<"diff" | "history" | "blame" | "edit">("diff");
   const [fileDraft, setFileDraft] = createSignal<FileDraft | null>(null);
@@ -588,6 +596,7 @@ function App() {
     localStorage.setItem(editorExecutableKey, editorExecutable());
   });
   createEffect(() => localStorage.setItem(tabBranchKey, String(showTabBranch())));
+  createEffect(() => localStorage.setItem(testsClosedKey, String(keepTestsClosed())));
   let request = 0;
   let fileInfoRequest = 0;
   let fileEditRequest = 0;
@@ -709,19 +718,25 @@ function App() {
   const diffKey = (item: Choice) => `${item.target}:${item.path}`;
   const summaryKey = (item: Choice) => `${activePath()}:${selected()}:${diffKey(item)}`;
   const expansionScope = () => `${activePath()}:${selected()}`;
-  const isSummaryExpanded = (item: Choice) => summaryDiffs()[summaryKey(item)] ?? expansionDefaults()[expansionScope()] ?? files().length <= 20;
+  // With the setting on, test files stay collapsed unless opened one by one; bulk expand skips them.
+  const keptClosed = (item: Choice) => keepTestsClosed() && testFilePattern.test(item.path);
+  const isSummaryExpanded = (item: Choice) => summaryDiffs()[summaryKey(item)] ?? (keptClosed(item) ? false : expansionDefaults()[expansionScope()] ?? files().length <= 20);
   // Decide auto-expansion once per view so file-count changes during refreshes do not toggle every card.
   createEffect(() => {
     const scope = expansionScope(), count = files().length;
     if (count && untrack(expansionDefaults)[scope] === undefined) setExpansionDefaults(previous => ({ ...previous, [scope]: count <= 20 }));
   });
   function toggleSummaryDiff(item: Choice) { setSummaryDiffs(previous => ({ ...previous, [summaryKey(item)]: !isSummaryExpanded(item) })); }
-  const isSummaryGroupExpanded = (items: Choice[]) => items.every(isSummaryExpanded);
+  const isSummaryGroupExpanded = (items: Choice[]) => {
+    const bulk = items.filter(item => !keptClosed(item));
+    return (bulk.length ? bulk : items).every(isSummaryExpanded);
+  };
   function toggleSummaryGroup(items: Choice[]) {
     const open = !isSummaryGroupExpanded(items);
+    const skipTests = items.some(item => !keptClosed(item));
     setSummaryDiffs(previous => {
       const next = { ...previous };
-      for (const item of items) next[summaryKey(item)] = open;
+      for (const item of items) next[summaryKey(item)] = open && skipTests && keptClosed(item) ? false : open;
       return next;
     });
   }
@@ -836,7 +851,7 @@ function App() {
     fileInfoRequest++;
     setFileView("diff"); setFileHistory(null); setFileBlame(null); setFileInfoLoading(false); setFileInfoError("");
   }
-  function selectWorking() { navigationArea = "commits"; request++; resetFileInfo(); setSelected("working"); setDetails(null); setChoice(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
+  function selectWorking() { navigationArea = "commits"; request++; resetFileInfo(); setSelected("working"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
   function saveRecent(path: string) {
     const next = [path, ...recent().filter(item => item !== path)].slice(0, 12);
     setRecent(next);
@@ -1011,7 +1026,12 @@ function App() {
   });
   function showComparison() {
     navigationArea = "commits"; request++; resetFileInfo();
-    setSelected("compare"); setDetails(null); setChoice(null); setDiff(null); setKeyboardFileKey(null);
+    setSelected("compare"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null);
+  }
+  function closeFileTab() {
+    setParkedFile(null);
+    if (choice()) { setChoice(null); setDiff(null); resetFileInfo(); }
+    if (detailsScroll) detailsScroll.scrollTop = 0;
   }
   function closeComparison() {
     const path = activePath();
@@ -1044,7 +1064,7 @@ function App() {
     // Commits never change, so a cached copy renders instantly when returning to a tab or commit.
     const cacheKey = `${path}\u0000${hash}`;
     const cached = detailsCache.get(cacheKey);
-    setSelected(hash); setDetails(cached ?? null); setChoice(null); setDiff(null); setKeyboardFileKey(null);
+    setSelected(hash); setDetails(cached ?? null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null);
     if (detailsScroll) detailsScroll.scrollTop = 0;
     const id = ++request;
     if (cached) return;
@@ -1075,7 +1095,7 @@ function App() {
       return;
     }
     try {
-      const result = await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: ignoreWhitespace() });
+      const result = await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: ignoreWhitespace(), fullContext: fullFile() });
       if (id === request) { setDiff(result); requestAnimationFrame(revealDiff); }
     } catch (cause) { if (id === request) setError(String(cause)); }
   }
@@ -1678,7 +1698,7 @@ function App() {
             <Show when={!displayedCommits().length}><div class="empty-note">{searchBusy() ? "Searching…" : searchQuery() ? "No matching commits" : "No commits yet"}</div></Show>
           </div>
         </section><div class="splitter commits-splitter" onPointerDown={event => startResize(bottomLayout() ? "history" : "commits", event)} />
-        <section class="details-pane" onPointerDown={() => { navigationArea = "files"; }}><div class="details-tabs"><button class={`details-tab ${!choice() ? "active" : ""}`} onClick={() => { setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><Show when={choice()}><button class="details-tab active" title={choice()?.path}>{choice()?.path.split("/").pop()?.split("\\").pop()}</button></Show></div>
+        <section class="details-pane" onPointerDown={() => { navigationArea = "files"; }}><div class="details-tabs"><button class={`details-tab ${!choice() ? "active" : ""}`} onClick={() => { if (choice()) setParkedFile(choice()); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><Show when={choice() ?? parkedFile()}>{file => <div class={`details-tab file-tab ${choice() ? "active" : ""}`} title={file().path}><button class="details-tab-label" onClick={() => { if (!choice()) void selectFile(file()); }}>{file().path.split("/").pop()?.split("\\").pop()}</button><button class="details-tab-close" title="Close file" aria-label={`Close ${file().path}`} onClick={closeFileTab}><Icon name="close" /></button></div>}</Show></div>
           <div class="details-scroll" ref={detailsScroll} tabIndex={0} aria-label="Changed files">
             <Show when={selected() === "compare" && !choice() && comparison()}>{current => <div class="detail-header"><dl class="commit-facts">
                 <dt>Comparing</dt><dd>{current().head} <span class="compare-vs">since it left</span> {current().base}</dd>
@@ -1709,13 +1729,13 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
               <For each={conflicts()}>{item => <div class="conflict-row"><span title={item.path}>{item.path}</span><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "ours" } }, `Use Git's ours version of ${item.path} and mark it resolved?`)}>Use ours</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "theirs" } }, `Use Git's theirs version of ${item.path} and mark it resolved?`)}>Use theirs</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: item.path } })}>Mark resolved</button></div>}</For>
             </div></Show>
             <Show when={selected() === "working" && !repo()?.operation && !choice()}><div class="commit-editor"><textarea value={commitMessage()} onInput={event => setCommitMessage(event.currentTarget.value)} placeholder="Commit message" rows="2" /><div class="commit-editor-actions"><label><input type="checkbox" checked={amend()} disabled={!repo()?.head} onChange={event => setAmend(event.currentTarget.checked)} /> Amend previous commit</label><button disabled={!commitMessage().trim() || actionBusy() || (!amend() && !workingFiles().some(item => item.target === "staged"))} onClick={() => void commitChanges()}>{commitLabel()}</button></div></div></Show>
-            <Show when={!choice()}><div class="files-heading multiple-actions"><Show when={files().length} fallback={<strong class="files-title">CHANGED FILES <span>0</span></strong>}><button class="files-title files-disclosure" aria-expanded={files().every(isSummaryExpanded)} aria-label={`${files().every(isSummaryExpanded) ? "Close" : "Open"} all changed files`} onClick={() => setEveryDiff(!files().every(isSummaryExpanded))}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h8L6 8z" fill="currentColor" /></svg>CHANGED FILES <span>{files().length}</span></button></Show><div class="files-heading-spacer" /><button onClick={openFileFinder}>Browse files</button><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button><Show when={files().length}><button onClick={() => setEveryDiff(!files().every(isSummaryExpanded))}>{files().every(isSummaryExpanded) ? "Collapse all" : "Expand all"}</button></Show><Show when={selected() === "working" && files().length && !conflicts().length}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_all" })}>Stage All</button></Show></div>
+            <Show when={!choice()}><div class="files-heading multiple-actions"><Show when={files().length} fallback={<strong class="files-title">CHANGED FILES <span>0</span></strong>}><button class="files-title files-disclosure" aria-expanded={isSummaryGroupExpanded(files())} aria-label={`${isSummaryGroupExpanded(files()) ? "Close" : "Open"} all changed files`} onClick={() => setEveryDiff(!isSummaryGroupExpanded(files()))}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h8L6 8z" fill="currentColor" /></svg>CHANGED FILES <span>{files().length}</span></button></Show><div class="files-heading-spacer" /><button onClick={openFileFinder}>Browse files</button><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button><Show when={files().length}><button onClick={() => setEveryDiff(!isSummaryGroupExpanded(files()))}>{isSummaryGroupExpanded(files()) ? "Collapse all" : "Expand all"}</button></Show><Show when={selected() === "working" && files().length && !conflicts().length}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_all" })}>Stage All</button></Show></div>
             <Show when={files().length} fallback={<div class="empty-note">No files to show</div>}><div class="files-list"><For each={fileGroups()}>{group => <><Show when={group.title}><div class="file-group-heading"><button class="group-disclosure" aria-label={`${isSummaryGroupExpanded(group.items) ? "Close" : "Open"} all ${group.title.toLowerCase()} changes`} aria-expanded={isSummaryGroupExpanded(group.items)} onClick={() => toggleSummaryGroup(group.items)}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h8L6 8z" fill="currentColor" /></svg><span class="file-group-title">{group.title} <span>{group.items.length}</span></span></button></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onEdited={() => void refreshState()} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
-            <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><Show when={fileView() === "diff"}><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button></Show><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
+            <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><Show when={fileView() === "diff"}><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button></Show><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
               <Show when={fileView() === "diff"}>
                 <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.target === "working" && choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
                 <Show when={choice()?.target === "working" && choice()?.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show>
-                <Show when={ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked"}><div class="diff-filter-note">Line and hunk actions are unavailable while whitespace is ignored.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} actionBusy={actionBusy()} repoPath={repo()!.path} onEdited={() => { void refreshState(); const selectedFile = choice(); if (selectedFile) void selectFile(selectedFile); }} onError={setError} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
+                <Show when={ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked"}><div class="diff-filter-note">Line and hunk actions are unavailable while whitespace is ignored.</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} onEdited={() => { void refreshState(); const selectedFile = choice(); if (selectedFile) void selectFile(selectedFile); }} onError={setError} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
               </Show>
               <Show when={fileView() === "edit" && selected() === "working"}><div class="file-edit-view"><Show when={activeFileDraft()} fallback={<div class="empty-note">{fileEditError() || (fileEditLoading() ? "Loading file…" : "No editable file loaded")}</div>}>{draft => <><div class="file-edit-toolbar"><span>{draft().stageOnSave ? "Saving stages the whole file" : "Edits remain unstaged until you stage them"}</span><button disabled={fileEditSaving()} onClick={discardEditedFile}>Cancel</button><button class="file-edit-save" disabled={fileEditSaving() || draft().text === draft().original} onClick={() => void saveEditedFile()}>{fileEditSaving() ? "Saving…" : "Save · Ctrl+S"}</button></div><Show when={fileEditError()}>{message => <div class="file-edit-error">{message()}</div>}</Show><textarea class="file-edit-textarea" aria-label={`Edit ${draft().path}`} spellcheck={false} disabled={fileEditSaving()} value={draft().text} onInput={event => setFileDraft(current => current ? { ...current, text: event.currentTarget.value } : current)} onKeyDown={event => { if (event.key === "Tab") { event.preventDefault(); const input = event.currentTarget; const start = input.selectionStart; const end = input.selectionEnd; input.setRangeText("  ", start, end, "end"); setFileDraft(current => current ? { ...current, text: input.value } : current); } }} /></>}</Show></div></Show>
               <Show when={fileView() === "history"}><div class="file-inspection"><div class="file-inspection-heading">File history · {inspectRevision().slice(0, 8)}</div><Show when={fileInfoError()}>{message => <div class="empty-note">{message()}</div>}</Show><Show when={fileHistory()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading file history…" : "No file history loaded"}</div>}>{history => <><For each={history().commits}>{entry => <button class="file-history-row" title={`${entry.path} · ${entry.hash}`} onClick={() => void openHistoryCommit(entry)}><span class="file-history-subject">{entry.subject}</span><span class="file-history-meta">{entry.author} · {new Date(entry.timestamp * 1000).toLocaleDateString()} · {entry.hash.slice(0, 8)}</span></button>}</For><Show when={!history().commits.length && !fileInfoLoading()}><div class="empty-note">No committed history for this file.</div></Show><Show when={history().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileHistory(history().commits.length)}>{fileInfoLoading() ? "Loading…" : "Load more history"}</button></Show></>}</Show></div></Show>
@@ -1754,6 +1774,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
       <div class="modal-title"><span>Settings</span><button aria-label="Close settings" onClick={() => setShowSettings(false)}><Icon name="close" /></button></div>
       <div class="settings-body"><label>THEME<select aria-label="Color theme" value={theme()} onChange={event => setTheme(event.currentTarget.value as ThemeId)}><For each={themeOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label>
         <label class="settings-check"><input type="checkbox" checked={showTabBranch()} onChange={event => setShowTabBranch(event.currentTarget.checked)} /> Show branch name in repository tabs</label>
+        <label class="settings-check" title="Files ending in .test.* / .spec.*, *_test.*, test_*, or inside test, tests, spec or __tests__ folders"><input type="checkbox" checked={keepTestsClosed()} onChange={event => setKeepTestsClosed(event.currentTarget.checked)} /> Keep test files collapsed when expanding all</label>
         <label>EDITOR<select aria-label="External editor" value={editor()} onChange={event => setEditor(event.currentTarget.value as EditorId)}><For each={editorOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label>
         <label>COMMAND OVERRIDE<input aria-label="Editor command override" value={editorExecutable()} onInput={event => setEditorExecutable(event.currentTarget.value)} placeholder={editor() === "antigravity" ? "antigravity" : editor() === "vscode" ? "code" : "subl"} /></label>
         <p>Leave the command blank to use the editor CLI from PATH. Enter a full executable path if needed. Open in editor jumps to the first changed line. For SSH repositories, Antigravity and VS Code require Remote SSH access to the same host.</p>

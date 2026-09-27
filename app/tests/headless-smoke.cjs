@@ -412,7 +412,9 @@ async function main() {
   await waitUntil(() => fs.readFileSync(path.join(small, "new.txt"), "utf8") === "new file\r\nsecond\r\n", "preserve CRLF on save");
   await page.waitForFunction(() => document.querySelector(".file-edit-save")?.textContent.trim() === "Save · Ctrl+S" && document.querySelector(".file-edit-save")?.disabled);
   await page.click(".details-tab:first-child");
-  assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "changes must use one Summary tab");
+  assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 2, "returning to Summary must keep the file tab available");
+  await page.click(".details-tab-close");
+  assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "the file tab must close with its close button");
   await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent.trim() === "Collapse all")?.click());
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "false");
   await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent.trim() === "Expand all")?.click());
