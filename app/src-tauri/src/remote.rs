@@ -297,6 +297,7 @@ mod tests {
                             target: hash,
                             file: "example.txt".to_string(),
                             ignore_whitespace: false,
+                            full_context: false,
                         },
                     )
                     .unwrap();

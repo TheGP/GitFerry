@@ -1,5 +1,5 @@
 use gitferry_agent::{
-    action_with_progress, blame, cancel_operation, commit_details, compare, diff_with_options,
+    action_with_progress, blame, cancel_operation, commit_details, compare, diff_with_context,
     file_history, read_file, rebase_plan, save_file, search, snapshot, state, tracked_files, watch,
 };
 use gitferry_proto::{
@@ -355,7 +355,9 @@ async fn repo_diff(
     target: String,
     file: String,
     ignore_whitespace: bool,
+    full_context: Option<bool>,
 ) -> Result<DiffResult, String> {
+    let full_context = full_context.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         if path.starts_with("ssh://") {
             let (_, remote_path) = remote::parse_uri(&path)?;
@@ -367,6 +369,7 @@ async fn repo_diff(
                     target,
                     file,
                     ignore_whitespace,
+                    full_context,
                 },
             )?;
             match response {
@@ -375,7 +378,7 @@ async fn repo_diff(
                 _ => Err("Unexpected remote response".to_string()),
             }
         } else {
-            diff_with_options(&path, &target, &file, ignore_whitespace)
+            diff_with_context(&path, &target, &file, ignore_whitespace, full_context)
         }
     })
     .await

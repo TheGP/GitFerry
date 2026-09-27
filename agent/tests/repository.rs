@@ -1,6 +1,7 @@
 use gitferry_agent::{
     action, action_with_progress, blame, cancel_operation, commit_details, compare, diff,
-    file_history, read_file, rebase_plan, save_file, search, snapshot, tracked_files, watch,
+    diff_with_context, file_history, read_file, rebase_plan, save_file, search, snapshot,
+    tracked_files, watch,
 };
 use gitferry_proto::{RebaseStep, RepoAction, Request, Response, RpcRequest, RpcResponse};
 use std::io::Write;
@@ -1620,4 +1621,33 @@ fn file_history_follows_renames_and_blame_pages_lines() {
     assert!(tracked_files(path, "original", 10).unwrap().is_empty());
     assert!(file_history(path, "../outside", "HEAD", 0, 10).is_err());
     assert!(blame(path, "renamed.txt", "HEAD~1", 1, 10).is_err());
+}
+
+#[test]
+fn full_context_diff_includes_the_whole_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path();
+    let path = repo.to_str().unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["config", "user.name", "Test"]);
+    git(repo, &["config", "user.email", "test@example.com"]);
+    let lines: Vec<String> = (1..=20).map(|line| format!("line {line}")).collect();
+    std::fs::write(repo.join("long.txt"), lines.join("\n") + "\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "Long file"]);
+    std::fs::write(
+        repo.join("long.txt"),
+        lines.join("\n").replace("line 10", "line ten") + "\n",
+    )
+    .unwrap();
+    let hunks = diff(path, "working", "long.txt").unwrap().text;
+    assert!(
+        !hunks.contains(" line 1\n"),
+        "default diff keeps three context lines"
+    );
+    let whole = diff_with_context(path, "working", "long.txt", false, true)
+        .unwrap()
+        .text;
+    assert!(whole.contains(" line 1\n") && whole.contains(" line 20\n"));
+    assert!(whole.contains("+line ten"));
 }

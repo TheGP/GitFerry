@@ -70,7 +70,9 @@ pub fn handle(request: Request) -> Response {
             target,
             file,
             ignore_whitespace,
-        } => diff_with_options(&path, &target, &file, ignore_whitespace).map(Response::Diff),
+            full_context,
+        } => diff_with_context(&path, &target, &file, ignore_whitespace, full_context)
+            .map(Response::Diff),
         Request::ReadFile { path, file } => read_file(&path, &file).map(Response::EditableFile),
         Request::SaveFile {
             path,
@@ -1184,12 +1186,25 @@ pub fn diff_with_options(
     file: &str,
     ignore_whitespace: bool,
 ) -> Result<DiffResult, String> {
+    diff_with_context(path, target, file, ignore_whitespace, false)
+}
+
+pub fn diff_with_context(
+    path: &str,
+    target: &str,
+    file: &str,
+    ignore_whitespace: bool,
+    full_context: bool,
+) -> Result<DiffResult, String> {
     let root = repo_root(path)?;
     let literal_file = literal_path(file)?;
     let run_diff = |args: &[&str]| {
         let mut args = args.to_vec();
         if ignore_whitespace {
             args.insert(1, "-w");
+        }
+        if full_context {
+            args.insert(1, "--unified=1000000");
         }
         git(&root, &args)
     };

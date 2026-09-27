@@ -69,7 +69,19 @@ fn destination(repo: &str, file: &str, editor: &str) -> Result<(String, Option<S
     if !file_path.starts_with(&root) || !file_path.is_file() {
         return Err("File is unavailable in the current working tree".to_string());
     }
-    Ok((file_path.to_string_lossy().into_owned(), None))
+    Ok((plain_path(&file_path), None))
+}
+
+/// `canonicalize` returns verbatim `\\?\C:\...` paths on Windows, which editors do not open as regular files.
+fn plain_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else if let Some(local) = text.strip_prefix(r"\\?\") {
+        local.to_string()
+    } else {
+        text.into_owned()
+    }
 }
 
 pub fn open(
@@ -109,4 +121,26 @@ pub fn open(
         format!("Could not launch {program}: {error}. Set the editor command in Settings.")
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_path;
+    use std::path::Path;
+
+    #[test]
+    fn strips_windows_verbatim_prefixes() {
+        assert_eq!(
+            plain_path(Path::new(r"\\?\C:\repo\file.ts")),
+            r"C:\repo\file.ts"
+        );
+        assert_eq!(
+            plain_path(Path::new(r"\\?\UNC\server\share\file.ts")),
+            r"\\server\share\file.ts"
+        );
+        assert_eq!(
+            plain_path(Path::new("/home/me/file.ts")),
+            "/home/me/file.ts"
+        );
+    }
 }

@@ -380,6 +380,9 @@ pub enum Request {
         file: String,
         #[serde(default)]
         ignore_whitespace: bool,
+        /// Whole file as one hunk instead of three lines of context.
+        #[serde(default)]
+        full_context: bool,
     },
     ReadFile {
         path: String,
