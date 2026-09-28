@@ -351,7 +351,7 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
   // A comparison's target moves with its branches; like a new revision, that is a new version of the same file,
   // so the card keeps its diff until the new one arrives.
   const fileIdentity = () => `${props.ignoreWhitespace}:${props.repoPath}:${isComparisonTarget(props.item.target) ? "compare" : props.item.target}:${props.item.path}`;
-  const loadKey = () => `${props.ignoreWhitespace}:${props.repoPath}:${props.item.target}:${props.item.path}:${props.item.revision ?? ""}`;
+  const loadKey = () => `${fileIdentity()}:${props.item.target}:${props.item.revision ?? ""}`;
   createEffect(() => {
     const identity = fileIdentity(); void props.item.revision;
     loadId++;
@@ -662,8 +662,10 @@ function App() {
   createEffect(() => localStorage.setItem(testsClosedKey, String(keepTestsClosed())));
   createEffect(() => localStorage.setItem(whitespaceKey, String(ignoreWhitespace())));
   let request = 0;
-  // The revision of the file whose diff the file tab shows (every open goes through selectFile); a refresh reloads it only when this changes.
+  // The revision of the file whose diff the file tab shows; a refresh reloads it only when this changes.
   let shownDiffRevision = "";
+  // The request id of the file tab's diff load in flight, 0 when none.
+  let loadingFileDiff = 0;
   let fileInfoRequest = 0;
   let fileEditRequest = 0;
   let fileFinderRequest = 0;
@@ -1029,8 +1031,7 @@ function App() {
         const selectedFile = choice();
         if (activePath() === path && selected() === "working" && selectedFile && selectedFile.target !== "tracked") {
           const fresh = workingFiles().find(item => item.target === selectedFile.target && item.path === selectedFile.path);
-          // Awaited so an action that refreshes (e.g. staging a hunk) finishes with the new diff on screen.
-          if (!fresh || (fresh.revision ?? "") !== shownDiffRevision) await reloadFileDiff();
+          if (!fresh || (fresh.revision ?? "") !== shownDiffRevision) void reloadFileDiff();
         }
       }
     } catch (cause) { setError(String(cause)); }
@@ -1275,21 +1276,22 @@ function App() {
   // in place and the view, scroll position and file view (history, blame, edit) stay as they are.
   async function reloadFileDiff() {
     const path = activePath(), item = choice();
-    // With no diff on screen yet, the load in flight shows it and reveals or restores its position.
-    if (!path || !item || !diff()) return;
+    // A first load still in flight shows the diff itself and reveals or restores its position; a failed one is retried.
+    if (!path || !item || (!diff() && loadingFileDiff === request)) return;
     await loadFileDiff(path, item, result => {
       const previous = diff();
-      if (previous && (previous.text !== result.text || previous.truncated !== result.truncated)) setDiff(result);
+      if (choice() === item && (!previous || previous.text !== result.text || previous.truncated !== result.truncated)) setDiff(result);
     });
   }
   // A newer request (another file, commit or reload) makes an older result stale.
   async function loadFileDiff(path: string, item: Choice, show: (result: Diff) => void) {
-    shownDiffRevision = item.revision ?? "";
-    const id = ++request;
+    const revision = item.revision ?? "";
+    const id = loadingFileDiff = ++request;
     try {
       const result = demoMode ? demoDiff(item) : await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: ignoreWhitespace(), fullContext: fullFile() });
-      if (id === request) show(result);
+      if (id === request) { shownDiffRevision = revision; show(result); }
     } catch (cause) { if (id === request) setError(String(cause)); }
+    finally { if (loadingFileDiff === id) loadingFileDiff = 0; }
   }
   async function editFile(item: Choice) {
     const path = activePath();
@@ -1445,7 +1447,7 @@ function App() {
       if (previousFile) {
         const nextFile = workingFiles().find(item => item.path === previousFile.path && item.target === previousFile.target)
           ?? workingFiles().find(item => item.path === previousFile.path);
-        // The status refresh reloaded the same file's diff in place; under another target (all lines staged) it opens fresh.
+        // The status refresh reloads the same file's diff in place; under another target (all lines staged) it opens fresh.
         if (!nextFile) { setChoice(null); setDiff(null); }
         else if (nextFile.target !== previousFile.target) await selectFile(nextFile);
       }

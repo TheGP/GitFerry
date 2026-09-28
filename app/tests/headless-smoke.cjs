@@ -230,6 +230,17 @@ async function selectFileView(page, name) {
   await page.evaluate(label => [...document.querySelectorAll(".file-view-switch button")].find(button => button.textContent.trim() === label)?.click(), name);
 }
 
+// Watches the diff under root while it updates; the returned check says it stayed mounted and never showed "Loading diff…".
+async function watchDiffInPlace(page, root) {
+  await page.evaluate(selector => {
+    const element = document.querySelector(selector);
+    window.__diffWatch = { content: element.querySelector(".diff-content"), blanked: false };
+    window.__diffWatch.observer = new MutationObserver(() => { if (element.querySelector(".empty-note")) window.__diffWatch.blanked = true; });
+    window.__diffWatch.observer.observe(element, { childList: true, subtree: true });
+  }, root);
+  return () => page.evaluate(() => { window.__diffWatch.observer.disconnect(); return document.contains(window.__diffWatch.content) && !window.__diffWatch.blanked; });
+}
+
 async function metrics(page) {
   return page.evaluate(() => {
     const rect = selector => { const r = document.querySelector(selector)?.getBoundingClientRect(); return r && { top: r.top, bottom: r.bottom, height: r.height }; };
@@ -716,17 +727,12 @@ async function main() {
   await page.evaluate(() => document.querySelector('.ref-action-trigger[aria-label="Actions for topic"]')?.click());
   await page.evaluate(() => [...document.querySelectorAll(".ref-action-popover button")].find(button => button.textContent.startsWith("Compare with"))?.click());
   await page.waitForSelector('.summary-diff-card[data-path="a.txt"] .diff-content');
-  await page.evaluate(() => {
-    window.__keptCard = document.querySelector('.summary-diff-card[data-path="a.txt"]');
-    window.__blanked = false;
-    window.__blankWatch = new MutationObserver(() => { if (window.__keptCard.querySelector(".empty-note")) window.__blanked = true; });
-    window.__blankWatch.observe(window.__keptCard, { childList: true, subtree: true });
-  });
+  const cardKeptInPlace = await watchDiffInPlace(page, '.summary-diff-card[data-path="a.txt"]');
   git(rebaseRepo, "switch", "topic");
   fs.writeFileSync(path.join(rebaseRepo, "a.txt"), "a\nmore\n");
   git(rebaseRepo, "commit", "-am", "More A");
   await page.waitForFunction(() => [...document.querySelectorAll('.summary-diff-card[data-path="a.txt"] .diff-line.added .line-text')].some(text => text.textContent === "more"), { timeout: 10000 });
-  assert.deepEqual(await page.evaluate(() => { window.__blankWatch.disconnect(); return [document.contains(window.__keptCard), window.__blanked]; }), [true, false], "a branch move must update compared files in place");
+  assert.ok(await cardKeptInPlace(), "a branch move must update compared files in place");
   await page.click(".repo-tab:nth-child(2) .tab-close");
 
   await openRepo(page, large);
@@ -806,15 +812,10 @@ async function main() {
   // A change on disk (e.g. by an AI agent) updates the open file tab in place: no "Loading diff…" blank, no remount.
   const linesFile = path.join(lineRepo, "lines.txt");
   const linesBefore = fs.readFileSync(linesFile, "utf8");
-  await page.evaluate(() => {
-    window.__keptRow = [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === "line 1");
-    window.__blanked = false;
-    window.__blankWatch = new MutationObserver(() => { if (document.querySelector(".details-scroll .empty-note")) window.__blanked = true; });
-    window.__blankWatch.observe(document.querySelector(".details-scroll"), { childList: true, subtree: true });
-  });
+  const fileKeptInPlace = await watchDiffInPlace(page, ".details-scroll");
   fs.writeFileSync(linesFile, linesBefore.replace("line 28\n", "AI 28\n"));
   await page.waitForFunction(() => [...document.querySelectorAll(".diff-line.added .line-text")].some(text => text.textContent === "AI 28"), { timeout: 10000 });
-  assert.deepEqual(await page.evaluate(() => { window.__blankWatch.disconnect(); return [document.contains(window.__keptRow), window.__blanked]; }), [true, false], "a file changed on disk must update the open diff in place");
+  assert.ok(await fileKeptInPlace(), "a file changed on disk must update the open diff in place");
   await selectFileView(page, "History");
   await page.waitForSelector(".file-history-row");
   assert.match(await page.$eval(".file-history-row", row => row.textContent), /Initial lines/);
