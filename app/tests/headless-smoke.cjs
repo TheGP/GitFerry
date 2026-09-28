@@ -160,6 +160,7 @@ async function bridge(command, args) {
     repo_rebase_plan: ["rebase_plan", { path: args.path, onto: args.onto }],
     repo_search: ["search", { path: args.path, query: args.query, offset: args.offset, limit: 100 }],
     repo_commit: ["commit_details", { path: args.path, hash: args.hash }],
+    repo_compare: ["compare", { path: args.path, base: args.base, head: args.head }],
     repo_file_history: ["file_history", { path: args.path, file: args.file, revision: args.revision, offset: args.offset, limit: 100 }],
     repo_blame: ["blame", { path: args.path, file: args.file, revision: args.revision, start_line: args.startLine, limit: 300 }],
     repo_tracked_files: ["tracked_files", { path: args.path, query: args.query, limit: 100 }],
