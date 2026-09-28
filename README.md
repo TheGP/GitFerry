@@ -18,7 +18,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Open a local folder, or enter an SSH host and absolute repository path in the Open dialog. SSH connections use the system OpenSSH client and your existing SSH configuration. The remote host must be Linux x64 or arm64 and provide `sh`, `head`, and Git. The appropriate static agent is uploaded to `~/.cache/gitferry` when its content hash is not present.
+Open a local folder, or enter an SSH host and absolute repository path in the Open dialog. SSH connections use the system OpenSSH client and your existing SSH configuration. The remote host must be Linux or macOS (x64 or arm64) and provide `sh`, `head`, and Git. On macOS, enable Remote Login and install the Xcode Command Line Tools or Homebrew Git. The matching agent is uploaded to `~/.cache/gitferry` when its content hash is not present.
 
 ## Available now
 

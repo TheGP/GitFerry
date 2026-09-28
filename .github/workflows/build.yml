@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       agents_only:
-        description: Build only the Linux SSH agents
+        description: Build only the SSH agents
         type: boolean
         required: false
         default: false
@@ -43,21 +43,32 @@ jobs:
 
   agents:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
             name: gitferry-agent-linux-x64
-          - target: aarch64-unknown-linux-musl
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-musl
             name: gitferry-agent-linux-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            name: gitferry-agent-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: gitferry-agent-macos-arm64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
       - name: Configure static linker
+        if: runner.os == 'Linux'
         run: |
           rust_host=$(rustc -vV | sed -n 's/^host: //p')
           linker="$(rustc --print sysroot)/lib/rustlib/$rust_host/bin/rust-lld"
@@ -98,11 +109,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/download-artifact@v4
         with:
-          name: gitferry-agent-linux-x64
-          path: app/src-tauri/resources
-      - uses: actions/download-artifact@v4
-        with:
-          name: gitferry-agent-linux-arm64
+          pattern: gitferry-agent-*
+          merge-multiple: true
           path: app/src-tauri/resources
       - name: Install frontend packages
         working-directory: app

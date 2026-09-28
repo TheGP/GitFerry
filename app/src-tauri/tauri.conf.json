@@ -30,8 +30,7 @@
       "signingIdentity": "-"
     },
     "resources": {
-      "resources/gitferry-agent-linux-x64": "gitferry-agent-linux-x64",
-      "resources/gitferry-agent-linux-arm64": "gitferry-agent-linux-arm64"
+      "resources/gitferry-agent-*": ""
     },
     "icon": [
       "icons/32x32.png",

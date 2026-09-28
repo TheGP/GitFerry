@@ -14,20 +14,29 @@ concurrency:
 
 jobs:
   agents:
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
             name: gitferry-agent-linux-x64
-          - target: aarch64-unknown-linux-musl
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
             name: gitferry-agent-linux-arm64
+          - os: macos-15
+            target: x86_64-apple-darwin
+            name: gitferry-agent-macos-x64
+          - os: macos-15
+            target: aarch64-apple-darwin
+            name: gitferry-agent-macos-arm64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - name: Configure static linker
+        if: runner.os == 'Linux'
         run: |
           rust_host=$(rustc -vV | sed -n 's/^host: //p')
           linker="$(rustc --print sysroot)/lib/rustlib/$rust_host/bin/rust-lld"
@@ -95,11 +104,8 @@ jobs:
           node -e "const pkg=require('./app/package.json'); const config=require('./app/src-tauri/tauri.conf.json'); if (pkg.version !== config.version || process.env.GITHUB_REF_NAME !== 'v' + pkg.version) throw new Error('Release tag must match app version')"
       - uses: actions/download-artifact@v4
         with:
-          name: gitferry-agent-linux-x64
-          path: app/src-tauri/resources
-      - uses: actions/download-artifact@v4
-        with:
-          name: gitferry-agent-linux-arm64
+          pattern: gitferry-agent-*
+          merge-multiple: true
           path: app/src-tauri/resources
       - name: Install frontend packages
         working-directory: app

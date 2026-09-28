@@ -104,6 +104,37 @@ pub fn parse_uri(uri: &str) -> Result<(&str, &str), String> {
     Ok((host, &value[host.len()..]))
 }
 
+/// `uname -sm` of each supported host and the bundled agent built for it.
+const AGENTS: [(&str, &str); 4] = [
+    ("Linux x86_64", "gitferry-agent-linux-x64"),
+    ("Linux aarch64", "gitferry-agent-linux-arm64"),
+    ("Darwin x86_64", "gitferry-agent-macos-x64"),
+    ("Darwin arm64", "gitferry-agent-macos-arm64"),
+];
+
+// The host reports its platform, then reads the matching agent's hash and size,
+// so only that agent is read and uploaded.
+const BOOTSTRAP: &str = r#"set -eu
+printf "GITFERRY_ARCH %s\n" "$(uname -sm)"
+read -r hash size
+if [ "$(uname -s)" = Darwin ]; then
+  # Non-interactive SSH skips the login profile that puts Homebrew Git on PATH.
+  PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+  export PATH
+fi
+directory="$HOME/.cache/gitferry"
+mkdir -p "$directory"
+agent="$directory/agent-$hash"
+if [ ! -x "$agent" ]; then
+  printf "GITFERRY_UPLOAD\n"
+  temporary="$agent.tmp.$$"
+  head -c "$size" > "$temporary"
+  chmod 700 "$temporary"
+  mv "$temporary" "$agent"
+fi
+printf "GITFERRY_READY\n"
+exec "$agent""#;
+
 struct Connection {
     child: Child,
     stdin: ChildStdin,
@@ -113,35 +144,6 @@ struct Connection {
 
 impl Connection {
     fn start(host: &str, resource_dir: &Path, askpass: Option<&Arc<Askpass>>) -> Result<Self, String> {
-        let x64 = std::fs::read(resource_dir.join("gitferry-agent-linux-x64"))
-            .map_err(|_| "The Linux x64 agent is missing from this GitFerry build".to_string())?;
-        let arm64 = std::fs::read(resource_dir.join("gitferry-agent-linux-arm64"))
-            .map_err(|_| "The Linux arm64 agent is missing from this GitFerry build".to_string())?;
-        let x64_hash = format!("{:x}", Sha256::digest(&x64));
-        let arm64_hash = format!("{:x}", Sha256::digest(&arm64));
-        let script = format!(
-            r#"set -eu
-arch="$(uname -sm)"
-printf "GITFERRY_ARCH %s\n" "$arch"
-directory="$HOME/.cache/gitferry"
-mkdir -p "$directory"
-case "$arch" in
-  "Linux x86_64") agent="$directory/agent-{x64_hash}"; size={x64_size} ;;
-  "Linux aarch64") agent="$directory/agent-{arm64_hash}"; size={arm64_size} ;;
-  *) printf "GITFERRY_UNSUPPORTED %s\n" "$arch"; exit 1 ;;
-esac
-if [ ! -x "$agent" ]; then
-  printf "GITFERRY_UPLOAD\n"
-  temporary="$agent.tmp.$$"
-  head -c "$size" > "$temporary"
-  chmod 700 "$temporary"
-  mv "$temporary" "$agent"
-fi
-printf "GITFERRY_READY\n"
-exec "$agent""#,
-            x64_size = x64.len(),
-            arm64_size = arm64.len()
-        );
         let ssh = if cfg!(windows) {
             Path::new(r"C:\Windows\System32\OpenSSH\ssh.exe")
         } else {
@@ -171,7 +173,7 @@ exec "$agent""#,
                 "--",
                 host,
             ])
-            .arg(format!("sh -c '{}'", script))
+            .arg(format!("sh -c '{BOOTSTRAP}'"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -193,16 +195,21 @@ exec "$agent""#,
             }
         }
         let arch = arch?;
-        let binary = match arch.as_str() {
-            "GITFERRY_ARCH Linux x86_64" => &x64,
-            "GITFERRY_ARCH Linux aarch64" => &arm64,
-            _ => return Err(format!("Unsupported remote host: {arch}")),
-        };
+        let platform = arch.strip_prefix("GITFERRY_ARCH ").unwrap_or(&arch);
+        let (_, name) = AGENTS
+            .iter()
+            .find(|(uname, _)| *uname == platform)
+            .ok_or_else(|| format!("Unsupported remote host: {platform}"))?;
+        let binary = std::fs::read(resource_dir.join(name))
+            .map_err(|_| format!("The {platform} agent is missing from this GitFerry build"))?;
+        let hash = format!("{:x}", Sha256::digest(&binary));
+        writeln!(session.stdin, "{hash} {}", binary.len()).map_err(|error| error.to_string())?;
+        session.stdin.flush().map_err(|error| error.to_string())?;
         let state = session.read_line()?;
         let state = if state == "GITFERRY_UPLOAD" {
             session
                 .stdin
-                .write_all(binary)
+                .write_all(&binary)
                 .map_err(|error| error.to_string())?;
             session.stdin.flush().map_err(|error| error.to_string())?;
             session.read_line()?
