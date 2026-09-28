@@ -1,10 +1,12 @@
 # GitFerry
 
-GitFerry is a desktop Git client for local working trees and Git repositories on SSH hosts. It uses Tauri 2, SolidJS, and a small Rust agent that runs Git beside the repository.
+GitFerry is a desktop Git client inspired by Sublime Merge. It adds features such as comparing a branch's changes with master, working with repositories on remote hosts over SSH, and AI commentary on changes.
 
-![GitFerry showing its commit graph, branch sidebar, and inline diff in the Claude Code theme](docs/images/gitferry-preview.png)
+It works with local working trees and Git repositories on SSH hosts, and uses Tauri 2, SolidJS, and a small Rust agent that runs Git beside the repository.
 
-*GitFerry with a demo repository, shown in the Claude Code theme.*
+![GitFerry comparing a feature branch with main, with AI change notes above the code they explain, in the Claude Code theme](docs/images/gitferry-preview.png)
+
+*A feature branch compared with main; the purple rows are AI change notes. Demo repository, Claude Code theme.*
 
 ## Run locally
 
@@ -33,6 +35,24 @@ Open a local folder, or enter an SSH host and absolute repository path in the Op
 - Larger repository labels and a saved theme picker in the top bar: Antigravity Dark, VS Code Dark, Sublime Merge, and Claude Code.
 - Filesystem change watching with a slower polling fallback where watching is unavailable; full refresh on focus or Ctrl+R. Ctrl+O opens a repository.
 - Live fetch/pull/push progress and cancellation. SSH tabs use separate read, action, watch, and cancel sessions.
+- Compare a branch with main (or master, develop, trunk) from its branch menu: the commits and combined diff since it left the base branch. The comparison follows both branches as they move.
+- AI change notes shown above the diff lines they explain (see below).
+
+## AI change notes
+
+AI coding agents can explain why they changed something, and GitFerry shows each explanation directly above the code it describes in working-tree, staged, and branch-comparison diffs.
+
+Notes live in `.gitferry/notes.jsonl` at the repository root, one JSON object per line:
+
+```json
+{"id":"retry-abort","file":"src/sync/remoteSync.ts","quote":"if (signal?.aborted || attempt === retryDelays.length) throw error;","note":"Stop retrying once the user cancels; otherwise a closed tab keeps hitting the host."}
+```
+
+- `quote` is verbatim code from one line of the change, so a note follows its code when lines shift. An added line wins over a deleted one, which wins over context. Notes whose quote is no longer in the diff are hidden.
+- A later line with the same `id` replaces the note; `{"id":"...","deleted":true}` removes it.
+- GitFerry rereads the file every few seconds while focused. Keep `.gitferry/` out of commits, for example in `.git/info/exclude` or your global Git ignore file.
+
+The agent writes notes only when asked. [docs/skills/change-notes/SKILL.md](docs/skills/change-notes/SKILL.md) is the prompt used with Claude Code: copy it to `~/.claude/skills/change-notes/SKILL.md` and run `/change-notes` after a task. For Codex, copy it to `~/.codex/skills/change-notes/SKILL.md` and invoke `$change-notes`.
 
 ## Build and test
 
