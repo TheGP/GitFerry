@@ -32,7 +32,7 @@ async function selectTheme(page, theme) {
   await page.click(".settings-footer button");
 }
 
-async function setIgnoreWhitespace(page) {
+async function toggleIgnoreWhitespace(page) {
   await page.click("button[title='Settings']");
   await page.click(".settings-body label::-p-text(Ignore whitespace-only changes)");
   await page.click(".settings-footer button");
@@ -289,6 +289,8 @@ async function main() {
   page.on("pageerror", error => pageErrors.push(error.message));
   page.on("dialog", dialog => { pageErrors.push(`Unexpected browser dialog: ${dialog.type()}`); void dialog.dismiss(); });
   await page.goto("http://127.0.0.1:1420/");
+  // The app renders only after restoring saved settings, so shortcuts pressed earlier are lost.
+  await page.waitForSelector(".statusbar");
   await shortcut(page, "p");
   await page.waitForSelector(".palette input");
   await page.locator(".palette input").fill("Open repository");
@@ -337,17 +339,19 @@ async function main() {
   const groupControl = await page.evaluate(() => {
     const heading = [...document.querySelectorAll(".file-group-heading")].find(item => item.textContent.trim().startsWith("UNTRACKED"));
     const button = heading.querySelector(".group-disclosure");
-    const bounds = heading.getBoundingClientRect();
+    const bounds = button.getBoundingClientRect();
     const title = heading.querySelector(".file-group-title").getBoundingClientRect();
-    return { text: button.textContent.trim(), hasIcon: Boolean(button.querySelector("svg")), width: button.getBoundingClientRect().width, headingWidth: bounds.width,
+    // The group's Stage/Discard/Delete buttons sit at the right; the disclosure fills the rest of the heading.
+    const actionsWidth = heading.querySelector(".group-actions")?.getBoundingClientRect().width ?? 0;
+    return { text: button.textContent.trim(), hasIcon: Boolean(button.querySelector("svg")), width: bounds.width, headingWidth: heading.getBoundingClientRect().width - actionsWidth,
       iconRight: button.querySelector("svg").getBoundingClientRect().right, titleLeft: title.left,
       rightEdge: { x: bounds.right - 8, y: bounds.top + bounds.height / 2 }, titleCenter: { x: title.left + title.width / 2, y: title.top + title.height / 2 } };
   });
   assert.match(groupControl.text, /^UNTRACKED 2$/, "group heading should expose the file count");
   assert.equal(groupControl.hasIcon, true);
-  assert.ok(groupControl.width >= groupControl.headingWidth - 1 && groupControl.iconRight < groupControl.titleLeft, "the whole heading must be clickable with the icon on the left");
+  assert.ok(groupControl.width >= groupControl.headingWidth - 1 && groupControl.iconRight < groupControl.titleLeft, "the heading must be clickable up to its actions, with the icon on the left");
   await page.mouse.click(groupControl.rightEdge.x, groupControl.rightEdge.y);
-  assert.deepEqual(await groupExpanded("UNTRACKED"), ["false", "false"], "clicking the far right of the heading must close its files");
+  assert.deepEqual(await groupExpanded("UNTRACKED"), ["false", "false"], "clicking the empty right side of the heading must close its files");
   await page.mouse.click(groupControl.titleCenter.x, groupControl.titleCenter.y);
   assert.deepEqual(await groupExpanded("UNTRACKED"), ["true", "true"], "clicking the heading label must reopen its files");
   await page.click("button[aria-label='Close all unstaged changes']");
@@ -366,11 +370,11 @@ async function main() {
   assert.ok(textSizes[".commit-editor-actions label"] >= 14, "amend control must use larger text");
   assert.ok(textSizes[".commit-editor-actions button"] >= 14, "commit button must use larger text");
   await page.waitForSelector(".diff-line");
-  await setIgnoreWhitespace(page);
-  // Filtered hunks must not be stageable.
+  await toggleIgnoreWhitespace(page);
+  // Filtered hunks must not be stageable, and the saved filter must say so.
   await page.waitForFunction(() => !document.querySelector(".hunk-action"));
-  assert.match(await page.$eval(".diff-filter-note", note => note.textContent), /Whitespace-only changes are hidden/, "the saved whitespace filter must be visible");
-  await setIgnoreWhitespace(page);
+  await page.waitForSelector(".diff-filter-note::-p-text(Whitespace-only changes are hidden)");
+  await toggleIgnoreWhitespace(page);
   await page.waitForSelector(".hunk-action");
   assert.ok(await page.$eval(".details-tab:first-child", tab => tab.classList.contains("active")), "opening a Summary file must keep Summary active");
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true");
@@ -423,7 +427,7 @@ async function main() {
   await page.click(".details-tab-close");
   assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "the file tab must close with its close button");
   // The whole Changed Files bar toggles every file; its own buttons keep their own actions.
-  await page.click(".files-heading-spacer");
+  await page.click(".files-heading", { offset: { x: 4, y: 10 } });
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "false", "clicking the bar must collapse all files");
   await page.click(".files-disclosure");
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true", "clicking the title must expand all files");
@@ -452,7 +456,8 @@ async function main() {
   assert.equal(git(small, "log", "-1", "--pretty=%s"), "Test UI commit");
   await waitForAction(page);
   await page.click("button[title='Push']");
-  await page.waitForFunction(() => document.querySelector(".notice-bar")?.textContent.includes("main"));
+  // The status bar shows a notice's first line; the full Git output is in its tooltip.
+  await page.waitForFunction(() => document.querySelector(".notice-bar")?.title.includes("main"));
   await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
   assert.equal(git(remote, "rev-parse", "refs/heads/main"), git(small, "rev-parse", "HEAD"));
   assert.ok(progressEvents.length, "Git transfer progress must stream before the final RPC response");
@@ -738,6 +743,7 @@ async function main() {
   const after = await metrics(page);
   assert.equal(after.footer.bottom, after.viewport, "file diff must not move footer");
   await page.screenshot({ path: path.join(screenshots, "large-diff.png") });
+  assert.equal(await page.$eval(".files-disclosure", button => button.getAttribute("aria-expanded")), "false", "large diffs must start with files collapsed");
   const allStart = Date.now();
   await page.click(".files-disclosure");
   const allClickMs = Date.now() - allStart;
