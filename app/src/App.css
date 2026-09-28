@@ -532,9 +532,7 @@ button { cursor: pointer; }
 .details-tab:hover:not(.active) { background: var(--theme-hover); color: var(--theme-text); }
 .files-heading-spacer { flex: 1; }
 .files-heading button { margin-left: 0; font-weight: 400; }
-.files-heading .whitespace-toggle { white-space: nowrap; background: var(--theme-raised); border-color: var(--theme-border); }
-.files-heading .whitespace-toggle[aria-pressed="true"] { background: var(--theme-accent-soft); border-color: var(--theme-accent); }
-.commit-editor-actions button, .file-actions button, .files-heading button, .files-heading .whitespace-toggle[aria-pressed], .file-actions button.danger, .hunk-action, .line-selection-toolbar button.stage-lines, .line-selection-toolbar button.hunk-action { border-color: transparent; }
+.commit-editor-actions button, .file-actions button, .files-heading button, .file-actions button.danger, .hunk-action, .line-selection-toolbar button.stage-lines, .line-selection-toolbar button.hunk-action { border-color: transparent; }
 .diff-filter-note { padding: 7px 12px; color: var(--theme-secondary); font-size: 13px; background: var(--theme-heading); }
 .operation-panel, .commit-actions { margin: 12px 25px; padding: 12px; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; }
 .operation-panel { display: flex; flex-direction: column; gap: 9px; }
@@ -716,7 +714,8 @@ button { cursor: pointer; }
 .compare-close:hover { background: var(--theme-hover); color: var(--theme-text); }
 .compare-close .icon { width: 13px; height: 13px; }
 .files-heading .files-disclosure { display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 800; letter-spacing: inherit; cursor: pointer; }
-.files-heading .files-disclosure:hover { color: var(--theme-text); }
+.files-heading.toggles { cursor: pointer; }
+.files-heading.toggles:hover .files-disclosure { color: var(--theme-text); }
 .files-disclosure svg { width: 12px; height: 12px; flex: none; transition: transform .12s ease; }
 .files-disclosure[aria-expanded="false"] svg { transform: rotate(-90deg); }
 /* File headers stick to the top of the details pane until their diff scrolls past (overflow must stay visible for sticky). */

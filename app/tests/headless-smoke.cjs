@@ -32,6 +32,12 @@ async function selectTheme(page, theme) {
   await page.click(".settings-footer button");
 }
 
+async function setIgnoreWhitespace(page) {
+  await page.click("button[title='Settings']");
+  await page.click(".settings-body label::-p-text(Ignore whitespace-only changes)");
+  await page.click(".settings-footer button");
+}
+
 function makeRepo(name, large = false) {
   const folder = path.join(sandbox, name);
   fs.mkdirSync(folder);
@@ -360,10 +366,11 @@ async function main() {
   assert.ok(textSizes[".commit-editor-actions label"] >= 14, "amend control must use larger text");
   assert.ok(textSizes[".commit-editor-actions button"] >= 14, "commit button must use larger text");
   await page.waitForSelector(".diff-line");
-  await page.click(".whitespace-toggle");
-  await page.waitForFunction(() => document.querySelector(".whitespace-toggle")?.getAttribute("aria-pressed") === "true");
-  assert.equal(await page.$$(".hunk-action").then(items => items.length), 0, "filtered hunks must not be stageable");
-  await page.click(".whitespace-toggle");
+  await setIgnoreWhitespace(page);
+  // Filtered hunks must not be stageable.
+  await page.waitForFunction(() => !document.querySelector(".hunk-action"));
+  assert.match(await page.$eval(".diff-filter-note", note => note.textContent), /Whitespace-only changes are hidden/, "the saved whitespace filter must be visible");
+  await setIgnoreWhitespace(page);
   await page.waitForSelector(".hunk-action");
   assert.ok(await page.$eval(".details-tab:first-child", tab => tab.classList.contains("active")), "opening a Summary file must keep Summary active");
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true");
@@ -415,10 +422,14 @@ async function main() {
   assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 2, "returning to Summary must keep the file tab available");
   await page.click(".details-tab-close");
   assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "the file tab must close with its close button");
-  await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent.trim() === "Collapse all")?.click());
-  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "false");
-  await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent.trim() === "Expand all")?.click());
-  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true");
+  // The whole Changed Files bar toggles every file; its own buttons keep their own actions.
+  await page.click(".files-heading-spacer");
+  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "false", "clicking the bar must collapse all files");
+  await page.click(".files-disclosure");
+  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true", "clicking the title must expand all files");
+  await page.click(".files-heading button::-p-text(Browse files)");
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true", "Browse files must not toggle the files");
   assert.equal(await page.$eval(".files-heading button:last-child", item => item.textContent.trim()), "Stage All");
   await page.click(".files-heading button:last-child");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("STAGED ")) || document.querySelector(".error-bar"));
@@ -728,7 +739,7 @@ async function main() {
   assert.equal(after.footer.bottom, after.viewport, "file diff must not move footer");
   await page.screenshot({ path: path.join(screenshots, "large-diff.png") });
   const allStart = Date.now();
-  await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent.trim() === "Expand all")?.click());
+  await page.click(".files-disclosure");
   const allClickMs = Date.now() - allStart;
   assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "Summary and All Changes must share one tab");
   await page.waitForFunction(() => document.querySelectorAll(".all-diff-card .diff-content").length > 0);
