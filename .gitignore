@@ -5,3 +5,4 @@
 /app/src-tauri/icons/android/
 /app/src-tauri/icons/ios/
 *.log
+/.claude/
