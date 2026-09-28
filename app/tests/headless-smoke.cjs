@@ -604,9 +604,19 @@ async function main() {
   fs.writeFileSync(path.join(small, "base.txt"), "temporary unwanted change\n");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-row")].some(row => row.textContent.includes("base.txt")), { timeout: 10000 });
   await page.evaluate(() => { const row = [...document.querySelectorAll(".file-row")].find(item => item.textContent.includes("base.txt")); if (row?.getAttribute("aria-expanded") === "false") row.click(); });
-  await page.waitForSelector(".row-action.danger");
-  await page.click(".row-action.danger");
-  await submitActionDialog(page);
+  // Discard is confirmed in place: the first click arms it, a second click within the timeout runs it.
+  const discardFile = ".summary-diff-heading .row-action::-p-text(Discard)";
+  await page.waitForSelector(discardFile);
+  // Shorten ConfirmButton's 10 s timeout to check it disarms on its own.
+  await page.evaluate(() => { const original = window.setTimeout; window.setTimeout = (handler, delay, ...rest) => { if (delay === 10_000) { window.setTimeout = original; delay = 2000; } return original(handler, delay, ...rest); }; });
+  await page.click(discardFile);
+  await page.waitForSelector(".summary-diff-heading .row-action.armed");
+  await page.waitForFunction(() => !document.querySelector(".row-action.armed"));
+  assert.notEqual(git(small, "status", "--porcelain"), "", "Timed-out Discard must not run");
+  await page.click(discardFile);
+  await page.waitForSelector(".summary-diff-heading .row-action.armed");
+  assert.notEqual(git(small, "status", "--porcelain"), "", "First Discard click must only arm");
+  await page.click(".summary-diff-heading .row-action.armed");
   await waitUntil(() => git(small, "status", "--porcelain") === "", "discard file").catch(async error => {
     throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}; status=${git(small, "status", "--short")}`);
   });
@@ -910,14 +920,20 @@ async function main() {
   await page.waitForFunction(() => document.querySelector(".diff-heading-target")?.textContent === "UNSTAGED" && [...document.querySelectorAll(".diff-content .diff-line.added")].some(row => row.querySelector(".line-text")?.textContent === "NEW 3"));
   await clickChangedLine(page, "+NEW 3");
   await page.click(".discard-selection");
-  await submitActionDialog(page);
+  assert.ok(await page.$(".discard-selection.armed"), "First Discard Lines click must arm the button");
+  await clickChangedLine(page, "+NEW 3");
+  assert.equal(await page.$(".discard-selection.armed"), null, "Changing the selection must disarm Discard");
+  await clickChangedLine(page, "+NEW 3");
+  await page.click(".discard-selection");
+  assert.ok(fs.readFileSync(path.join(lineRepo, "lines.txt"), "utf8").includes("NEW 3"), "First Discard Lines click must only arm");
+  await page.click(".discard-selection");
   await waitUntil(() => !fs.readFileSync(path.join(lineRepo, "lines.txt"), "utf8").includes("NEW 3"), "discard selected line");
   await waitForAction(page);
   await page.evaluate(() => [...document.querySelectorAll(".diff-line")].find(row => row.dataset.copyPrefix === "-" && row.querySelector(".line-text")?.textContent === "line 15")?.querySelector(".line-text")?.click());
   assert.equal(await page.$eval(".line-selection-toolbar", element => element.dataset.mode), "hunk");
   assert.match(await page.$eval(".line-selection-toolbar", element => element.textContent), /Hunk 2 of \d+/);
   await page.click(".discard-selection");
-  await submitActionDialog(page);
+  await page.click(".discard-selection");
   await waitUntil(() => !git(lineRepo, "diff", "--", "lines.txt").includes("-line 15"), "discard selected hunk");
   await waitForAction(page);
   let releaseSnapshots;

@@ -1,4 +1,4 @@
-import { batch, createComputed, createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show, untrack } from "solid-js";
+import { batch, createComputed, createEffect, createMemo, createSignal, For, Index, on, onCleanup, onMount, Show, untrack, type JSX } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -231,6 +231,22 @@ function copyDiffSelection(event: ClipboardEvent) {
   event.preventDefault();
 }
 
+const CONFIRM_TIMEOUT_MS = 10_000;
+
+/** Destructive button confirmed in place, like Sublime Merge: the first click arms it (red), a second click within CONFIRM_TIMEOUT_MS runs it. Changing `resetKey` or `disabled` disarms it. */
+function ConfirmButton(props: { class: string; disabled?: boolean; resetKey?: unknown; onConfirm: () => void; children: JSX.Element }) {
+  const [armed, setArmed] = createSignal(false);
+  let timer: number | undefined;
+  const disarm = () => { window.clearTimeout(timer); setArmed(false); };
+  createEffect(on([() => props.resetKey, () => props.disabled], disarm, { defer: true }));
+  onCleanup(() => window.clearTimeout(timer));
+  return <button class={`${props.class} ${armed() ? "armed" : ""}`} disabled={props.disabled} aria-pressed={armed()} title={armed() ? "Click again to confirm" : undefined} onClick={() => {
+    if (armed()) { disarm(); props.onConfirm(); return; }
+    setArmed(true);
+    timer = window.setTimeout(() => setArmed(false), CONFIRM_TIMEOUT_MS);
+  }}>{props.children}</button>;
+}
+
 // Branch comparisons diff "<merge base>..<head>"; other targets are a commit hash or a working-tree area.
 const isComparisonTarget = (target: string) => target.includes("..");
 
@@ -318,15 +334,15 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     const lineMode = selectedLines().length > 0;
     if (lineMode) {
       const kind = discard ? "discard_lines" : props.item.target === "staged" ? "unstage_lines" : "stage_lines";
-      props.onAction({ kind, value: { path, lines: [...selectedLines()].sort((a, b) => a - b), diff: props.value.text } }, discard ? `Discard ${selectedLines().length} selected line${selectedLines().length === 1 ? "" : "s"} in ${path}?` : undefined);
+      props.onAction({ kind, value: { path, lines: [...selectedLines()].sort((a, b) => a - b), diff: props.value.text } });
     } else {
       const index = selectedHunk();
       const operation: Operation = discard ? { kind: "discard_hunk", value: { path, index, diff: props.value.text } } : { kind: "stage_hunk", value: { path, index, reverse: props.item.target === "staged" } };
-      props.onAction(operation, discard ? `Discard hunk ${index + 1} in ${path}?` : undefined);
+      props.onAction(operation);
     }
   }
   return <>
-    <Show when={actionable() && hunkCount()}><div class="line-selection-toolbar" data-mode={selectedLines().length ? "lines" : "hunk"}><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : `Hunk ${selectedHunk() + 1} of ${hunkCount()}`)}</span><Show when={props.item.target === "working"}><button class="discard-selection" disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(true)}>{selectedLines().length ? "Discard Lines" : "Discard Hunk"}</button></Show><button class={selectedLines().length ? "stage-lines" : "hunk-action"} disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(false)}>{props.item.target === "staged" ? "Unstage" : "Stage"} {selectedLines().length ? "Lines" : "Hunk"}</button></div></Show>
+    <Show when={actionable() && hunkCount()}><div class="line-selection-toolbar" data-mode={selectedLines().length ? "lines" : "hunk"}><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : `Hunk ${selectedHunk() + 1} of ${hunkCount()}`)}</span><Show when={props.item.target === "working"}><ConfirmButton class="discard-selection" disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} resetKey={`${selectedHunk()}:${selectedLines().join()}`} onConfirm={() => applySelection(true)}>{selectedLines().length ? "Discard Lines" : "Discard Hunk"}</ConfirmButton></Show><button class={selectedLines().length ? "stage-lines" : "hunk-action"} disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(false)}>{props.item.target === "staged" ? "Unstage" : "Stage"} {selectedLines().length ? "Lines" : "Hunk"}</button></div></Show>
     <div class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""}`} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
       <Show when={changed(index())} fallback={<span class="line-number"><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select ${row.kind === "added" ? "new" : "old"} line ${row.kind === "added" ? row.newNumber : row.oldNumber}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></button></Show>
       <Show when={editingLine() === index()} fallback={<span class="line-text" title={lineEditable(index()) ? "Double-click to edit" : undefined} onDblClick={event => { if (!lineEditable(index())) return; event.preventDefault(); window.getSelection()?.removeAllRanges(); setEditingLine(index()); }}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>}>
@@ -392,8 +408,8 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
   });
   return <div class="all-diff-card summary-diff-card" ref={element} data-path={props.item.path} data-target={props.item.target}>
     <div class="summary-diff-heading"><button class={`file-row ${props.keyboardSelected ? "keyboard-selected" : ""}`} aria-expanded={props.expanded} aria-current={props.keyboardSelected ? "true" : undefined} onFocus={props.onSelect} onClick={props.onToggle}><span class={`file-status ${props.item.status === "A" || props.item.status === "U" ? "added" : props.item.status === "D" ? "deleted" : "modified"}`}>{props.item.status}</span><Show when={props.recent}><span class="recent-icon" title="Recently modified"><Icon name="clock" /></span></Show><span class="file-path">{props.item.path}</span><Show when={props.item.target === "staged"}><span class="file-tag">STAGED</span></Show><Show when={props.item.additions != null || props.item.deletions != null}><span class="commit-stats file-stats"><span class="stat-deleted">-{props.item.deletions ?? 0}</span><span class="stat-added">+{props.item.additions ?? 0}</span></span></Show><span class="file-chevron"><ChevronDown /></span></button><Show when={props.working}><span class="row-actions">
-      <Show when={props.item.target === "untracked"}><button class="row-action danger" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "delete_untracked", value: { paths: [props.item.path] } }, `Delete ${props.item.path}? The untracked file is removed from disk.`)}>Delete</button></Show>
-      <Show when={props.item.target === "working" && props.item.status !== "U"}><button class="row-action danger" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } }, `Discard changes to ${props.item.path}?`)}>Discard</button></Show>
+      <Show when={props.item.target === "untracked"}><ConfirmButton class="row-action" disabled={props.actionBusy} onConfirm={() => props.onAction({ kind: "delete_untracked", value: { paths: [props.item.path] } })}>Delete</ConfirmButton></Show>
+      <Show when={props.item.target === "working" && props.item.status !== "U"}><ConfirmButton class="row-action" disabled={props.actionBusy} onConfirm={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } })}>Discard</ConfirmButton></Show>
       <Show when={props.item.target === "staged"} fallback={<button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_file", value: { path: props.item.path } })}>{props.item.target === "working" && props.item.status === "U" ? "Mark resolved" : "Stage"}</button>}><button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "unstage_file", value: { path: props.item.path } })}>Unstage</button></Show>
     </span></Show><button class="summary-open-tab" title={`Open ${props.item.path} in a tab`} aria-label={`Open ${props.item.path} in a tab`} onClick={props.onOpenTab}><Icon name="external" /></button><button class="open-editor-button" title={`Open ${props.item.path} in editor`} aria-label={`Open ${props.item.path} in editor`} onClick={() => props.onOpenEditor(value())}><Icon name="code" /></button></div>
     <Show when={props.expanded}><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() || "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} onEdited={props.onEdited} onError={props.onError} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
@@ -1988,8 +2004,8 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
                 const paths = () => group.items.map(item => item.path);
                 const discardable = () => group.items.filter(item => item.status !== "U").map(item => item.path);
                 return <>
-                  <Show when={group.title === "UNTRACKED"}><button class="row-action danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "delete_untracked", value: { paths: paths() } }, `Delete ${paths().length} untracked file${paths().length === 1 ? "" : "s"}? They are removed from disk.`)}>Delete All</button></Show>
-                  <Show when={group.title === "UNSTAGED" && discardable().length}><button class="row-action danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_files", value: { paths: discardable() } }, `Discard changes to ${discardable().length} file${discardable().length === 1 ? "" : "s"}?`)}>Discard All</button></Show>
+                  <Show when={group.title === "UNTRACKED"}><ConfirmButton class="row-action" disabled={actionBusy()} resetKey={paths().join("\0")} onConfirm={() => void runAction({ kind: "delete_untracked", value: { paths: paths() } })}>Delete All</ConfirmButton></Show>
+                  <Show when={group.title === "UNSTAGED" && discardable().length}><ConfirmButton class="row-action" disabled={actionBusy()} resetKey={discardable().join("\0")} onConfirm={() => void runAction({ kind: "discard_files", value: { paths: discardable() } })}>Discard All</ConfirmButton></Show>
                   <Show when={group.title === "STAGED"} fallback={<button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_files", value: { paths: paths() } })}>Stage All</button>}><button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_files", value: { paths: paths() } })}>Unstage All</button></Show>
                 </>;
               })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onEdited={() => void refreshState()} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>

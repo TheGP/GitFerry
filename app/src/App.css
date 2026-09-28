@@ -765,13 +765,14 @@ button:not(.details-tab) { border-color: transparent !important; }
 .row-action, .line-selection-toolbar button { min-width: 100px; height: 28px; padding: 0 14px; border: 0; border-radius: 3px; background: var(--theme-raised); color: var(--theme-secondary); font-size: 13px; text-align: center; cursor: pointer; white-space: nowrap; }
 .row-actions, .group-actions { gap: 6px; }
 .row-action:hover:not(:disabled) { background: var(--theme-hover); color: var(--theme-text); }
-.row-action.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--status-deleted) 25%, transparent); color: var(--theme-text); }
+/* ConfirmButton armed by a first click: red until the second click or the 10 s timeout. */
+button.row-action.armed, button.row-action.armed:hover:not(:disabled), .line-selection-toolbar button.armed, .line-selection-toolbar button.armed:hover:not(:disabled) { background: var(--status-deleted); color: #fff; filter: none; }
 .row-action:disabled { opacity: .5; cursor: default; }
 .files-heading { padding-right: 14px; }
 /* Hunk actions appear only while hovering that file (or keyboard focus inside it); selected lines keep them visible. File actions stay visible. */
 .summary-diff-card .line-selection-toolbar button { opacity: 0; pointer-events: none; transition: opacity .1s ease; }
 .summary-diff-card:hover .line-selection-toolbar button, .summary-diff-card:focus-within .line-selection-toolbar button,
-.summary-diff-card .line-selection-toolbar[data-mode="lines"] button { opacity: 1; pointer-events: auto; }
+.summary-diff-card .line-selection-toolbar[data-mode="lines"] button, .summary-diff-card .line-selection-toolbar button.armed { opacity: 1; pointer-events: auto; }
 .summary-diff-heading .row-action { background: var(--theme-hover); }
 .summary-diff-heading .row-action:hover:not(:disabled) { background: var(--theme-hover); filter: brightness(1.25); }
 /* Notices live in the status bar (no layout shift) and truncate to one line; the full text is in the tooltip. */
