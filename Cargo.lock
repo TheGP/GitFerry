@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "gitferry"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.3.4",
  "gitferry-agent",
