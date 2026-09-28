@@ -623,6 +623,20 @@ button { cursor: pointer; }
 .action-dialog-footer .action-dialog-submit { border-color: var(--theme-accent); background: var(--theme-accent-soft); }
 .action-dialog-footer .action-dialog-submit.danger { border-color: #a9574d; background: #6b3834; color: #fff0ed; }
 .action-dialog-footer button:disabled { opacity: .5; cursor: default; }
+.ssh-prompt .ssh-prompt-text { white-space: pre-wrap; }
+.ssh-prompt-error { padding: 9px 11px; border: 1px solid #8c5052; border-radius: 3px; background: #55373a; color: #f0c3bd; font-size: 13px; line-height: 1.4; }
+.ssh-prompt-field { position: relative; display: block; }
+.action-dialog-body .ssh-prompt-field input { padding-right: 38px; }
+.ssh-prompt-field button { position: absolute; top: 50%; right: 5px; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--theme-secondary); transform: translateY(-50%); }
+.ssh-prompt-field button:hover { background: var(--theme-hover); color: var(--theme-text); }
+.action-dialog-body .ssh-prompt-remember { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; }
+.action-dialog-body .ssh-prompt-remember input { width: auto; min-height: 0; }
+.settings-ssh { display: flex; flex-direction: column; gap: 7px; }
+.settings-ssh-heading { color: var(--theme-secondary); font-size: 13px; font-weight: 700; letter-spacing: .6px; }
+.settings-ssh-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.settings-ssh-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-ssh-row button { padding: 4px 10px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 12px; }
+.settings-ssh-row button:hover { background: var(--theme-hover); }
 .rebase-modal { width: min(760px, 94vw); max-height: min(760px, 90vh); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--theme-border); border-radius: 7px; background: var(--theme-modal); box-shadow: 0 24px 80px #000a; }
 .rebase-intro { padding: 16px 20px 12px; color: var(--theme-text); font-size: 14px; }
 .rebase-intro strong { color: var(--theme-accent-hover); }

@@ -8,8 +8,11 @@ use gitferry_proto::{
 };
 use tauri::{Emitter, Manager};
 
+mod askpass;
 mod editor;
 mod remote;
+
+pub use askpass::helper as askpass_helper;
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -602,10 +605,40 @@ async fn repo_cancel(app: tauri::AppHandle, path: String, token: String) -> Resu
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+fn ssh_prompt_answer(
+    askpass: tauri::State<std::sync::Arc<askpass::Askpass>>,
+    id: u64,
+    answer: Option<String>,
+    remember: bool,
+) {
+    askpass.reply(id, answer, remember);
+}
+
+#[tauri::command]
+fn ssh_current_prompt(askpass: tauri::State<std::sync::Arc<askpass::Askpass>>) -> Option<askpass::Prompt> {
+    askpass.current()
+}
+
+#[tauri::command]
+fn ssh_saved_credentials(askpass: tauri::State<std::sync::Arc<askpass::Askpass>>) -> Vec<String> {
+    askpass.saved()
+}
+
+#[tauri::command]
+fn ssh_forget_credential(askpass: tauri::State<std::sync::Arc<askpass::Askpass>>, key: String) {
+    askpass.forget(&key);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(remote::RemoteManager::new())
+        .setup(|app| {
+            let askpass = askpass::Askpass::start(app.handle().clone())?;
+            app.manage(remote::RemoteManager::new(Some(askpass.clone())));
+            app.manage(askpass);
+            Ok(())
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
@@ -627,7 +660,11 @@ pub fn run() {
             repo_save_file,
             open_in_editor,
             repo_action,
-            repo_cancel
+            repo_cancel,
+            ssh_prompt_answer,
+            ssh_current_prompt,
+            ssh_saved_credentials,
+            ssh_forget_credential
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitFerry");

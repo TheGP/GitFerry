@@ -1,3 +1,4 @@
+use crate::askpass::Askpass;
 use gitferry_proto::{Request, Response, RpcRequest, RpcResponse};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -6,11 +7,18 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-pub struct RemoteManager(Mutex<HashMap<String, Arc<Mutex<Connection>>>>);
+pub struct RemoteManager {
+    sessions: Mutex<HashMap<String, Arc<Mutex<Connection>>>>,
+    /// Answers ssh's password and host key prompts; without it ssh runs in batch mode.
+    askpass: Option<Arc<Askpass>>,
+}
 
 impl RemoteManager {
-    pub fn new() -> Self {
-        Self(Mutex::new(HashMap::new()))
+    pub fn new(askpass: Option<Arc<Askpass>>) -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            askpass,
+        }
     }
 
     pub fn call(
@@ -40,7 +48,7 @@ impl RemoteManager {
         };
         let key = format!("{uri}#{channel}");
         let existing = self
-            .0
+            .sessions
             .lock()
             .map_err(|error| error.to_string())?
             .get(&key)
@@ -48,8 +56,12 @@ impl RemoteManager {
         let connection = if let Some(connection) = existing {
             connection
         } else {
-            let created = Arc::new(Mutex::new(Connection::start(host, resource_dir)?));
-            let mut sessions = self.0.lock().map_err(|error| error.to_string())?;
+            let created = Arc::new(Mutex::new(Connection::start(
+                host,
+                resource_dir,
+                self.askpass.as_ref(),
+            )?));
+            let mut sessions = self.sessions.lock().map_err(|error| error.to_string())?;
             Arc::clone(sessions.entry(key.clone()).or_insert(created))
         };
         let result = connection
@@ -57,7 +69,7 @@ impl RemoteManager {
             .map_err(|error| error.to_string())?
             .call(request, &mut progress);
         if result.is_err() {
-            let mut sessions = self.0.lock().map_err(|error| error.to_string())?;
+            let mut sessions = self.sessions.lock().map_err(|error| error.to_string())?;
             if sessions
                 .get(&key)
                 .is_some_and(|current| Arc::ptr_eq(current, &connection))
@@ -100,7 +112,7 @@ struct Connection {
 }
 
 impl Connection {
-    fn start(host: &str, resource_dir: &Path) -> Result<Self, String> {
+    fn start(host: &str, resource_dir: &Path, askpass: Option<&Arc<Askpass>>) -> Result<Self, String> {
         let x64 = std::fs::read(resource_dir.join("gitferry-agent-linux-x64"))
             .map_err(|_| "The Linux x64 agent is missing from this GitFerry build".to_string())?;
         let arm64 = std::fs::read(resource_dir.join("gitferry-agent-linux-arm64"))
@@ -141,11 +153,17 @@ exec "$agent""#,
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
+        // Keys and the agent are tried first; ssh asks through GitFerry only when they are not enough.
+        let attempt = askpass.map(|askpass| askpass.begin(host, &mut command));
         let mut child = command
             .args([
                 "-T",
                 "-o",
-                "BatchMode=yes",
+                if attempt.is_some() {
+                    "BatchMode=no"
+                } else {
+                    "BatchMode=yes"
+                },
                 "-o",
                 "ConnectTimeout=10",
                 "-o",
@@ -167,7 +185,14 @@ exec "$agent""#,
             stdout: BufReader::new(stdout),
             next_id: 1,
         };
-        let arch = session.read_line()?;
+        // The first line arrives once ssh has signed in.
+        let arch = session.read_line();
+        if let Some(attempt) = attempt {
+            if attempt.finish(arch.is_ok()) && arch.is_err() {
+                return Err("SSH sign-in was cancelled".to_string());
+            }
+        }
+        let arch = arch?;
         let binary = match arch.as_str() {
             "GITFERRY_ARCH Linux x86_64" => &x64,
             "GITFERRY_ARCH Linux aarch64" => &arm64,
@@ -260,7 +285,7 @@ mod tests {
             return;
         };
         let (_, path) = parse_uri(&uri).unwrap();
-        let manager = RemoteManager::new();
+        let manager = RemoteManager::new(None);
         let resources = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
         let response = manager
             .call(

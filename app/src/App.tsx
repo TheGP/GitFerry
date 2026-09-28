@@ -20,6 +20,8 @@ type Details = { hash: string; subject: string; body: string; author: string; au
 type Choice = { id?: string; path: string; status: string; target: string; revision?: string; modified?: number; additions?: number | null; deletions?: number | null };
 type Diff = { text: string; truncated: boolean };
 type EditableFile = { content: string };
+// A question ssh asked while connecting: target is user@host for a password, the key file for a passphrase.
+type SshPrompt = { id: number; kind: "password" | "passphrase" | "confirm" | "other"; target: string; text: string; error?: string | null };
 type SavedFile = { staged: boolean; warning: string | null };
 type CompareResult = { mergeBase: string; commits: number; files: { path: string; status: string; additions?: number | null; deletions?: number | null }[]; additions: number; deletions: number };
 type Comparison = { base: string; head: string; baseHash: string; headHash: string; result: CompareResult | null; error: string };
@@ -447,6 +449,8 @@ const icons = {
   folder: ["M2.5 4.5a1 1 0 0 1 1-1h3l1.5 1.5h4.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z"],
   up: ["M8 13V3", "m4 7 4-4 4 4"],
   arrowDown: ["M8 3v10", "m4 9 4 4 4-4"],
+  eye: ["M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z", "M8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"],
+  eyeOff: ["M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z", "M8 10a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z", "m2.5 2.5 11 11"],
 };
 type IconName = keyof typeof icons;
 // In-memory caches so switching tabs or commits re-renders from memory instead of waiting on the agent.
@@ -630,6 +634,11 @@ function App() {
   const [pathInput, setPathInput] = createSignal("");
   const [hostInput, setHostInput] = createSignal("");
   const [remotePathInput, setRemotePathInput] = createSignal("");
+  const [sshPrompt, setSshPrompt] = createSignal<SshPrompt | null>(null);
+  const [sshAnswer, setSshAnswer] = createSignal("");
+  const [sshRemember, setSshRemember] = createSignal(false);
+  const [sshReveal, setSshReveal] = createSignal(false);
+  const [savedSsh, setSavedSsh] = createSignal<string[]>([]);
   const [locationsOpen, setLocationsOpen] = createSignal(true);
   const [bottomLayout, setBottomLayout] = createSignal(localStorage.getItem("gitferry.bottomLayout") === "true");
   const [locationsWidth, setLocationsWidth] = createSignal(Number(localStorage.getItem("gitferry.locationsWidth")) || 205);
@@ -958,6 +967,24 @@ function App() {
     } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }
+  function showSshPrompt(prompt: SshPrompt) {
+    if (sshPrompt()?.id === prompt.id) return;
+    // A retry after a wrong password keeps the Remember choice.
+    if (!prompt.error) setSshRemember(false);
+    setSshAnswer(""); setSshReveal(false); setSshPrompt(prompt);
+  }
+  function answerSshPrompt(answer: string | null) {
+    const prompt = sshPrompt();
+    if (!prompt) return;
+    setSshPrompt(null); setSshAnswer("");
+    void invoke("ssh_prompt_answer", { id: prompt.id, answer, remember: answer !== null && sshRemember() }).catch(cause => setError(String(cause)));
+  }
+  function forgetSsh(key: string) {
+    void invoke("ssh_forget_credential", { key }).then(() => setSavedSsh(keys => keys.filter(item => item !== key))).catch(cause => setError(String(cause)));
+  }
+  createEffect(() => {
+    if (showSettings() && isTauri()) void invoke<string[]>("ssh_saved_credentials").then(setSavedSsh).catch(() => setSavedSsh([]));
+  });
   async function chooseFolder() {
     const path = await open({ directory: true, multiple: false, title: "Open a Git repository" });
     if (typeof path === "string") await openRepo(path);
@@ -1777,6 +1804,13 @@ function App() {
     if (isTauri()) void listen<{ path: string; message: string }>("git-progress", event => {
       if (event.payload.path === activePath()) setProgress(event.payload.message);
     }).then(unlisten => { unlistenProgress = unlisten; }).catch(cause => setError(String(cause)));
+    const unlistenSsh: (() => void)[] = [];
+    // Restored SSH tabs connect right away; pick up a prompt that was asked before these listeners existed.
+    if (isTauri()) void Promise.all([
+      listen<SshPrompt>("ssh-prompt", event => showSshPrompt(event.payload)),
+      listen<number>("ssh-prompt-closed", event => { if (sshPrompt()?.id === event.payload) setSshPrompt(null); }),
+    ]).then(unlisteners => { unlistenSsh.push(...unlisteners); return invoke<SshPrompt | null>("ssh_current_prompt"); })
+      .then(prompt => { if (prompt) showSshPrompt(prompt); }).catch(cause => setError(String(cause)));
     if (isTauri()) void getCurrentWebview().onDragDropEvent(event => {
       if (event.payload.type === "drop") {
         setDraggingFolder(false);
@@ -1806,9 +1840,10 @@ function App() {
     const interval = window.setInterval(() => { if (watchFallback() && document.hasFocus()) void refreshState(); }, 8000);
     const focus = () => void refreshState();
     const keys = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && sshPrompt()) { answerSshPrompt(null); return; }
       if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); setActionDialog(null); closeFileFinder(); setRebasePlan(null); setBranchMenu(false); setTabListOpen(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false); return; }
       const target = event.target instanceof Element ? event.target : null;
-      const modalOpen = paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || stashMenu();
+      const modalOpen = Boolean(sshPrompt()) || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || stashMenu();
       const editable = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !modalOpen) {
         const inCommitEditor = Boolean(target?.closest(".commit-editor textarea"));
@@ -1839,7 +1874,7 @@ function App() {
     window.addEventListener("focus", focus); window.addEventListener("keydown", keys);
     const resize = () => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); requestAnimationFrame(updateTabScroll); };
     window.addEventListener("resize", resize);
-    onCleanup(() => { unlistenDrop?.(); unlistenProgress?.(); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); window.removeEventListener("resize", resize); });
+    onCleanup(() => { unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); window.removeEventListener("resize", resize); });
   });
 
   return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); } if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); } }}>
@@ -2008,13 +2043,14 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
         <label>EDITOR<select aria-label="External editor" value={editor()} onChange={event => setEditor(event.currentTarget.value as EditorId)}><For each={editorOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label>
         <label>COMMAND OVERRIDE<input aria-label="Editor command override" value={editorExecutable()} onInput={event => setEditorExecutable(event.currentTarget.value)} placeholder={editor() === "antigravity" ? "antigravity" : editor() === "vscode" ? "code" : "subl"} /></label>
         <p>Leave the command blank to use the editor CLI from PATH. Enter a full executable path if needed. Open in editor jumps to the first changed line. For SSH repositories, Antigravity and VS Code require Remote SSH access to the same host.</p>
+        <Show when={savedSsh().length}><div class="settings-ssh"><span class="settings-ssh-heading">SAVED SSH PASSWORDS</span><For each={savedSsh()}>{key => <div class="settings-ssh-row"><span title={key}>{key.startsWith("passphrase:") ? `Key ${key.slice("passphrase:".length)}` : key.slice(key.indexOf(":") + 1)}</span><button onClick={() => forgetSsh(key)}>Forget</button></div>}</For></div></Show>
       </div><div class="settings-footer"><button onClick={() => setShowSettings(false)}>Done</button></div>
     </div></div></Show>
     <Show when={showOpen()}><div class="modal-backdrop" onClick={() => setShowOpen(false)}><div class="open-modal" onClick={event => event.stopPropagation()}>
       <div class="modal-title"><span>Open repository</span><button onClick={() => setShowOpen(false)}><Icon name="close" /></button></div>
       <div class="open-kind"><button class={openKind() === "local" ? "active" : ""} onClick={() => setOpenKind("local")}>Local</button><button class={openKind() === "remote" ? "active" : ""} onClick={() => setOpenKind("remote")}>SSH host</button></div>
       <Show when={error()}><div class="modal-error">{error()}</div></Show>
-      <Show when={openKind() === "local"} fallback={<div class="modal-body"><div class="eyebrow">REMOTE REPOSITORY</div><p>Connect through your system SSH configuration.</p>
+      <Show when={openKind() === "local"} fallback={<div class="modal-body"><div class="eyebrow">REMOTE REPOSITORY</div><p>Connect through your system SSH configuration. Your keys are tried first; GitFerry asks for a password if the host needs one.</p>
         <form class="remote-form" onSubmit={event => { event.preventDefault(); void openRepo(`ssh://${hostInput()}${remotePathInput()}`); }}>
           <label>HOST<input value={hostInput()} onInput={event => setHostInput(event.currentTarget.value)} placeholder="root@warmer" /></label>
           <label>ABSOLUTE PATH<input value={remotePathInput()} onInput={event => setRemotePathInput(event.currentTarget.value)} placeholder="/srv/my-repo" /></label>
@@ -2023,6 +2059,21 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
       <div class="modal-body"><div class="eyebrow">LOCAL REPOSITORY</div><p>Choose a Git working tree on this computer.</p><button class="folder-button" onClick={() => void chooseFolder()}>Browse folders</button><div class="modal-divider">or enter a path</div><form onSubmit={event => { event.preventDefault(); void openRepo(pathInput()); }}><input autofocus value={pathInput()} onInput={event => setPathInput(event.currentTarget.value)} placeholder="C:\\path\\to\\repository" /><button type="submit" disabled={busy()}>Open</button></form></div>
       </Show>
     </div></div></Show>
+    <Show when={sshPrompt()}>{prompt => {
+      const secret = () => prompt().kind === "password" || prompt().kind === "passphrase";
+      return <div class="modal-backdrop"><div class="action-dialog ssh-prompt" role="dialog" aria-modal="true" aria-label="SSH sign-in">
+        <div class="modal-title"><span>{prompt().kind === "confirm" ? "Unknown SSH host" : prompt().kind === "passphrase" ? "SSH key passphrase" : "SSH sign-in"}</span><button aria-label="Cancel SSH sign-in" onClick={() => answerSshPrompt(null)}><Icon name="close" /></button></div>
+        <form onSubmit={event => { event.preventDefault(); answerSshPrompt(prompt().kind === "confirm" ? "yes" : sshAnswer()); }}>
+          <div class="action-dialog-body">
+            <Show when={prompt().error}><div class="ssh-prompt-error">{prompt().error}</div></Show>
+            <p class="ssh-prompt-text">{prompt().kind === "password" ? `Your SSH keys were not accepted. Enter the password for ${prompt().target}.` : prompt().kind === "passphrase" ? `Enter the passphrase for ${prompt().target}.` : prompt().text}</p>
+            <Show when={prompt().kind !== "confirm"}><label>{prompt().kind === "password" ? "Password" : prompt().kind === "passphrase" ? "Passphrase" : "Answer"}<span class="ssh-prompt-field"><input type={sshReveal() ? "text" : "password"} autofocus autocomplete="off" spellcheck={false} value={sshAnswer()} onInput={event => setSshAnswer(event.currentTarget.value)} /><button type="button" aria-label={sshReveal() ? "Hide typed text" : "Show typed text"} title={sshReveal() ? "Hide" : "Show"} aria-pressed={sshReveal()} onClick={() => setSshReveal(!sshReveal())}><Icon name={sshReveal() ? "eyeOff" : "eye"} /></button></span></label></Show>
+            <Show when={secret()}><label class="ssh-prompt-remember" title="Saved in the system keychain; remove it in Settings"><input type="checkbox" checked={sshRemember()} onChange={event => setSshRemember(event.currentTarget.checked)} /> Remember {prompt().kind}</label></Show>
+          </div>
+          <div class="action-dialog-footer"><button type="button" autofocus={prompt().kind === "confirm"} onClick={() => answerSshPrompt(null)}>Cancel</button><button class="action-dialog-submit" type="submit" disabled={prompt().kind !== "confirm" && !sshAnswer()}>{prompt().kind === "confirm" ? "Trust and connect" : "Connect"}</button></div>
+        </form>
+      </div></div>;
+    }}</Show>
   </div>;
 }
 export default App;
