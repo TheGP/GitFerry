@@ -40,6 +40,22 @@ test("keeps highlighting lines with an added suffix", () => {
   assert.equal(changedText(after).trim(), "bar(b);");
 });
 
+test("leaves unpaired lines of an uneven block unhighlighted", () => {
+  const rows = [hunk("@@ -1,2 +1 @@"), deleted("const a = 1;"), deleted("const b = 2;"), added("const a = 3;")];
+  const [, first, second, after] = highlightDiff(rows, "a.ts", 100);
+  assert.equal(changedText(first), "1");
+  assert.equal(changedText(second), "");
+  assert.equal(changedText(after), "3");
+});
+
+test("word highlighting starts at 40% shared characters", () => {
+  // 10 of 26 shared characters (0.38) stays plain; 12 of 28 (0.43) is highlighted.
+  const below = highlightDiff([hunk("@@ -1 +1 @@"), deleted("aaaaa bbbb cccc"), added("aaaaa dddd eeee")], "a.txt", 100);
+  assert.equal(changedText(below[2]), "");
+  const above = highlightDiff([hunk("@@ -1 +1 @@"), deleted("aaaaaa bbbb cccc"), added("aaaaaa dddd eeee")], "a.txt", 100);
+  assert.equal(changedText(above[2]), "ddddeeee");
+});
+
 test("applies syntax token types", () => {
   const [, row] = highlightDiff([hunk("@@ -1 +1 @@"), added("const x = 'y';")], "a.ts", 100);
   assert.deepEqual(row.find(part => part.text === "const")?.types, ["keyword"]);
