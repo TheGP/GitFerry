@@ -229,6 +229,9 @@ function copyDiffSelection(event: ClipboardEvent) {
   event.preventDefault();
 }
 
+// Branch comparisons diff "<merge base>..<head>"; other targets are a commit hash or a working-tree area.
+const isComparisonTarget = (target: string) => target.includes("..");
+
 function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWhitespace: boolean; fullContext?: boolean; actionBusy: boolean; repoPath: string; onAction: (operation: Operation, confirmation?: string) => void; onEdited: () => void; onError: (error: string) => void }) {
   const lines = createMemo(() => parseDiffLines(props.value));
   const highlighted = createMemo(() => highlightDiff(lines(), props.item.path, props.value.text.length));
@@ -249,7 +252,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     }), { key: "key" }));
   });
   const hunkCount = createMemo(() => lines().filter(line => line.kind === "hunk").length);
-  const hunkNotes = createHunkNotes(() => props.repoPath, () => props.item.path, lines, () => (props.working && ["working", "staged", "untracked"].includes(props.item.target)) || props.item.target.includes(".."));
+  const hunkNotes = createHunkNotes(() => props.repoPath, () => props.item.path, lines, () => (props.working && ["working", "staged", "untracked"].includes(props.item.target)) || isComparisonTarget(props.item.target));
   const [selectedLines, setSelectedLines] = createSignal<number[]>([]);
   const [selectedHunk, setSelectedHunk] = createSignal(0);
   const selectedSet = createMemo(() => new Set(selectedLines()));
@@ -343,8 +346,10 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
   const [loadedKey, setLoadedKey] = createSignal("");
   let loadId = 0;
   let fileKey = "";
-  const fileIdentity = () => `${props.ignoreWhitespace}:${props.repoPath}:${props.item.target}:${props.item.path}`;
-  const loadKey = () => `${fileIdentity()}:${props.item.revision ?? ""}`;
+  // A comparison's target moves with its branches; like a new revision, that is a new version of the same file,
+  // so the card keeps its diff until the new one arrives.
+  const fileIdentity = () => `${props.ignoreWhitespace}:${props.repoPath}:${isComparisonTarget(props.item.target) ? "compare" : props.item.target}:${props.item.path}`;
+  const loadKey = () => `${props.ignoreWhitespace}:${props.repoPath}:${props.item.target}:${props.item.path}:${props.item.revision ?? ""}`;
   createEffect(() => {
     const identity = fileIdentity(); void props.item.revision;
     loadId++;
@@ -648,6 +653,8 @@ function App() {
   createEffect(() => localStorage.setItem(testsClosedKey, String(keepTestsClosed())));
   createEffect(() => localStorage.setItem(whitespaceKey, String(ignoreWhitespace())));
   let request = 0;
+  // The revision of the file whose diff the file tab shows (every open goes through selectFile); a refresh reloads it only when this changes.
+  let shownDiffRevision = "";
   let fileInfoRequest = 0;
   let fileEditRequest = 0;
   let fileFinderRequest = 0;
@@ -732,6 +739,13 @@ function App() {
     setWorkingStore(reconcile(next, { key: "id" }));
   });
   const workingFiles = () => workingStore;
+  // Comparison files are keyed by path the same way: when a branch moves, each card keeps its object and only its target changes.
+  const [compareStore, setCompareStore] = createStore<Choice[]>([]);
+  createComputed(() => {
+    const current = comparison(), result = current?.result;
+    const target = current && result ? `${result.mergeBase}..${current.headHash}` : "";
+    setCompareStore(reconcile(result ? result.files.map(item => ({ ...item, target })) : [], { key: "path" }));
+  });
   const [now, setNow] = createSignal(Date.now());
   const clock = window.setInterval(() => setNow(Date.now()), 30_000);
   onCleanup(() => window.clearInterval(clock));
@@ -748,10 +762,7 @@ function App() {
   });
   const files = createMemo<Choice[]>(() => {
     if (selected() === "working") return workingFiles();
-    if (selected() === "compare") {
-      const current = comparison();
-      return (current?.result?.files ?? []).map(item => ({ ...item, target: `${current!.result!.mergeBase}..${current!.headHash}` }));
-    }
+    if (selected() === "compare") return compareStore;
     return (details()?.files ?? []).map(item => ({ ...item, target: selected() }));
   });
   const stagedFiles = createMemo(() => files().filter(item => item.target === "staged"));
@@ -989,7 +1000,11 @@ function App() {
       } else if (JSON.stringify(update.status) !== JSON.stringify(current.status)) {
         setTabs(items => items.map(item => item.path === path ? { ...item, status: reuseEqual(item.status, update.status, entry => entry.path) } : item));
         const selectedFile = choice();
-        if (activePath() === path && selected() === "working" && selectedFile) void selectFile(selectedFile);
+        if (activePath() === path && selected() === "working" && selectedFile && selectedFile.target !== "tracked") {
+          const fresh = workingFiles().find(item => item.target === selectedFile.target && item.path === selectedFile.path);
+          // Awaited so an action that refreshes (e.g. staging a hunk) finishes with the new diff on screen.
+          if (!fresh || (fresh.revision ?? "") !== shownDiffRevision) await reloadFileDiff();
+        }
       }
     } catch (cause) { setError(String(cause)); }
     finally { stateBusy = false; }
@@ -1070,6 +1085,8 @@ function App() {
     };
     try {
       settle({ result: await invoke<CompareResult>("repo_compare", { path, base: baseHash, head: headHash }), error: "" });
+      // The open compare file's target has moved with the branches (compareStore updates it in place); reload its diff too.
+      if (refresh && activePath() === path && selected() === "compare" && choice()) await reloadFileDiff();
     } catch (cause) {
       settle({ result: null, error: String(cause) });
     }
@@ -1224,16 +1241,27 @@ function App() {
     resetFileInfo();
     if (keepEditing) setFileView("edit");
     setChoice(item); setDiff(null); setKeyboardFileKey(summaryKey(item));
-    const id = ++request;
     const reveal = () => restoreScroll === undefined ? requestAnimationFrame(revealDiff) : window.setTimeout(() => { detailsScroll.scrollTop = restoreScroll; });
-    if (demoMode) {
-      setDiff(demoDiff(item));
-      reveal();
-      return;
-    }
+    await loadFileDiff(path, item, result => { setDiff(result); reveal(); });
+  }
+  // Reloads the open file's diff after its file changes without clearing it first, so the rendered rows update
+  // in place and the view, scroll position and file view (history, blame, edit) stay as they are.
+  async function reloadFileDiff() {
+    const path = activePath(), item = choice();
+    // With no diff on screen yet, the load in flight shows it and reveals or restores its position.
+    if (!path || !item || !diff()) return;
+    await loadFileDiff(path, item, result => {
+      const previous = diff();
+      if (previous && (previous.text !== result.text || previous.truncated !== result.truncated)) setDiff(result);
+    });
+  }
+  // A newer request (another file, commit or reload) makes an older result stale.
+  async function loadFileDiff(path: string, item: Choice, show: (result: Diff) => void) {
+    shownDiffRevision = item.revision ?? "";
+    const id = ++request;
     try {
-      const result = await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: ignoreWhitespace(), fullContext: fullFile() });
-      if (id === request) { setDiff(result); reveal(); }
+      const result = demoMode ? demoDiff(item) : await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: ignoreWhitespace(), fullContext: fullFile() });
+      if (id === request) show(result);
     } catch (cause) { if (id === request) setError(String(cause)); }
   }
   async function editFile(item: Choice) {
@@ -1384,14 +1412,15 @@ function App() {
       const output = await invoke<string>("repo_action", { path, operation, cancelToken: token });
       setNotice(output || "Done");
       if (["merge", "rebase", "interactive_rebase", "pull", "pull_merge", "pull_rebase", "cherry_pick", "revert", "reset", "detach", "continue_operation", "abort_operation"].includes(operation.kind)) selectWorking();
-      if (!previousFile) setChoice(null);
-      setDiff(null); setBranchMenu(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false);
+      if (!previousFile) { setChoice(null); setDiff(null); }
+      setBranchMenu(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false);
       if (fileAction) await refreshState(); else await refresh();
       if (previousFile) {
         const nextFile = workingFiles().find(item => item.path === previousFile.path && item.target === previousFile.target)
           ?? workingFiles().find(item => item.path === previousFile.path);
-        if (nextFile) await selectFile(nextFile);
-        else setChoice(null);
+        // The status refresh reloaded the same file's diff in place; under another target (all lines staged) it opens fresh.
+        if (!nextFile) { setChoice(null); setDiff(null); }
+        else if (nextFile.target !== previousFile.target) await selectFile(nextFile);
       }
       if (searchQuery()) await performSearch(searchQuery());
     } catch (cause) {

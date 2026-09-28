@@ -19,6 +19,7 @@ let nextId = 0;
 const pending = new Map();
 const progressEvents = [];
 let snapshotGate = null;
+let diffRequests = 0;
 
 function git(cwd, ...args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -140,6 +141,7 @@ function rpc(method, params) {
 
 async function bridge(command, args) {
   if (command.startsWith("plugin:event|")) return 1;
+  if (command === "repo_diff") diffRequests++;
   if (command === "repo_snapshot" && snapshotGate) {
     const gate = snapshotGate;
     gate.paths.push(args.path);
@@ -710,6 +712,21 @@ async function main() {
   await waitUntil(() => git(rebaseRepo, "log", "--format=%s", "main..topic") === "Add A", "interactive rebase");
   assert.equal(fs.existsSync(path.join(rebaseRepo, "b.txt")), false, "dropped commit must not appear");
   assert.equal(fs.readFileSync(path.join(rebaseRepo, "c.txt"), "utf8"), "c\n", "fixup content must be kept");
+  // A commit on a compared branch updates each open card in place instead of rebuilding the list.
+  await page.evaluate(() => document.querySelector('.ref-action-trigger[aria-label="Actions for topic"]')?.click());
+  await page.evaluate(() => [...document.querySelectorAll(".ref-action-popover button")].find(button => button.textContent.startsWith("Compare with"))?.click());
+  await page.waitForSelector('.summary-diff-card[data-path="a.txt"] .diff-content');
+  await page.evaluate(() => {
+    window.__keptCard = document.querySelector('.summary-diff-card[data-path="a.txt"]');
+    window.__blanked = false;
+    window.__blankWatch = new MutationObserver(() => { if (window.__keptCard.querySelector(".empty-note")) window.__blanked = true; });
+    window.__blankWatch.observe(window.__keptCard, { childList: true, subtree: true });
+  });
+  git(rebaseRepo, "switch", "topic");
+  fs.writeFileSync(path.join(rebaseRepo, "a.txt"), "a\nmore\n");
+  git(rebaseRepo, "commit", "-am", "More A");
+  await page.waitForFunction(() => [...document.querySelectorAll('.summary-diff-card[data-path="a.txt"] .diff-line.added .line-text')].some(text => text.textContent === "more"), { timeout: 10000 });
+  assert.deepEqual(await page.evaluate(() => { window.__blankWatch.disconnect(); return [document.contains(window.__keptCard), window.__blanked]; }), [true, false], "a branch move must update compared files in place");
   await page.click(".repo-tab:nth-child(2) .tab-close");
 
   await openRepo(page, large);
@@ -786,15 +803,32 @@ async function main() {
   await openRepo(page, lineRepo);
   await page.click(".summary-open-tab");
   await page.waitForSelector("button.line-number.selectable");
+  // A change on disk (e.g. by an AI agent) updates the open file tab in place: no "Loading diff…" blank, no remount.
+  const linesFile = path.join(lineRepo, "lines.txt");
+  const linesBefore = fs.readFileSync(linesFile, "utf8");
+  await page.evaluate(() => {
+    window.__keptRow = [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === "line 1");
+    window.__blanked = false;
+    window.__blankWatch = new MutationObserver(() => { if (document.querySelector(".details-scroll .empty-note")) window.__blanked = true; });
+    window.__blankWatch.observe(document.querySelector(".details-scroll"), { childList: true, subtree: true });
+  });
+  fs.writeFileSync(linesFile, linesBefore.replace("line 28\n", "AI 28\n"));
+  await page.waitForFunction(() => [...document.querySelectorAll(".diff-line.added .line-text")].some(text => text.textContent === "AI 28"), { timeout: 10000 });
+  assert.deepEqual(await page.evaluate(() => { window.__blankWatch.disconnect(); return [document.contains(window.__keptRow), window.__blanked]; }), [true, false], "a file changed on disk must update the open diff in place");
   await selectFileView(page, "History");
   await page.waitForSelector(".file-history-row");
   assert.match(await page.$eval(".file-history-row", row => row.textContent), /Initial lines/);
+  const diffsBefore = diffRequests;
+  fs.writeFileSync(linesFile, linesBefore);
+  await waitUntil(() => diffRequests > diffsBefore, "reload of the file changed back");
+  assert.equal(await page.$eval(".file-view-switch button.active", button => button.textContent.trim()), "History", "a file change must not leave History");
   await selectFileView(page, "Blame");
   await page.waitForSelector(".blame-row");
   assert.equal(await page.$eval(".blame-row .blame-content", code => code.textContent), "line 1");
   assert.equal(await page.$$eval(".blame-row", rows => rows.length), 30);
   await selectFileView(page, "Diff");
   await page.waitForSelector("button.line-number.selectable");
+  await page.waitForFunction(() => ![...document.querySelectorAll(".diff-line .line-text")].some(text => text.textContent === "AI 28"));
   await page.click(".details-tab:first-child");
   await page.evaluate(() => [...document.querySelectorAll(".files-heading button")].find(button => button.textContent === "Browse files")?.click());
   await page.waitForSelector(".file-finder-modal");
