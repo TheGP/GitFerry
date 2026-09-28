@@ -1,0 +1,7 @@
+/* Purple on purpose: it must not look like an added or deleted line in any theme. */
+.hunk-notes { display: flex; flex-direction: column; gap: 3px; margin: 5px 0; }
+.hunk-note { display: flex; border-left: 3px solid #a78bfa; background: #3a2f5b; }
+/* The border takes 3px of the line-number column so the text still starts where the code does. */
+.hunk-note .line-number { width: 83px; }
+.hunk-note-indent { flex: none; white-space: pre; visibility: hidden; }
+.hunk-note-text { flex: 1; min-width: 0; padding: 3px 24px 3px 0; color: #ece6ff; font-family: Inter, "Segoe UI", sans-serif; font-size: 15px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }

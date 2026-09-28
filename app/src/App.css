@@ -115,7 +115,7 @@ button { cursor: pointer; }
 .commit-scroll:focus, .details-scroll:focus { outline: none; }
 .working-row, .commit-row { width: 100%; display: flex; align-items: stretch; text-align: left; border: 0; border-bottom: 1px solid #1e252c; background: transparent; color: #d4dce2; }
 .working-row:hover, .commit-row:hover { background: #303943; }
-.working-row.selected, .commit-row.selected { background: #34434c; box-shadow: inset 3px 0 #63c8cc; }
+.working-row.selected, .commit-row.selected { background: #34434c; }
 .working-row { min-height: 68px; padding: 0 14px 0 23px; align-items: center; gap: 14px; }
 .working-node { color: #70cbd0; font-size: 17px; }
 .commit-main { min-width: 0; flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
@@ -168,9 +168,9 @@ button { cursor: pointer; }
 .file-row:last-child { border-bottom: 0; }
 .file-row:hover, .file-row.selected { background: #3b4850; }
 .file-row.keyboard-selected { box-shadow: inset 3px 0 var(--theme-accent); }
-.file-status { width: 17px; font-family: Consolas, monospace; font-weight: 700; color: #e8c27c; }
-.file-status.added { color: #83cea2; }
-.file-status.deleted { color: #e49b9b; }
+.file-status { width: 17px; font-family: Consolas, monospace; font-weight: 700; color: var(--status-modified); }
+.file-status.added { color: var(--status-added); }
+.file-status.deleted { color: var(--status-deleted); }
 .file-path { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
 .file-tag { color: #8cc9a7; font-size: 13px; letter-spacing: .6px; }
 .file-chevron { width: 18px; height: 18px; flex: none; display: grid; place-items: center; color: #7c8d97; }
@@ -180,8 +180,8 @@ button { cursor: pointer; }
 .diff-heading .diff-heading-target { color: #7d9fa5; font-family: Inter, "Segoe UI", sans-serif; font-size: 13px; letter-spacing: 1px; }
 .diff-content { overflow-x: hidden; padding: 12px 0 30px; font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace; font-size: 16px; line-height: 23px; }
 .diff-line { display: flex; min-width: 0; width: 100%; color: #b3bec7; }
-.diff-line.added { background: #244638; color: #ddf8e5; }
-.diff-line.deleted { background: #4b3032; color: #ffdcda; }
+.diff-line.added { background: var(--diff-added-bg); color: var(--diff-added-text); }
+.diff-line.deleted { background: var(--diff-deleted-bg); color: var(--diff-deleted-text); }
 .diff-line.hunk { background: #303d4b; color: #8cb8d8; }
 .diff-content.has-hunks .diff-line.metadata { display: none; }
 .diff-content.has-hunks .diff-line.hunk { height: 8px; overflow: hidden; font-size: 0; background: var(--theme-heading); }
@@ -195,8 +195,8 @@ button { cursor: pointer; }
 .diff-line.selected { outline: 1px solid var(--theme-accent); outline-offset: -1px; }
 .diff-line.selected .line-number { background: var(--theme-accent); color: var(--theme-chrome); }
 .line-text { flex: 1; min-width: 0; padding-right: 24px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.diff-line.added .word-change { background: #39775a; border-radius: 2px; }
-.diff-line.deleted .word-change { background: #96504f; border-radius: 2px; }
+.diff-line.added .word-change { background: var(--diff-added-word); border-radius: 2px; }
+.diff-line.deleted .word-change { background: var(--diff-deleted-word); border-radius: 2px; }
 .diff-line .syntax-keyword, .diff-line .syntax-boolean { color: #db9bd1; }
 .diff-line .syntax-string, .diff-line .syntax-char { color: #a9d88f; }
 .diff-line .syntax-number, .diff-line .syntax-constant { color: #ddb78b; }
@@ -282,19 +282,29 @@ button { cursor: pointer; }
   --theme-heading: #202020;
   --theme-border: #343434;
   --theme-input: #272727;
-  --theme-raised: #2c2c2c;
-  --theme-hover: #393939;
+  --theme-raised: #303030;
+  --theme-hover: #3e3e3e;
   --theme-selected: #303845;
   --theme-commit-selected: #344a61;
   --theme-text: #dedede;
   --theme-secondary: #adadad;
-  --theme-muted: #898989;
+  --theme-muted: #8f8f8f;
   --theme-accent: #5698d5;
   --theme-accent-hover: #6aabe6;
   --theme-accent-soft: #29425a;
   --theme-modal: #252525;
   --theme-welcome: #1e1e1e;
   --theme-welcome-glow: #292d33;
+  --diff-added-bg: #244638;
+  --diff-added-text: #ddf8e5;
+  --diff-added-word: #39775a;
+  --diff-deleted-bg: #4b3032;
+  --diff-deleted-text: #ffdcda;
+  --diff-deleted-word: #96504f;
+  --status-modified: #e8c27c;
+  --status-added: #83cea2;
+  --status-deleted: #e49b9b;
+  --recent: #e8a15a;
 }
 :root[data-theme="vscode"] {
   --theme-chrome: #252526;
@@ -318,6 +328,12 @@ button { cursor: pointer; }
   --theme-modal: #252526;
   --theme-welcome: #1e1e1e;
   --theme-welcome-glow: #293547;
+  --diff-added-bg: #373d29;
+  --diff-added-text: #e2e2e2;
+  --diff-added-word: #4f5f2a;
+  --diff-deleted-bg: #4b1e1e;
+  --diff-deleted-text: #e2e2e2;
+  --diff-deleted-word: #7a2626;
 }
 :root[data-theme="sublime"] {
   --theme-chrome: #1b2026;
@@ -328,8 +344,8 @@ button { cursor: pointer; }
   --theme-heading: #20262d;
   --theme-border: #3d4750;
   --theme-input: #202830;
-  --theme-raised: #303841;
-  --theme-hover: #414b55;
+  --theme-raised: #343d47;
+  --theme-hover: #444f5a;
   --theme-selected: #434045;
   --theme-commit-selected: #594838;
   --theme-text: #e4e6e8;
@@ -341,29 +357,41 @@ button { cursor: pointer; }
   --theme-modal: #2b333b;
   --theme-welcome: #171d23;
   --theme-welcome-glow: #33363a;
+  --diff-added-bg: #2c4a40;
+  --diff-added-text: #dff5ea;
+  --diff-added-word: #3f7560;
+  --diff-deleted-bg: #4d3438;
+  --diff-deleted-text: #ffdfe0;
+  --diff-deleted-word: #8a4a52;
 }
 :root[data-theme="claude"] {
-  --theme-chrome: #1b1b1b;
-  --theme-toolbar: #262626;
-  --theme-locations: #202020;
-  --theme-commits: #242424;
-  --theme-details: #202020;
-  --theme-heading: #292929;
-  --theme-border: #3b3b3b;
-  --theme-input: #1b1b1b;
-  --theme-raised: #303030;
-  --theme-hover: #393939;
-  --theme-selected: #37312f;
-  --theme-commit-selected: #5a3d34;
+  --theme-chrome: #131313;
+  --theme-toolbar: #1c1c1c;
+  --theme-locations: #161616;
+  --theme-commits: #1a1a1a;
+  --theme-details: #171717;
+  --theme-heading: #1e1e1e;
+  --theme-border: #2e2e2e;
+  --theme-input: #121212;
+  --theme-raised: #272727;
+  --theme-hover: #3b3532;
+  --theme-selected: #45352e;
+  --theme-commit-selected: #4d352d;
   --theme-text: #f1efec;
   --theme-secondary: #cbc8c4;
   --theme-muted: #aaa7a3;
   --theme-accent: #df8065;
   --theme-accent-hover: #ef9a7f;
   --theme-accent-soft: #51362f;
-  --theme-modal: #292929;
-  --theme-welcome: #1e1e1e;
-  --theme-welcome-glow: #32302e;
+  --theme-modal: #1f1f1f;
+  --theme-welcome: #151515;
+  --theme-welcome-glow: #272422;
+  --diff-added-bg: #2d4232;
+  --diff-added-text: #e3f3e3;
+  --diff-added-word: #4a7352;
+  --diff-deleted-bg: #4d302b;
+  --diff-deleted-text: #ffe1d9;
+  --diff-deleted-word: #955245;
 }
 
 :root { color: var(--theme-text); background: var(--theme-chrome); }
@@ -425,8 +453,8 @@ button { cursor: pointer; }
 .locations-footer { border-color: var(--theme-border); color: var(--theme-muted); }
 .working-row, .commit-row { color: var(--theme-text); border-color: var(--theme-border); }
 .working-row:hover, .commit-row:hover { background: var(--theme-hover); }
-.working-row.selected { background: var(--theme-selected); box-shadow: inset 3px 0 var(--theme-accent); }
-.commit-row.selected { z-index: 1; background: var(--theme-commit-selected); box-shadow: inset 5px 0 var(--theme-accent), inset 0 1px var(--theme-accent), inset 0 -1px var(--theme-accent), inset -1px 0 var(--theme-accent); }
+.working-row.selected { background: var(--theme-selected); }
+.commit-row.selected { z-index: 1; background: var(--theme-commit-selected); }
 .commit-row.selected .commit-subject { color: #fff; }
 .commit-row.selected .commit-author, .commit-row.selected .commit-date { color: var(--theme-text); }
 .working-node, .load-more { color: var(--theme-accent); }
@@ -652,7 +680,7 @@ button { cursor: pointer; }
 .tab-strip.reordering .repo-tab.dragging { position: relative; z-index: 1; cursor: grabbing; transition: none; box-shadow: 0 0 12px rgba(0, 0, 0, .45); }
 .tab-strip.reordering .repo-tab.dragging.settling { transition: transform .15s ease; }
 .tab-strip.reordering .repo-tab.dragging:not(.active) { background: var(--theme-chrome); }
-.recent-icon { width: 18px; height: 18px; flex: none; display: grid; place-items: center; border-radius: 3px; background: rgba(232, 150, 80, .16); color: #e8a15a; }
+.recent-icon { width: 18px; height: 18px; flex: none; display: grid; place-items: center; border-radius: 3px; background: color-mix(in srgb, var(--recent) 16%, transparent); color: var(--recent); }
 .recent-icon .icon { width: 13px; height: 13px; }
 .settings-body .settings-check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; letter-spacing: 0; }
 .settings-body .settings-check input { width: auto; min-height: 0; }
@@ -670,8 +698,8 @@ button { cursor: pointer; }
 .commit-refs { display: flex; flex-wrap: wrap; gap: 4px; }
 .commit-stats { display: inline-flex; align-items: center; gap: 4px; }
 .stat-deleted, .stat-added { padding: 0 5px; border-radius: 3px; font-size: 12px; line-height: 18px; }
-.stat-deleted { background: rgba(228, 120, 120, .2); color: #f0b0ad; }
-.stat-added { background: rgba(110, 200, 140, .2); color: #a8e4bb; }
+.stat-deleted { background: color-mix(in srgb, var(--status-deleted) 20%, transparent); color: var(--status-deleted); }
+.stat-added { background: color-mix(in srgb, var(--status-added) 20%, transparent); color: var(--status-added); }
 .file-stats { flex: none; margin-left: 6px; }
 .commit-message { margin: 0; color: var(--theme-text); font-size: 15px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 
@@ -680,7 +708,7 @@ button { cursor: pointer; }
 .decoration.branch { background: color-mix(in srgb, var(--branch-color) 22%, transparent); color: var(--branch-color); }
 .decoration.branch.head { background: var(--branch-color); color: #161a1e; font-weight: 600; }
 .compare-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--theme-border); background: color-mix(in srgb, var(--theme-accent) 8%, transparent); }
-.compare-row.selected { background: var(--theme-selected); box-shadow: inset 3px 0 var(--theme-accent); }
+.compare-row.selected { background: var(--theme-selected); }
 .compare-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 0 8px 0 21px; border: 0; background: none; color: var(--theme-text); text-align: left; cursor: pointer; }
 .compare-main:hover { background: var(--theme-hover); }
 .compare-vs { color: var(--theme-muted); font-weight: 400; }
@@ -702,3 +730,47 @@ button { cursor: pointer; }
 .details-tab-close { width: 22px; height: 22px; flex: none; display: grid; place-items: center; margin-left: auto; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--theme-muted); cursor: pointer; }
 .details-tab-close:hover { background: var(--theme-hover); color: var(--theme-text); }
 .details-tab-close .icon { width: 12px; height: 12px; }
+/* Quieter chrome: pane dividers are a 1px line inside a 4px drag area, group titles have no fill, and the footer has no rule. */
+.splitter { position: relative; z-index: 5; width: 1px; background: var(--theme-border); }
+.splitter::before { content: ""; position: absolute; inset: 0 -3px; }
+.splitter:hover, .splitter:active { background: var(--theme-accent); }
+.workspace.alt { grid-template-columns: auto 1px minmax(0, 1fr); grid-template-rows: minmax(180px, min(var(--history-height), 40vh)) 1px minmax(0, 1fr); }
+.workspace.alt .commits-splitter { height: 1px; }
+.workspace.alt .commits-splitter::before { inset: -3px 0; }
+.locations, .commits-pane { border-right: 0; }
+.file-group-heading, .file-group-heading:not(:first-child) { margin-top: 12px; border: 0; background: transparent; }
+.file-group-heading:first-child { margin-top: 12px; }
+.locations-footer { border-top: 0; }
+/* Buttons are borderless everywhere; state is shown with background only. Tabs keep their accent line. */
+button:not(.details-tab) { border-color: transparent !important; }
+.details-tabs { border-bottom: 0; }
+/* Row and group actions (Stage, Discard, Delete, ...) in file headers, like Sublime Merge. */
+.row-actions, .group-actions { flex: none; display: flex; align-items: center; gap: 4px; padding: 0 6px; }
+.file-group-heading { display: flex; align-items: center; }
+.file-group-heading .group-disclosure { flex: 1; min-width: 0; }
+/* Full-size like Sublime Merge; file, group and hunk actions share one size so they line up. */
+.row-action, .line-selection-toolbar button { min-width: 100px; height: 28px; padding: 0 14px; border: 0; border-radius: 3px; background: var(--theme-raised); color: var(--theme-secondary); font-size: 13px; text-align: center; cursor: pointer; white-space: nowrap; }
+.row-actions, .group-actions { gap: 6px; }
+.row-action:hover:not(:disabled) { background: var(--theme-hover); color: var(--theme-text); }
+.row-action.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--status-deleted) 25%, transparent); color: var(--theme-text); }
+.row-action:disabled { opacity: .5; cursor: default; }
+.files-heading { padding-right: 14px; }
+/* Hunk actions appear only while hovering that file (or keyboard focus inside it); selected lines keep them visible. File actions stay visible. */
+.summary-diff-card .line-selection-toolbar button { opacity: 0; pointer-events: none; transition: opacity .1s ease; }
+.summary-diff-card:hover .line-selection-toolbar button, .summary-diff-card:focus-within .line-selection-toolbar button,
+.summary-diff-card .line-selection-toolbar[data-mode="lines"] button { opacity: 1; pointer-events: auto; }
+.summary-diff-heading .row-action { background: var(--theme-hover); }
+.summary-diff-heading .row-action:hover:not(:disabled) { background: var(--theme-hover); filter: brightness(1.25); }
+/* Notices live in the status bar (no layout shift) and truncate to one line; the full text is in the tooltip. */
+.statusbar-right { display: inline-flex; align-items: center; min-width: 0; max-width: 60%; }
+.statusbar .notice-bar { display: inline; min-width: 0; padding: 0; background: none; color: var(--theme-accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0; }
+/* The selected repository tab flows into the toolbar, and no rule separates the toolbar from the panes. */
+.tabbar, .toolbar { border-bottom: 0; }
+.repo-tab.active { background: var(--theme-toolbar); }
+/* Fonts come from Settings (defaults match Sublime Merge on Windows: Segoe UI and Consolas 13). */
+:root { --ui-font: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; --code-font: Consolas, "SFMono-Regular", Menlo, "Liberation Mono", monospace; --code-size: 13px; font-family: var(--ui-font); }
+.file-path, .diff-heading .diff-heading-target { font-family: var(--ui-font); }
+.file-status, .diff-heading, .conflict-row span, .commit-facts .mono { font-family: var(--code-font); }
+.diff-content { font-family: var(--code-font); font-size: var(--code-size); line-height: 1.5; }
+.commit-message, .commit-editor textarea, .file-edit-textarea { font-family: var(--code-font); font-size: var(--code-size); line-height: 1.5; }
+.settings-body .settings-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px; gap: 10px; }

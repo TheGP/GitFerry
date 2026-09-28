@@ -7,7 +7,8 @@
     "start": "vite",
     "dev": "vite",
     "build": "vite build",
-    "test:layout": "node tests/layout-audit.cjs",
+    "test:unit": "node --test tests/*.test.ts",
+    "test:layout":"node tests/layout-audit.cjs",
     "test:ui": "cargo build --manifest-path ../Cargo.toml -p gitferry-agent && node tests/headless-smoke.cjs",
     "serve": "vite preview",
     "tauri": "tauri"

@@ -1,21 +1,23 @@
 import Prism from "prismjs";
-import "prismjs/components/prism-typescript";
-import "prismjs/components/prism-jsx";
-import "prismjs/components/prism-tsx";
-import "prismjs/components/prism-json";
-import "prismjs/components/prism-python";
-import "prismjs/components/prism-rust";
-import "prismjs/components/prism-bash";
-import "prismjs/components/prism-yaml";
-import "prismjs/components/prism-go";
-import "prismjs/components/prism-markdown";
-import "prismjs/components/prism-toml";
-import "prismjs/components/prism-sql";
+import "prismjs/components/prism-typescript.js";
+import "prismjs/components/prism-jsx.js";
+import "prismjs/components/prism-tsx.js";
+import "prismjs/components/prism-json.js";
+import "prismjs/components/prism-python.js";
+import "prismjs/components/prism-rust.js";
+import "prismjs/components/prism-bash.js";
+import "prismjs/components/prism-yaml.js";
+import "prismjs/components/prism-go.js";
+import "prismjs/components/prism-markdown.js";
+import "prismjs/components/prism-toml.js";
+import "prismjs/components/prism-sql.js";
 
 export type DiffRow = { line: string; kind: string; hunkIndex: number };
 export type HighlightPart = { text: string; types: string[]; changed: boolean };
 type Range = { start: number; end: number };
 type TokenPart = { text: string; types: string[] };
+
+const MIN_SIMILARITY = 0.4;
 
 const grammarByExtension: Record<string, string> = {
   ts: "typescript", tsx: "tsx", mts: "typescript", cts: "typescript",
@@ -54,12 +56,16 @@ function changedRanges(before: string, after: string): [Range[], Range[]] {
     scores[i][j] = a[i].text === b[j].text ? scores[i + 1][j + 1] + 1 : Math.max(scores[i + 1][j], scores[i][j + 1]);
   const oldRanges: Range[] = [];
   const newRanges: Range[] = [];
-  let i = 0, j = 0;
+  let i = 0, j = 0, common = 0;
   while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i].text === b[j].text) { i++; j++; }
+    if (i < a.length && j < b.length && a[i].text === b[j].text) { common += a[i].text.trim().length; i++; j++; }
     else if (j < b.length && (i === a.length || scores[i][j + 1] >= scores[i + 1][j])) { newRanges.push({ start: b[j].start, end: b[j++].end }); }
     else if (i < a.length) { oldRanges.push({ start: a[i].start, end: a[i++].end }); }
   }
+  // Lines that merely sit side by side (e.g. one line split into several) share almost nothing;
+  // marking nearly every word as changed is noise, so only highlight genuinely similar lines.
+  const total = before.replace(/\s+/g, "").length + after.replace(/\s+/g, "").length;
+  if (total > 0 && (2 * common) / total < MIN_SIMILARITY) return [[], []];
   return [oldRanges, newRanges];
 }
 

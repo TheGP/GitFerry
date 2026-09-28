@@ -1651,3 +1651,81 @@ fn full_context_diff_includes_the_whole_file() {
     assert!(whole.contains(" line 1\n") && whole.contains(" line 20\n"));
     assert!(whole.contains("+line ten"));
 }
+
+#[test]
+fn file_list_actions_stage_unstage_discard_and_delete_untracked_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path();
+    let path = repo.to_str().unwrap();
+    git(repo, &["init", "-q"]);
+    git(repo, &["config", "user.name", "Test"]);
+    git(repo, &["config", "user.email", "test@example.com"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "Base"]);
+    std::fs::write(repo.join("a.txt"), "a changed\n").unwrap();
+    std::fs::write(repo.join("b.txt"), "b changed\n").unwrap();
+    std::fs::create_dir(repo.join("new")).unwrap();
+    std::fs::write(repo.join("new/one.txt"), "1\n").unwrap();
+    std::fs::write(repo.join("new/two.txt"), "2\n").unwrap();
+    let files = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    action(
+        path,
+        RepoAction::StageFiles {
+            paths: files(&["a.txt", "b.txt"]),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        git(repo, &["diff", "--cached", "--name-only"]),
+        "a.txt\nb.txt"
+    );
+    action(
+        path,
+        RepoAction::UnstageFiles {
+            paths: files(&["b.txt"]),
+        },
+    )
+    .unwrap();
+    assert_eq!(git(repo, &["diff", "--cached", "--name-only"]), "a.txt");
+    action(
+        path,
+        RepoAction::DiscardFiles {
+            paths: files(&["b.txt"]),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo.join("b.txt"))
+            .unwrap()
+            .trim_end(),
+        "b"
+    );
+
+    assert!(
+        action(
+            path,
+            RepoAction::DeleteUntracked {
+                paths: files(&["a.txt"])
+            }
+        )
+        .is_err(),
+        "tracked files must never be deleted"
+    );
+    assert!(repo.join("a.txt").exists());
+    action(
+        path,
+        RepoAction::DeleteUntracked {
+            paths: files(&["new/one.txt", "new/two.txt"]),
+        },
+    )
+    .unwrap();
+    assert!(!repo.join("new/one.txt").exists() && !repo.join("new/two.txt").exists());
+}

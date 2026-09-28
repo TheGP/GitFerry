@@ -6,13 +6,15 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { highlightDiff } from "./diffHighlight";
 import { formatCommitDate } from "./commitDate";
+import { version } from "../package.json";
+import { createHunkNotes, HunkNotes } from "./HunkNote";
 import "./App.css";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
 type Ref = { name: string; kind: string; target: string; isHead: boolean; ahead?: number; behind?: number };
 type Commit = { hash: string; parents: string[]; subject: string; author: string; timestamp: number; decorations: string[] };
-type Repo = { path: string; name: string; branch: string; head: string | null; status: Status[]; refs: Ref[]; remotes: string[]; commits: Commit[]; hasMore: boolean; operation?: string | null; rebaseEditPause?: boolean; loading?: boolean; loadError?: string };
-type RepoState = { branch: string; head: string | null; status: Status[]; operation?: string | null; rebaseEditPause?: boolean };
+type Repo = { refsHash?: string; path: string; name: string; branch: string; head: string | null; status: Status[]; refs: Ref[]; remotes: string[]; commits: Commit[]; hasMore: boolean; operation?: string | null; rebaseEditPause?: boolean; loading?: boolean; loadError?: string };
+type RepoState = { refsHash?: string; branch: string; head: string | null; status: Status[]; operation?: string | null; rebaseEditPause?: boolean };
 type SearchResult = { commits: Commit[]; hasMore: boolean };
 type Details = { hash: string; subject: string; body: string; author: string; authorEmail: string; timestamp: number; parents: string[]; files: { path: string; status: string; additions?: number | null; deletions?: number | null }[]; tree?: string; additions?: number | null; deletions?: number | null };
 type Choice = { id?: string; path: string; status: string; target: string; revision?: string; modified?: number; additions?: number | null; deletions?: number | null };
@@ -20,7 +22,7 @@ type Diff = { text: string; truncated: boolean };
 type EditableFile = { content: string };
 type SavedFile = { staged: boolean; warning: string | null };
 type CompareResult = { mergeBase: string; commits: number; files: { path: string; status: string; additions?: number | null; deletions?: number | null }[]; additions: number; deletions: number };
-type Comparison = { base: string; head: string; headHash: string; result: CompareResult | null; error: string };
+type Comparison = { base: string; head: string; baseHash: string; headHash: string; result: CompareResult | null; error: string };
 type FileDraft = { repo: string; path: string; source: string; original: string; text: string; newline: "\n" | "\r\n" | "\r"; stageOnSave: boolean };
 type FileHistoryEntry = { hash: string; subject: string; author: string; timestamp: number; path: string };
 type FileHistoryResult = { commits: FileHistoryEntry[]; hasMore: boolean };
@@ -29,7 +31,7 @@ type BlameResult = { lines: BlameLine[]; hasMore: boolean };
 type RebaseCommit = { hash: string; subject: string; message: string };
 type RebaseStep = RebaseCommit & { action: "pick" | "reword" | "edit" | "squash" | "fixup" | "drop"; editedMessage?: string };
 type RefNode = { label: string; path: string; ref?: Ref; children: RefNode[]; count: number; containsHead: boolean };
-type Operation = { kind: "stage_all" | "fetch" | "pull" | "pull_merge" | "pull_rebase" | "push" | "force_push_with_lease" | "abort_operation" | "continue_operation" | "amend_no_edit" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "discard_hunk"; value: { path: string; index: number; diff: string } } | { kind: "stage_lines" | "unstage_lines" | "discard_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch" | "force_delete_branch" | "merge" | "rebase"; value: { branch: string } } | { kind: "track_remote_branch" | "push_branch" | "delete_remote_branch"; value: { remote: string; branch: string } } | { kind: "rename_branch"; value: { branch: string; new_name: string } } | { kind: "interactive_rebase"; value: { branch: string; onto: string; steps: { hash: string; action: RebaseStep["action"]; message?: string }[] } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash" | "cherry_pick" | "revert" | "detach"; value: { hash: string } } | { kind: "reset"; value: { hash: string; mode: "soft" | "mixed" | "hard" } } | { kind: "create_tag"; value: { name: string; hash: string } } | { kind: "delete_tag"; value: { name: string } } | { kind: "push_tag" | "delete_remote_tag"; value: { remote: string; name: string } } | { kind: "resolve_file"; value: { path: string; side: "ours" | "theirs" } };
+type Operation = { kind: "stage_all" | "fetch" | "pull" | "pull_merge" | "pull_rebase" | "push" | "force_push_with_lease" | "abort_operation" | "continue_operation" | "amend_no_edit" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_files" | "unstage_files" | "discard_files" | "delete_untracked"; value: { paths: string[] } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "discard_hunk"; value: { path: string; index: number; diff: string } } | { kind: "stage_lines" | "unstage_lines" | "discard_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch" | "force_delete_branch" | "merge" | "rebase"; value: { branch: string } } | { kind: "track_remote_branch" | "push_branch" | "delete_remote_branch"; value: { remote: string; branch: string } } | { kind: "rename_branch"; value: { branch: string; new_name: string } } | { kind: "interactive_rebase"; value: { branch: string; onto: string; steps: { hash: string; action: RebaseStep["action"]; message?: string }[] } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash" | "cherry_pick" | "revert" | "detach"; value: { hash: string } } | { kind: "reset"; value: { hash: string; mode: "soft" | "mixed" | "hard" } } | { kind: "create_tag"; value: { name: string; hash: string } } | { kind: "delete_tag"; value: { name: string } } | { kind: "push_tag" | "delete_remote_tag"; value: { remote: string; name: string } } | { kind: "resolve_file"; value: { path: string; side: "ours" | "theirs" } };
 type ActionDialogField = { key: string; label: string; value: string; options?: string[]; placeholder?: string; required?: boolean };
 type ActionDialog = { title: string; description?: string; submitLabel: string; danger?: boolean; fields: ActionDialogField[]; onSubmit: (values: Record<string, string>) => void };
 const recentKey = "gitferry.recent";
@@ -43,6 +45,17 @@ const expansionKey = "gitferry.expansion";
 const tabStateKey = "gitferry.tabState";
 const testsClosedKey = "gitferry.keepTestsClosed";
 const fullFileKey = "gitferry.fullFile";
+const detailsViewKey = "gitferry.detailsView";
+const uiFontKey = "gitferry.uiFont";
+const codeFontKey = "gitferry.codeFont";
+const codeSizeKey = "gitferry.codeSize";
+const uiFontFallback = `"Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif`;
+const codeFontFallback = `Consolas, "SFMono-Regular", Menlo, "Liberation Mono", monospace`;
+// A chosen font goes first, with the defaults behind it in case it is not installed.
+const fontStack = (name: string, fallback: string) => {
+  const clean = name.replace(/["';{}]/g, "").trim();
+  return clean ? `"${clean}", ${fallback}` : fallback;
+};
 const testFilePattern = /(^|\/)(__tests__|tests?|specs?)\/|\.(test|spec)\.[^/]+$|(^|\/)test_[^/]*$|_(test|spec)\.[^/.]+$/i;
 const editorOptions = [
   { id: "antigravity", label: "Antigravity" },
@@ -76,7 +89,7 @@ function savedSession(): { tabs: Repo[]; activePath: string | null } {
     return { tabs, activePath: selected && paths.includes(selected) ? selected : paths[0] ?? null };
   } catch { return { tabs: [], activePath: null }; }
 }
-const commitRowHeight = 52;
+const commitRowHeight = 56;
 // One-line commit rows when details are shown below the history.
 const compactCommitRowHeight = 32;
 const workingRowHeight = 68;
@@ -104,7 +117,7 @@ function branchColorIndex(key: string): number {
   for (const char of key) hash = (hash * 31 + char.charCodeAt(0)) | 0;
   return Math.abs(hash) % graphPaletteSize;
 }
-const graphOutlines: Record<ThemeId, string> = { antigravity: "#242424", vscode: "#252526", sublime: "#293039", claude: "#242424" };
+const graphOutlines: Record<ThemeId, string> = { antigravity: "#242424", vscode: "#252526", sublime: "#293039", claude: "#1a1a1a" };
 
 function groupRefs(refs: Ref[], folders: boolean): RefNode[] {
   const root: RefNode = { label: "", path: "", children: [], count: 0, containsHead: false };
@@ -190,6 +203,7 @@ function copyDiffSelection(event: ClipboardEvent) {
   if (!selection || selection.isCollapsed || !event.clipboardData || !container.contains(selection.anchorNode) || !container.contains(selection.focusNode)) return;
   const selectedRange = selection.getRangeAt(0);
   const copied: string[] = [];
+  let prefixed: boolean | undefined;
   for (const row of container.querySelectorAll<HTMLElement>(".diff-line")) {
     const text = row.querySelector<HTMLElement>(".line-text");
     if (!text || getComputedStyle(text).visibility === "hidden" || !selectedRange.intersectsNode(text)) continue;
@@ -198,8 +212,16 @@ function copyDiffSelection(event: ClipboardEvent) {
     const part = selectedRange.cloneRange();
     if (part.compareBoundaryPoints(Range.START_TO_START, lineRange) < 0) part.setStart(lineRange.startContainer, lineRange.startOffset);
     if (part.compareBoundaryPoints(Range.END_TO_END, lineRange) > 0) part.setEnd(lineRange.endContainer, lineRange.endOffset);
+    // A selection starting inside the indentation counts as the whole line, so it keeps its indentation and diff prefix.
+    const before = document.createRange();
+    before.setStart(lineRange.startContainer, lineRange.startOffset);
+    before.setEnd(part.startContainer, part.startOffset);
+    if (!before.toString().trim()) part.setStart(lineRange.startContainer, lineRange.startOffset);
     const value = part.toString();
-    if (value || (lineRange.collapsed && row.dataset.copyPrefix)) copied.push(`${part.compareBoundaryPoints(Range.START_TO_START, lineRange) === 0 ? row.dataset.copyPrefix ?? "" : ""}${value}`);
+    if (!value && !(lineRange.collapsed && row.dataset.copyPrefix)) continue;
+    // Diff prefixes are added only when the selection starts at a line start; one starting mid-line copies plain code.
+    prefixed ??= part.compareBoundaryPoints(Range.START_TO_START, lineRange) === 0;
+    copied.push(`${prefixed ? row.dataset.copyPrefix ?? "" : ""}${value}`);
   }
   if (!copied.length) return;
   event.clipboardData.setData("text/plain", copied.join("\n"));
@@ -214,7 +236,11 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
   createComputed(() => {
     const parts = highlighted();
     const seen = new Map<string, number>();
-    setRows(reconcile(lines().map((row, index) => {
+    // Untracked files arrive as raw content: number the lines as the new file's lines (not the empty tail after the last newline).
+    const raw = props.item.target === "untracked" && !lines().some(row => row.kind === "hunk");
+    const total = lines().length;
+    setRows(reconcile(lines().map((original, index) => {
+      const row = raw ? { ...original, kind: "", newNumber: index < total - 1 || original.line ? index + 1 : null } : original;
       const base = `${row.kind}\u0000${row.line}`;
       const occurrence = seen.get(base) ?? 0;
       seen.set(base, occurrence + 1);
@@ -222,6 +248,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     }), { key: "key" }));
   });
   const hunkCount = createMemo(() => lines().filter(line => line.kind === "hunk").length);
+  const hunkNotes = createHunkNotes(() => props.repoPath, () => props.item.path, lines, () => (props.working && ["working", "staged", "untracked"].includes(props.item.target)) || props.item.target.includes(".."));
   const [selectedLines, setSelectedLines] = createSignal<number[]>([]);
   const [selectedHunk, setSelectedHunk] = createSignal(0);
   const selectedSet = createMemo(() => new Set(selectedLines()));
@@ -294,12 +321,12 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
   }
   return <>
     <Show when={actionable() && hunkCount()}><div class="line-selection-toolbar" data-mode={selectedLines().length ? "lines" : "hunk"}><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : `Hunk ${selectedHunk() + 1} of ${hunkCount()}`)}</span><Show when={props.item.target === "working"}><button class="discard-selection" disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(true)}>{selectedLines().length ? "Discard Lines" : "Discard Hunk"}</button></Show><button class={selectedLines().length ? "stage-lines" : "hunk-action"} disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(false)}>{props.item.target === "staged" ? "Unstage" : "Stage"} {selectedLines().length ? "Lines" : "Hunk"}</button></div></Show>
-    <div class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""}`} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
+    <div class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""}`} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
       <Show when={changed(index())} fallback={<span class="line-number"><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select ${row.kind === "added" ? "new" : "old"} line ${row.kind === "added" ? row.newNumber : row.oldNumber}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></button></Show>
       <Show when={editingLine() === index()} fallback={<span class="line-text" title={lineEditable(index()) ? "Double-click to edit" : undefined} onDblClick={event => { if (!lineEditable(index())) return; event.preventDefault(); window.getSelection()?.removeAllRanges(); setEditingLine(index()); }}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>}>
         <input class="line-edit" aria-label={`Edit line ${editTarget(index())?.number}`} value={editTarget(index())?.text ?? ""} spellcheck={false} ref={element => requestAnimationFrame(() => { element.focus(); element.select(); })} onClick={event => event.stopPropagation()} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void saveLine(index(), event.currentTarget.value); } else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setEditingLine(null); } }} onBlur={event => void saveLine(index(), event.currentTarget.value)} />
       </Show>
-    </div>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
+    </div></>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
   </>;
 }
 
@@ -325,7 +352,10 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
     const cached = cachedDiff(loadKey());
     if (identity !== fileKey) {
       fileKey = identity;
-      setValue(cached ?? null); setLoadedKey(cached ? loadKey() : "");
+      const movedKey = `${props.repoPath}\u0000${props.item.target}\u0000${props.item.path}`;
+      const moved = !cached && !props.ignoreWhitespace ? movedDiffs.get(movedKey) : undefined;
+      movedDiffs.delete(movedKey);
+      setValue(cached ?? moved ?? null); setLoadedKey(cached ? loadKey() : "");
     } else if (cached) { setValue(cached); setLoadedKey(loadKey()); }
   });
   createEffect(() => {
@@ -352,9 +382,13 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
     observer.observe(element);
     onCleanup(() => observer.disconnect());
   });
-  return <div class="all-diff-card summary-diff-card" ref={element}>
-    <div class="summary-diff-heading"><button class={`file-row ${props.keyboardSelected ? "keyboard-selected" : ""}`} aria-expanded={props.expanded} aria-current={props.keyboardSelected ? "true" : undefined} onFocus={props.onSelect} onClick={props.onToggle}><span class={`file-status ${props.item.status === "A" || props.item.status === "U" ? "added" : props.item.status === "D" ? "deleted" : "modified"}`}>{props.item.status}</span><Show when={props.recent}><span class="recent-icon" title="Recently modified"><Icon name="clock" /></span></Show><span class="file-path">{props.item.path}</span><Show when={props.item.target === "staged"}><span class="file-tag">STAGED</span></Show><Show when={props.item.additions != null || props.item.deletions != null}><span class="commit-stats file-stats"><span class="stat-deleted">-{props.item.deletions ?? 0}</span><span class="stat-added">+{props.item.additions ?? 0}</span></span></Show><span class="file-chevron"><ChevronDown /></span></button><button class="summary-open-tab" title={`Open ${props.item.path} in a tab`} aria-label={`Open ${props.item.path} in a tab`} onClick={props.onOpenTab}><Icon name="external" /></button><button class="open-editor-button" title={`Open ${props.item.path} in editor`} aria-label={`Open ${props.item.path} in editor`} onClick={() => props.onOpenEditor(value())}><Icon name="code" /></button></div>
-    <Show when={props.expanded}><Show when={props.working}><div class="file-actions"><Show when={props.item.target === "staged"} fallback={<button disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_file", value: { path: props.item.path } })}>{props.item.target === "working" && props.item.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={props.actionBusy} onClick={() => props.onAction({ kind: "unstage_file", value: { path: props.item.path } })}>Unstage file</button></Show><Show when={props.item.target === "working" && props.item.status !== "U"}><button class="danger" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } }, `Discard changes to ${props.item.path}?`)}>Discard changes</button></Show></div></Show><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={props.ignoreWhitespace && props.working && props.item.target !== "untracked"}><div class="diff-filter-note">Line and hunk actions are unavailable while whitespace is ignored.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() || "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} onEdited={props.onEdited} onError={props.onError} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
+  return <div class="all-diff-card summary-diff-card" ref={element} data-path={props.item.path} data-target={props.item.target}>
+    <div class="summary-diff-heading"><button class={`file-row ${props.keyboardSelected ? "keyboard-selected" : ""}`} aria-expanded={props.expanded} aria-current={props.keyboardSelected ? "true" : undefined} onFocus={props.onSelect} onClick={props.onToggle}><span class={`file-status ${props.item.status === "A" || props.item.status === "U" ? "added" : props.item.status === "D" ? "deleted" : "modified"}`}>{props.item.status}</span><Show when={props.recent}><span class="recent-icon" title="Recently modified"><Icon name="clock" /></span></Show><span class="file-path">{props.item.path}</span><Show when={props.item.target === "staged"}><span class="file-tag">STAGED</span></Show><Show when={props.item.additions != null || props.item.deletions != null}><span class="commit-stats file-stats"><span class="stat-deleted">-{props.item.deletions ?? 0}</span><span class="stat-added">+{props.item.additions ?? 0}</span></span></Show><span class="file-chevron"><ChevronDown /></span></button><Show when={props.working}><span class="row-actions">
+      <Show when={props.item.target === "untracked"}><button class="row-action danger" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "delete_untracked", value: { paths: [props.item.path] } }, `Delete ${props.item.path}? The untracked file is removed from disk.`)}>Delete</button></Show>
+      <Show when={props.item.target === "working" && props.item.status !== "U"}><button class="row-action danger" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } }, `Discard changes to ${props.item.path}?`)}>Discard</button></Show>
+      <Show when={props.item.target === "staged"} fallback={<button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_file", value: { path: props.item.path } })}>{props.item.target === "working" && props.item.status === "U" ? "Mark resolved" : "Stage"}</button>}><button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "unstage_file", value: { path: props.item.path } })}>Unstage</button></Show>
+    </span></Show><button class="summary-open-tab" title={`Open ${props.item.path} in a tab`} aria-label={`Open ${props.item.path} in a tab`} onClick={props.onOpenTab}><Icon name="external" /></button><button class="open-editor-button" title={`Open ${props.item.path} in editor`} aria-label={`Open ${props.item.path} in editor`} onClick={() => props.onOpenEditor(value())}><Icon name="code" /></button></div>
+    <Show when={props.expanded}><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={props.ignoreWhitespace && props.working && props.item.target !== "untracked"}><div class="diff-filter-note">Line and hunk actions are unavailable while whitespace is ignored.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() || "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} onEdited={props.onEdited} onError={props.onError} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
   </div>;
 }
 
@@ -411,6 +445,7 @@ const icons = {
 type IconName = keyof typeof icons;
 // In-memory caches so switching tabs or commits re-renders from memory instead of waiting on the agent.
 const detailsCache = new Map<string, Details>();
+const movedDiffs = new Map<string, Diff>();
 const diffCache = new Map<string, Diff>();
 const diffCacheLimit = 20_000_000;
 let diffCacheSize = 0;
@@ -469,6 +504,16 @@ function App() {
   const [editor, setEditor] = createSignal<EditorId>(initialEditor);
   const [showTabBranch, setShowTabBranch] = createSignal(localStorage.getItem(tabBranchKey) === "true");
   const [fullFile, setFullFile] = createSignal(localStorage.getItem(fullFileKey) === "true");
+  const [uiFont, setUiFont] = createSignal(localStorage.getItem(uiFontKey) ?? "");
+  const [codeFont, setCodeFont] = createSignal(localStorage.getItem(codeFontKey) ?? "");
+  const [codeSize, setCodeSize] = createSignal(Number(localStorage.getItem(codeSizeKey)) || 13);
+  createEffect(() => {
+    const root = document.documentElement.style;
+    root.setProperty("--ui-font", fontStack(uiFont(), uiFontFallback));
+    root.setProperty("--code-font", fontStack(codeFont(), codeFontFallback));
+    root.setProperty("--code-size", `${Math.min(24, Math.max(9, codeSize()))}px`);
+    localStorage.setItem(uiFontKey, uiFont()); localStorage.setItem(codeFontKey, codeFont()); localStorage.setItem(codeSizeKey, String(codeSize()));
+  });
   createEffect(() => localStorage.setItem(fullFileKey, String(fullFile())));
   const [keepTestsClosed, setKeepTestsClosed] = createSignal(localStorage.getItem(testsClosedKey) === "true");
   const [editorExecutable, setEditorExecutable] = createSignal(localStorage.getItem(editorExecutableKey) ?? "");
@@ -520,12 +565,12 @@ function App() {
     for (const [path, view] of Object.entries(saved)) {
       if (view.compare?.base && view.compare.head) {
         pendingComparisons.set(path, view.compare);
-        setComparisons(previous => ({ ...previous, [path]: { base: view.compare!.base, head: view.compare!.head, headHash: "", result: null, error: "" } }));
+        setComparisons(previous => ({ ...previous, [path]: { base: view.compare!.base, head: view.compare!.head, baseHash: "", headHash: "", result: null, error: "" } }));
       }
       if (view.selected && view.selected !== "working") { initialSelection.set(path, view.selected); tabViews.set(path, { selected: view.selected, scrollTop: 0 }); }
     }
   } catch { /* Ignore invalid saved tab state. */ }
-  // Open/closed diffs of each repository's working directory survive restarts; commit views stay per session.
+  // Open/closed diffs of each repository's working directory and branch comparison survive restarts; commit views stay per session.
   const savedExpansion = (() => {
     try {
       const value = JSON.parse(localStorage.getItem(expansionKey) ?? "{}");
@@ -537,8 +582,8 @@ function App() {
   createEffect(() => {
     const working = (entries: Record<string, boolean>, matches: (key: string) => boolean) => Object.fromEntries(Object.entries(entries).filter(([key]) => matches(key)));
     localStorage.setItem(expansionKey, JSON.stringify({
-      defaults: working(expansionDefaults(), key => key.endsWith(":working")),
-      diffs: working(summaryDiffs(), key => key.includes(":working:")),
+      defaults: working(expansionDefaults(), key => key.endsWith(":working") || key.endsWith(":compare")),
+      diffs: working(summaryDiffs(), key => key.includes(":working:") || key.includes(":compare:compare:")),
     }));
   });
   const [keyboardFileKey, setKeyboardFileKey] = createSignal<string | null>(null);
@@ -590,6 +635,9 @@ function App() {
   createEffect(() => {
     document.documentElement.dataset.theme = theme();
     localStorage.setItem(themeKey, theme());
+    // Match the native Windows title bar to the tab bar.
+    const style = getComputedStyle(document.documentElement);
+    if (isTauri() && !demoMode) void invoke("set_titlebar_color", { background: style.getPropertyValue("--theme-chrome").trim(), text: style.getPropertyValue("--theme-text").trim() }).catch(() => {});
   });
   createEffect(() => {
     localStorage.setItem(editorKey, editor());
@@ -715,7 +763,8 @@ function App() {
   const commitGroup = { title: "", get items() { return files(); } };
   const fileGroups = createMemo(() => selected() === "working" ? workingGroups.filter(group => group.items.length) : [commitGroup]);
   const navigationFiles = createMemo(() => fileGroups().flatMap(group => group.items));
-  const diffKey = (item: Choice) => `${item.target}:${item.path}`;
+  // Comparison targets change whenever the branches move; key those files by path so opened/closed state survives a refresh.
+  const diffKey = (item: Choice) => `${selected() === "compare" ? "compare" : item.target}:${item.path}`;
   const summaryKey = (item: Choice) => `${activePath()}:${selected()}:${diffKey(item)}`;
   const expansionScope = () => `${activePath()}:${selected()}`;
   // With the setting on, test files stay collapsed unless opened one by one; bulk expand skips them.
@@ -836,7 +885,7 @@ function App() {
         try {
           const changed = await invoke<boolean>("repo_watch", { path, timeoutMs: 60_000 });
           if (stopped) return;
-          if (changed && document.hasFocus()) await refresh();
+          if (changed && document.hasFocus()) await refreshState();
         } catch {
           if (!stopped) setWatchFallback(true);
           return;
@@ -852,6 +901,12 @@ function App() {
     setFileView("diff"); setFileHistory(null); setFileBlame(null); setFileInfoLoading(false); setFileInfoError("");
   }
   function selectWorking() { navigationArea = "commits"; request++; resetFileInfo(); setSelected("working"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
+  createEffect(() => {
+    const message = notice();
+    if (!message) return;
+    const timer = window.setTimeout(() => setNotice(current => current === message ? "" : current), 4000);
+    onCleanup(() => window.clearTimeout(timer));
+  });
   function saveRecent(path: string) {
     const next = [path, ...recent().filter(item => item !== path)].slice(0, 12);
     setRecent(next);
@@ -908,7 +963,17 @@ function App() {
       setError("");
     } catch (cause) { setError(String(cause)); }
   }
-  async function refreshState() {
+  // Status refreshes run one at a time; a request made while one runs is queued (and shared) instead of dropped.
+  let stateRunning: Promise<void> | null = null;
+  let stateQueued: Promise<void> | null = null;
+  function refreshState(): Promise<void> {
+    if (stateQueued) return stateQueued;
+    const start = () => { stateQueued = null; stateRunning = refreshStateOnce().finally(() => { stateRunning = null; }); return stateRunning; };
+    if (!stateRunning) return start();
+    stateQueued = stateRunning.then(start, start);
+    return stateQueued;
+  }
+  async function refreshStateOnce() {
     const path = activePath();
     if (!path || !repoReady() || !isTauri() || stateBusy) return;
     stateBusy = true;
@@ -916,7 +981,8 @@ function App() {
       const update = await invoke<RepoState>("repo_state", { path });
       const current = tabs().find(item => item.path === path);
       if (!current) return;
-      if (update.head !== current.head || update.branch !== current.branch || update.operation !== current.operation || update.rebaseEditPause !== current.rebaseEditPause) {
+      const refsMoved = Boolean(update.refsHash && current.refsHash && update.refsHash !== current.refsHash);
+      if (refsMoved || update.head !== current.head || update.branch !== current.branch || update.operation !== current.operation || update.rebaseEditPause !== current.rebaseEditPause) {
         if (activePath() === path) await refresh();
       } else if (JSON.stringify(update.status) !== JSON.stringify(current.status)) {
         setTabs(items => items.map(item => item.path === path ? { ...item, status: reuseEqual(item.status, update.status, entry => entry.path) } : item));
@@ -984,21 +1050,40 @@ function App() {
     commitScroll.scrollTop = 0; setScrollTop(0);
     await runComparison(path, base.name, ref.name);
   }
-  // Branches are resolved by name each time, so a restored comparison follows commits made since.
-  async function runComparison(path: string, baseName: string, headName: string) {
+  const branchTarget = (refs: Ref[], name: string) => refs.find(item => (item.kind === "branch" || item.kind === "remote") && item.name === name)?.target ?? "";
+  // Latest comparison request per repository, so a slower earlier result cannot overwrite a newer one.
+  const comparisonRequests = new Map<string, string>();
+  // Branches are resolved by name each time, so a comparison follows commits made since it was opened.
+  // A refresh keeps the previous result on screen until the new one arrives.
+  async function runComparison(path: string, baseName: string, headName: string, refresh = false) {
     const refs = tabs().find(item => item.path === path)?.refs ?? [];
-    const find = (name: string) => refs.find(item => (item.kind === "branch" || item.kind === "remote") && item.name === name);
-    const base = find(baseName), head = find(headName);
-    const missing = !base ? baseName : !head ? headName : "";
-    updateComparison(path, () => ({ base: baseName, head: headName, headHash: head?.target ?? "", result: null, error: missing ? `Branch ${missing} no longer exists` : "" }));
-    if (!base || !head) return;
+    const baseHash = branchTarget(refs, baseName), headHash = branchTarget(refs, headName);
+    const request = `${baseName}:${headName}:${baseHash}:${headHash}`;
+    comparisonRequests.set(path, request);
+    const missing = !baseHash ? baseName : !headHash ? headName : "";
+    if (!refresh || missing) updateComparison(path, () => ({ base: baseName, head: headName, baseHash, headHash, result: null, error: missing ? `Branch ${missing} no longer exists` : "" }));
+    if (missing) return;
+    const settle = (change: Partial<Comparison>) => {
+      if (comparisonRequests.get(path) === request) updateComparison(path, current => current?.head === headName ? { ...current, baseHash, headHash, ...change } : current);
+    };
     try {
-      const result = await invoke<CompareResult>("repo_compare", { path, base: base.target, head: head.target });
-      updateComparison(path, current => current?.head === headName ? { ...current, result } : current);
+      settle({ result: await invoke<CompareResult>("repo_compare", { path, base: baseHash, head: headHash }), error: "" });
     } catch (cause) {
-      updateComparison(path, current => current?.head === headName ? { ...current, error: String(cause) } : current);
+      settle({ result: null, error: String(cause) });
     }
   }
+  // Rerun open comparisons when either branch moves (new commits, fetch, rebase).
+  createEffect(() => {
+    const open = comparisons();
+    for (const tab of tabs()) {
+      const current = open[tab.path];
+      if (!current || tab.loading || tab.loadError || pendingComparisons.has(tab.path)) continue;
+      const baseHash = branchTarget(tab.refs, current.base), headHash = branchTarget(tab.refs, current.head);
+      if (baseHash === current.baseHash && headHash === current.headHash) continue;
+      if (comparisonRequests.get(tab.path) === `${current.base}:${current.head}:${baseHash}:${headHash}`) continue;
+      untrack(() => void runComparison(tab.path, current.base, current.head, true));
+    }
+  });
   // Restore saved comparisons and selections once each repository has loaded.
   createEffect(() => {
     const path = activePath();
@@ -1023,6 +1108,55 @@ function App() {
       state[tab.path] = { selected: tab.path === active ? initialSelection.get(active) ?? current : tabViews.get(tab.path)?.selected ?? "working", ...(compare ? { compare: { base: compare.base, head: compare.head } } : {}) };
     }
     localStorage.setItem(tabStateKey, JSON.stringify(state));
+  });
+  // The details pane of the active repository (open file tab and scroll positions) survives restarts. Summary scroll is
+  // saved as the file card at the top plus the distance into it, since lazily loaded diffs change pixel offsets.
+  type DetailsView = { repo: string; selected: string; file?: { path: string; target: string; open: boolean; scrollTop: number }; summary?: { path: string; target: string; offset: number } };
+  let pendingDetails: DetailsView | null = (() => { try { return JSON.parse(localStorage.getItem(detailsViewKey) ?? "null"); } catch { return null; } })();
+  // Give up restoring (and resume saving) if the saved view never comes back, e.g. its working tree is now clean.
+  window.setTimeout(() => { pendingDetails = null; }, 15_000);
+  const sameFile = (item: Choice, saved: { path: string; target: string }) => item.path === saved.path && (selected() === "compare" || item.target === saved.target);
+  function saveDetailsView() {
+    const repoPath = activePath();
+    if (pendingDetails || !repoPath || !detailsScroll) return;
+    const file = choice() ?? parkedFile();
+    const view: DetailsView = { repo: repoPath, selected: selected(), ...(file ? { file: { path: file.path, target: file.target, open: Boolean(choice()), scrollTop: choice() ? detailsScroll.scrollTop : 0 } } : {}) };
+    if (!choice()) {
+      const top = detailsScroll.getBoundingClientRect().top;
+      const card = [...detailsScroll.querySelectorAll<HTMLElement>(".summary-diff-card")].find(element => element.getBoundingClientRect().bottom > top);
+      if (card && detailsScroll.scrollTop > 0) view.summary = { path: card.dataset.path ?? "", target: card.dataset.target ?? "", offset: top - card.getBoundingClientRect().top };
+    }
+    localStorage.setItem(detailsViewKey, JSON.stringify(view));
+  }
+  let detailsSaveTimer = 0;
+  const scheduleDetailsSave = () => { window.clearTimeout(detailsSaveTimer); detailsSaveTimer = window.setTimeout(saveDetailsView, 250); };
+  createEffect(() => { activePath(); selected(); choice(); parkedFile(); scheduleDetailsSave(); });
+  createEffect(() => {
+    if (!pendingDetails) return;
+    const view = pendingDetails;
+    if (!activePath()) return;
+    if (activePath() !== view.repo) { pendingDetails = null; return; }
+    // Wait until the saved commit or comparison is selected again and its files are listed.
+    if (selected() !== view.selected || !files().length) return;
+    untrack(() => {
+      pendingDetails = null;
+      const file = view.file && files().find(item => sameFile(item, view.file!));
+      if (file && view.file!.open) { void selectFile(file, view.file!.scrollTop); return; }
+      if (file) setParkedFile(file);
+      const summary = view.summary;
+      if (!summary) return;
+      // Cards load their diffs lazily; retry briefly until the saved card is tall enough to scroll into.
+      const started = performance.now();
+      const restore = () => {
+        if (choice() || performance.now() - started > 2000) return;
+        const card = [...detailsScroll.querySelectorAll<HTMLElement>(".summary-diff-card")].find(element => element.dataset.path === summary.path && (selected() === "compare" || element.dataset.target === summary.target));
+        if (!card) return;
+        const rect = card.getBoundingClientRect();
+        detailsScroll.scrollTop += rect.top - detailsScroll.getBoundingClientRect().top + Math.min(summary.offset, rect.height);
+        if (rect.height < summary.offset) window.setTimeout(restore, 100);
+      };
+      window.setTimeout(restore);
+    });
   });
   function showComparison() {
     navigationArea = "commits"; request++; resetFileInfo();
@@ -1080,7 +1214,7 @@ function App() {
       if (id === request) setDetails(result);
     } catch (cause) { if (id === request) setError(String(cause)); }
   }
-  async function selectFile(item: Choice) {
+  async function selectFile(item: Choice, restoreScroll?: number) {
     const path = activePath();
     if (!path) return;
     navigationArea = "files";
@@ -1089,14 +1223,15 @@ function App() {
     if (keepEditing) setFileView("edit");
     setChoice(item); setDiff(null); setKeyboardFileKey(summaryKey(item));
     const id = ++request;
+    const reveal = () => restoreScroll === undefined ? requestAnimationFrame(revealDiff) : window.setTimeout(() => { detailsScroll.scrollTop = restoreScroll; });
     if (demoMode) {
       setDiff(demoDiff(item));
-      requestAnimationFrame(revealDiff);
+      reveal();
       return;
     }
     try {
       const result = await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: ignoreWhitespace(), fullContext: fullFile() });
-      if (id === request) { setDiff(result); requestAnimationFrame(revealDiff); }
+      if (id === request) { setDiff(result); reveal(); }
     } catch (cause) { if (id === request) setError(String(cause)); }
   }
   async function editFile(item: Choice) {
@@ -1173,6 +1308,54 @@ function App() {
   }
   function revealDiff() {
     detailsScroll?.querySelector<HTMLElement>(".diff-heading")?.scrollIntoView({ block: "start", behavior: "auto" });
+    // A full file can start far above its first change; bring that change into view with a few lines of context above it.
+    const change = fullFile() ? detailsScroll?.querySelector<HTMLElement>(".diff-content .diff-line.added, .diff-content .diff-line.deleted") : null;
+    if (!change) return;
+    const view = detailsScroll.getBoundingClientRect();
+    const line = change.getBoundingClientRect();
+    if (line.bottom > view.bottom) detailsScroll.scrollTop += line.top - view.top - 3 * line.height;
+  }
+  // Predict the status change of simple file actions so the file moves immediately; the next status refresh replaces the guess.
+  function applyOptimisticAction(path: string, operation: Operation) {
+    const paths = "value" in operation && operation.value && typeof operation.value === "object"
+      ? "paths" in operation.value ? operation.value.paths : "path" in operation.value && ["stage_file", "unstage_file", "discard_file"].includes(operation.kind) ? [operation.value.path as string] : null
+      : null;
+    if (!paths) return;
+    const targets = new Set(paths);
+    const kind = operation.kind.replace(/s$/, "");
+    const current = tabs().find(item => item.path === path);
+    if (!current) return;
+    for (const entry of current.status) {
+      if (!targets.has(entry.path) || ignoreWhitespace()) continue;
+      const revision = `${entry.indexRevision ?? ""}:${entry.worktreeRevision ?? ""}`;
+      // Hand the loaded diff to the card the file is moving to, when the change moves whole.
+      if (kind === "stage_file" && entry.index === " " && entry.worktree !== "?") {
+        const diff = cachedDiff(`false:${path}:working:${entry.path}:${revision}`);
+        if (diff) movedDiffs.set(`${path}\u0000staged\u0000${entry.path}`, diff);
+      }
+      if (kind === "unstage_file" && entry.worktree === " " && entry.index !== "A") {
+        const diff = cachedDiff(`false:${path}:staged:${entry.path}:${entry.indexRevision ?? ""}`);
+        if (diff) movedDiffs.set(`${path}\u0000working\u0000${entry.path}`, diff);
+      }
+    }
+    const next = current.status.flatMap(entry => {
+      if (!targets.has(entry.path) || entry.index === "U" || entry.worktree === "U") return [entry];
+      const pending = `pending:${entry.worktreeRevision ?? ""}`;
+      if (kind === "stage_file") {
+        if (entry.index === "?" && entry.worktree === "?") return [{ ...entry, index: "A", worktree: " ", indexRevision: pending }];
+        if (entry.worktree === " ") return [entry];
+        return [{ ...entry, index: entry.index === " " ? entry.worktree : entry.index === "A" ? "A" : "M", worktree: " ", indexRevision: pending }];
+      }
+      if (kind === "unstage_file") {
+        if (entry.index === "A") return [{ ...entry, index: "?", worktree: "?", indexRevision: "" }];
+        if (entry.index === " " || entry.index === "?") return [entry];
+        return [{ ...entry, worktree: entry.worktree === " " ? entry.index : "M", index: " ", indexRevision: "" }];
+      }
+      if (kind === "discard_file") return entry.index === " " ? [] : [{ ...entry, worktree: " " }];
+      if (kind === "delete_untracked") return entry.index === "?" && entry.worktree === "?" ? [] : [entry];
+      return [entry];
+    });
+    setTabs(items => items.map(item => item.path === path ? { ...item, status: next } : item));
   }
   async function runAction(operation: Operation, confirmation?: string) {
     const path = activePath();
@@ -1188,6 +1371,8 @@ function App() {
       return;
     }
     const scopedAction = ["stage_lines", "unstage_lines", "discard_lines", "stage_hunk", "discard_hunk"].includes(operation.kind);
+    const fileAction = scopedAction || ["stage_all", "stage_file", "unstage_file", "discard_file", "stage_files", "unstage_files", "discard_files", "delete_untracked"].includes(operation.kind);
+    applyOptimisticAction(path, operation);
     const previousFile = scopedAction ? choice() : null;
     const token = ["fetch", "pull", "pull_merge", "pull_rebase", "push", "force_push_with_lease", "push_branch", "delete_remote_branch", "push_tag", "delete_remote_tag"].includes(operation.kind) ? crypto.randomUUID() : null;
     setActionBusy(true); setError(""); setNotice(""); setProgress(""); setCancelToken(token); setCancelRequested(false);
@@ -1197,7 +1382,7 @@ function App() {
       if (["merge", "rebase", "interactive_rebase", "pull", "pull_merge", "pull_rebase", "cherry_pick", "revert", "reset", "detach", "continue_operation", "abort_operation"].includes(operation.kind)) selectWorking();
       if (!previousFile) setChoice(null);
       setDiff(null); setBranchMenu(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false);
-      await refresh();
+      if (fileAction) await refreshState(); else await refresh();
       if (previousFile) {
         const nextFile = workingFiles().find(item => item.path === previousFile.path && item.target === previousFile.target)
           ?? workingFiles().find(item => item.path === previousFile.path);
@@ -1208,7 +1393,7 @@ function App() {
     } catch (cause) {
       setBranchMenu(false); setRefMenu(null); setPullMenu(false); setPushMenu(false); setStashMenu(false);
       if (["merge", "rebase", "interactive_rebase", "pull_merge", "pull_rebase", "cherry_pick", "revert", "continue_operation"].includes(operation.kind)) selectWorking();
-      await refresh();
+      if (fileAction) await refreshState(); else await refresh();
       setError(repo()?.operation && conflicts().length ? "Conflict detected. Resolve the files below, then Continue or Abort." : String(cause));
     }
     finally { setActionBusy(false); setProgress(""); setCancelToken(null); setCancelRequested(false); }
@@ -1586,7 +1771,7 @@ function App() {
     } catch { /* Ignore invalid old settings. */ }
     for (const item of restored.tabs) void restoreRepo(item.path);
     const interval = window.setInterval(() => { if (watchFallback() && document.hasFocus()) void refreshState(); }, 8000);
-    const focus = () => void refresh();
+    const focus = () => void refreshState();
     const keys = (event: KeyboardEvent) => {
       if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); setActionDialog(null); closeFileFinder(); setRebasePlan(null); setBranchMenu(false); setTabListOpen(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false); return; }
       const target = event.target instanceof Element ? event.target : null;
@@ -1654,8 +1839,7 @@ function App() {
     </div>
     <Show when={error()}><div class="error-bar">{error()}<button onClick={() => setError("")}><Icon name="close" /></button></div></Show>
     <Show when={actionBusy() && (progress() || cancelToken())}><div class="progress-bar" role="status"><span>{progress() || "Starting Git operation…"}</span><Show when={cancelToken()}><button disabled={cancelRequested()} onClick={() => void cancelAction()}>{cancelRequested() ? "Cancelling…" : "Cancel"}</button></Show></div></Show>
-    <Show when={notice()}><div class="notice-bar">{notice()}<button onClick={() => setNotice("")}><Icon name="close" /></button></div></Show>
-    <Show when={refMenu()}>{menu => <div class="ref-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label={`Actions for ${menu().ref.name}`}><div class="ref-action-title" title={menu().ref.name}>{menu().ref.name}</div>
+        <Show when={refMenu()}>{menu => <div class="ref-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label={`Actions for ${menu().ref.name}`}><div class="ref-action-title" title={menu().ref.name}>{menu().ref.name}</div>
       <Show when={(menu().ref.kind === "branch" || menu().ref.kind === "remote") && baseBranch() && baseBranch()!.name !== menu().ref.name && !menu().ref.name.endsWith("/HEAD")}><button onClick={() => { const ref = menu().ref; setRefMenu(null); void compareWithBase(ref); }}>Compare with {baseBranch()!.name}</button></Show>
       <Show when={menu().ref.kind === "branch"}><button disabled={actionBusy()} onClick={() => renameBranch(menu().ref.name)}>Rename branch…</button><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push to remote…</button><Show when={!menu().ref.isHead}><button disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_branch", value: { branch } }, `Delete merged branch ${branch}?`); }}>Delete branch</button><button class="danger" disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "force_delete_branch", value: { branch } }, `Force delete branch ${branch}? Unmerged commits may become unreachable.`); }}>Force delete branch</button></Show></Show>
       <Show when={menu().ref.kind === "remote" && !menu().ref.name.endsWith("/HEAD")}><button class="danger" disabled={actionBusy()} onClick={() => { const target = remoteBranch(menu().ref); setRefMenu(null); if (target) void runAction({ kind: "delete_remote_branch", value: target }, `Delete branch ${target.branch} from ${target.remote}?`); }}>Delete remote branch</button></Show>
@@ -1699,7 +1883,7 @@ function App() {
           </div>
         </section><div class="splitter commits-splitter" onPointerDown={event => startResize(bottomLayout() ? "history" : "commits", event)} />
         <section class="details-pane" onPointerDown={() => { navigationArea = "files"; }}><div class="details-tabs"><button class={`details-tab ${!choice() ? "active" : ""}`} onClick={() => { if (choice()) setParkedFile(choice()); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><Show when={choice() ?? parkedFile()}>{file => <div class={`details-tab file-tab ${choice() ? "active" : ""}`} title={file().path}><button class="details-tab-label" onClick={() => { if (!choice()) void selectFile(file()); }}>{file().path.split("/").pop()?.split("\\").pop()}</button><button class="details-tab-close" title="Close file" aria-label={`Close ${file().path}`} onClick={closeFileTab}><Icon name="close" /></button></div>}</Show></div>
-          <div class="details-scroll" ref={detailsScroll} tabIndex={0} aria-label="Changed files">
+          <div class="details-scroll" ref={detailsScroll} tabIndex={0} aria-label="Changed files" onScroll={scheduleDetailsSave}>
             <Show when={selected() === "compare" && !choice() && comparison()}>{current => <div class="detail-header"><dl class="commit-facts">
                 <dt>Comparing</dt><dd>{current().head} <span class="compare-vs">since it left</span> {current().base}</dd>
                 <dt>Head</dt><dd class="mono">{current().headHash}</dd>
@@ -1730,7 +1914,15 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
             </div></Show>
             <Show when={selected() === "working" && !repo()?.operation && !choice()}><div class="commit-editor"><textarea value={commitMessage()} onInput={event => setCommitMessage(event.currentTarget.value)} placeholder="Commit message" rows="2" /><div class="commit-editor-actions"><label><input type="checkbox" checked={amend()} disabled={!repo()?.head} onChange={event => setAmend(event.currentTarget.checked)} /> Amend previous commit</label><button disabled={!commitMessage().trim() || actionBusy() || (!amend() && !workingFiles().some(item => item.target === "staged"))} onClick={() => void commitChanges()}>{commitLabel()}</button></div></div></Show>
             <Show when={!choice()}><div class="files-heading multiple-actions"><Show when={files().length} fallback={<strong class="files-title">CHANGED FILES <span>0</span></strong>}><button class="files-title files-disclosure" aria-expanded={isSummaryGroupExpanded(files())} aria-label={`${isSummaryGroupExpanded(files()) ? "Close" : "Open"} all changed files`} onClick={() => setEveryDiff(!isSummaryGroupExpanded(files()))}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h8L6 8z" fill="currentColor" /></svg>CHANGED FILES <span>{files().length}</span></button></Show><div class="files-heading-spacer" /><button onClick={openFileFinder}>Browse files</button><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button><Show when={files().length}><button onClick={() => setEveryDiff(!isSummaryGroupExpanded(files()))}>{isSummaryGroupExpanded(files()) ? "Collapse all" : "Expand all"}</button></Show><Show when={selected() === "working" && files().length && !conflicts().length}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_all" })}>Stage All</button></Show></div>
-            <Show when={files().length} fallback={<div class="empty-note">No files to show</div>}><div class="files-list"><For each={fileGroups()}>{group => <><Show when={group.title}><div class="file-group-heading"><button class="group-disclosure" aria-label={`${isSummaryGroupExpanded(group.items) ? "Close" : "Open"} all ${group.title.toLowerCase()} changes`} aria-expanded={isSummaryGroupExpanded(group.items)} onClick={() => toggleSummaryGroup(group.items)}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h8L6 8z" fill="currentColor" /></svg><span class="file-group-title">{group.title} <span>{group.items.length}</span></span></button></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onEdited={() => void refreshState()} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
+            <Show when={files().length} fallback={<div class="empty-note">No files to show</div>}><div class="files-list"><For each={fileGroups()}>{group => <><Show when={group.title}><div class="file-group-heading"><button class="group-disclosure" aria-label={`${isSummaryGroupExpanded(group.items) ? "Close" : "Open"} all ${group.title.toLowerCase()} changes`} aria-expanded={isSummaryGroupExpanded(group.items)} onClick={() => toggleSummaryGroup(group.items)}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h8L6 8z" fill="currentColor" /></svg><span class="file-group-title">{group.title} <span>{group.items.length}</span></span></button><Show when={selected() === "working"}><span class="group-actions">{(() => {
+                const paths = () => group.items.map(item => item.path);
+                const discardable = () => group.items.filter(item => item.status !== "U").map(item => item.path);
+                return <>
+                  <Show when={group.title === "UNTRACKED"}><button class="row-action danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "delete_untracked", value: { paths: paths() } }, `Delete ${paths().length} untracked file${paths().length === 1 ? "" : "s"}? They are removed from disk.`)}>Delete All</button></Show>
+                  <Show when={group.title === "UNSTAGED" && discardable().length}><button class="row-action danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_files", value: { paths: discardable() } }, `Discard changes to ${discardable().length} file${discardable().length === 1 ? "" : "s"}?`)}>Discard All</button></Show>
+                  <Show when={group.title === "STAGED"} fallback={<button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_files", value: { paths: paths() } })}>Stage All</button>}><button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_files", value: { paths: paths() } })}>Unstage All</button></Show>
+                </>;
+              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onEdited={() => void refreshState()} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
             <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><Show when={fileView() === "diff"}><button class="whitespace-toggle" type="button" aria-pressed={ignoreWhitespace()} title="Hide whitespace-only changes" onClick={toggleWhitespace}>Ignore whitespace {ignoreWhitespace() ? "✓" : ""}</button></Show><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
               <Show when={fileView() === "diff"}>
                 <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.target === "working" && choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
@@ -1746,7 +1938,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
       </main>
       </Show>
     </Show>
-    <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span>{actionBusy() ? "RUNNING GIT COMMAND" : repo()?.loading || busy() || searchBusy() ? "LOADING REPOSITORY" : repo()?.loadError ? "REPOSITORY UNAVAILABLE" : "READY"} <i /> GITFERRY 0.1</span></footer>
+    <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? "RUNNING GIT COMMAND" : repo()?.loading || busy() || searchBusy() ? "LOADING REPOSITORY" : repo()?.loadError ? "REPOSITORY UNAVAILABLE" : "READY"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
     <Show when={actionDialog()}>{current => <div class="modal-backdrop" onClick={() => setActionDialog(null)}><div class="action-dialog" role="dialog" aria-modal="true" aria-label={current().title} onClick={event => event.stopPropagation()}>
       <div class="modal-title"><span>{current().title}</span><button aria-label="Close action dialog" onClick={() => setActionDialog(null)}><Icon name="close" /></button></div>
       <form onSubmit={event => { event.preventDefault(); submitActionDialog(); }}>
@@ -1775,6 +1967,10 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
       <div class="settings-body"><label>THEME<select aria-label="Color theme" value={theme()} onChange={event => setTheme(event.currentTarget.value as ThemeId)}><For each={themeOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label>
         <label class="settings-check"><input type="checkbox" checked={showTabBranch()} onChange={event => setShowTabBranch(event.currentTarget.checked)} /> Show branch name in repository tabs</label>
         <label class="settings-check" title="Files ending in .test.* / .spec.*, *_test.*, test_*, or inside test, tests, spec or __tests__ folders"><input type="checkbox" checked={keepTestsClosed()} onChange={event => setKeepTestsClosed(event.currentTarget.checked)} /> Keep test files collapsed when expanding all</label>
+        <label>INTERFACE FONT<input aria-label="Interface font" list="ui-font-options" value={uiFont()} onInput={event => setUiFont(event.currentTarget.value)} placeholder="Segoe UI" /></label>
+        <div class="settings-row"><label>CODE FONT<input aria-label="Code font" list="code-font-options" value={codeFont()} onInput={event => setCodeFont(event.currentTarget.value)} placeholder="Consolas" /></label><label>SIZE<input aria-label="Code font size" type="number" min="9" max="24" value={codeSize()} onInput={event => { const size = Number(event.currentTarget.value); if (size >= 9 && size <= 24) setCodeSize(size); }} /></label></div>
+        <datalist id="ui-font-options"><option value="Segoe UI" /><option value="Inter" /><option value="Arial" /><option value="Calibri" /><option value="Verdana" /></datalist>
+        <datalist id="code-font-options"><option value="Consolas" /><option value="Cascadia Code" /><option value="Cascadia Mono" /><option value="JetBrains Mono" /><option value="Fira Code" /><option value="Courier New" /></datalist>
         <label>EDITOR<select aria-label="External editor" value={editor()} onChange={event => setEditor(event.currentTarget.value as EditorId)}><For each={editorOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label>
         <label>COMMAND OVERRIDE<input aria-label="Editor command override" value={editorExecutable()} onInput={event => setEditorExecutable(event.currentTarget.value)} placeholder={editor() === "antigravity" ? "antigravity" : editor() === "vscode" ? "code" : "subl"} /></label>
         <p>Leave the command blank to use the editor CLI from PATH. Enter a full executable path if needed. Open in editor jumps to the first changed line. For SSH repositories, Antigravity and VS Code require Remote SSH access to the same host.</p>

@@ -16,6 +16,9 @@ pub struct RepoSnapshot {
     pub operation: Option<String>,
     #[serde(default)]
     pub rebase_edit_pause: bool,
+    /// Fingerprint of branch, remote and tag targets; changes when any ref moves.
+    #[serde(default)]
+    pub refs_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +30,8 @@ pub struct RepoState {
     pub operation: Option<String>,
     #[serde(default)]
     pub rebase_edit_pause: bool,
+    #[serde(default)]
+    pub refs_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,6 +230,19 @@ pub enum RepoAction {
     },
     DiscardFile {
         path: String,
+    },
+    StageFiles {
+        paths: Vec<String>,
+    },
+    UnstageFiles {
+        paths: Vec<String>,
+    },
+    DiscardFiles {
+        paths: Vec<String>,
+    },
+    /// Deletes files only if Git reports them as untracked.
+    DeleteUntracked {
+        paths: Vec<String>,
     },
     Commit {
         message: String,

@@ -299,6 +299,16 @@ fn git_with_progress(
 }
 
 fn repo_root(path: &str) -> Result<PathBuf, String> {
+    // Every request resolves its repository; remembering the answer saves a git process per request.
+    static ROOTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, PathBuf>>,
+    > = std::sync::OnceLock::new();
+    let roots = ROOTS.get_or_init(Default::default);
+    if let Some(root) = roots.lock().ok().and_then(|roots| roots.get(path).cloned()) {
+        if root.is_dir() {
+            return Ok(root);
+        }
+    }
     let candidate = Path::new(path)
         .canonicalize()
         .map_err(|error| format!("Cannot open repository path: {error}"))?;
@@ -307,9 +317,57 @@ fn repo_root(path: &str) -> Result<PathBuf, String> {
     if root.is_empty() {
         return Err("This path is not a Git working tree".to_string());
     }
-    PathBuf::from(root)
+    let root = PathBuf::from(root)
         .canonicalize()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    if let Ok(mut roots) = roots.lock() {
+        roots.insert(path.to_string(), root.clone());
+    }
+    Ok(root)
+}
+
+fn git_dir(repo: &Path) -> Option<PathBuf> {
+    git(repo, &["rev-parse", "--absolute-git-dir"])
+        .ok()
+        .map(|output| PathBuf::from(text(&output.stdout).trim()))
+}
+
+/// In-progress operation and rebase Edit pause, from one git-dir lookup.
+fn operation_state(repo: &Path) -> (Option<String>, bool) {
+    let Some(dir) = git_dir(repo) else {
+        return (None, false);
+    };
+    let operation = if dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists() {
+        Some("rebase".to_string())
+    } else if dir.join("MERGE_HEAD").exists() {
+        Some("merge".to_string())
+    } else if dir.join("CHERRY_PICK_HEAD").exists() {
+        Some("cherry_pick".to_string())
+    } else if dir.join("REVERT_HEAD").exists() {
+        Some("revert".to_string())
+    } else {
+        None
+    };
+    let pause =
+        operation.as_deref() == Some("rebase") && dir.join("rebase-merge").join("amend").is_file();
+    (operation, pause)
+}
+
+/// Cheap fingerprint of every branch, remote and tag target, so callers can tell when refs moved.
+fn refs_hash(repo: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(output) = git(repo, &["for-each-ref", "--format=%(refname) %(objectname)"]) {
+        output.stdout.hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+/// Runs a closure on its own thread inside `scope`, turning a panic into an error.
+fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> Result<T, String> {
+    handle
+        .join()
+        .map_err(|_| "Git worker thread failed".to_string())
 }
 
 pub fn watch(path: &str, timeout_ms: u64) -> Result<bool, String> {
@@ -564,7 +622,12 @@ fn refs(repo: &Path, current_branch: &str) -> Result<Vec<RefEntry>, String> {
             });
         }
     }
-    if let Ok(output) = git(repo, &["submodule", "status", "--recursive"]) {
+    // `git submodule status` starts several processes of its own; skip it when there are no submodules.
+    let has_submodules = repo.join(".gitmodules").is_file();
+    if let Some(output) = has_submodules
+        .then(|| git(repo, &["submodule", "status", "--recursive"]).ok())
+        .flatten()
+    {
         for line in output.stdout.split(|byte| *byte == b'\n') {
             if line.len() < 42 {
                 continue;
@@ -708,15 +771,38 @@ fn log(
 
 pub fn snapshot(path: &str, offset: usize, limit: usize) -> Result<RepoSnapshot, String> {
     let root = repo_root(path)?;
-    let current_branch = branch(&root);
-    let remotes = remote_names(&root)?;
-    let (commits, has_more) = if head(&root).is_some() {
-        log(&root, offset, limit, None)?
-    } else {
-        (Vec::new(), false)
-    };
-    let operation = operation(&root);
-    let rebase_edit_pause = operation.as_deref() == Some("rebase") && rebase_edit_pause(&root);
+    // The parts are independent git reads; running them side by side hides most process start-up time.
+    let (branch_and_refs, head_and_log, status, remotes, operation, refs_hash) =
+        std::thread::scope(|scope| {
+            let branch_and_refs = scope.spawn(|| {
+                let current = branch(&root);
+                refs(&root, &current).map(|refs| (current, refs))
+            });
+            let head_and_log = scope.spawn(|| {
+                let head = head(&root);
+                let log = if head.is_some() {
+                    log(&root, offset, limit, None)
+                } else {
+                    Ok((Vec::new(), false))
+                };
+                log.map(|log| (head, log))
+            });
+            let status = scope.spawn(|| status(&root));
+            let remotes = scope.spawn(|| remote_names(&root));
+            let operation = scope.spawn(|| operation_state(&root));
+            let refs_hash = scope.spawn(|| refs_hash(&root));
+            Ok::<_, String>((
+                joined(branch_and_refs)??,
+                joined(head_and_log)??,
+                joined(status)??,
+                joined(remotes)??,
+                joined(operation)?,
+                joined(refs_hash)?,
+            ))
+        })?;
+    let (current_branch, refs) = branch_and_refs;
+    let (head, (commits, has_more)) = head_and_log;
+    let (operation, rebase_edit_pause) = operation;
     Ok(RepoSnapshot {
         name: root
             .file_name()
@@ -724,28 +810,43 @@ pub fn snapshot(path: &str, offset: usize, limit: usize) -> Result<RepoSnapshot,
             .to_string_lossy()
             .into_owned(),
         path: display_path(&root),
-        branch: current_branch.clone(),
-        head: head(&root),
-        status: status(&root)?,
-        refs: refs(&root, &current_branch)?,
+        branch: current_branch,
+        head,
+        status,
+        refs,
         remotes,
         commits,
         has_more,
         operation,
         rebase_edit_pause,
+        refs_hash,
     })
 }
 
 pub fn state(path: &str) -> Result<RepoState, String> {
     let root = repo_root(path)?;
-    let operation = operation(&root);
-    let rebase_edit_pause = operation.as_deref() == Some("rebase") && rebase_edit_pause(&root);
+    let (branch, head, status, operation, refs_hash) = std::thread::scope(|scope| {
+        let branch = scope.spawn(|| branch(&root));
+        let head = scope.spawn(|| head(&root));
+        let status = scope.spawn(|| status(&root));
+        let operation = scope.spawn(|| operation_state(&root));
+        let refs_hash = scope.spawn(|| refs_hash(&root));
+        Ok::<_, String>((
+            joined(branch)?,
+            joined(head)?,
+            joined(status)??,
+            joined(operation)?,
+            joined(refs_hash)?,
+        ))
+    })?;
+    let (operation, rebase_edit_pause) = operation;
     Ok(RepoState {
-        branch: branch(&root),
-        head: head(&root),
-        status: status(&root)?,
+        branch,
+        head,
+        status,
         operation,
         rebase_edit_pause,
+        refs_hash,
     })
 }
 
@@ -1571,6 +1672,18 @@ pub fn action_with_progress(
             let path = literal_path(&path)?;
             git(&root, &["restore", "--worktree", "--", &path])?
         }
+        RepoAction::StageFiles { paths } => git_for_paths(&root, &["add"], &paths)?,
+        RepoAction::UnstageFiles { paths } => {
+            if head(&root).is_some() {
+                git_for_paths(&root, &["restore", "--staged"], &paths)?
+            } else {
+                git_for_paths(&root, &["rm", "--cached", "--quiet"], &paths)?
+            }
+        }
+        RepoAction::DiscardFiles { paths } => {
+            git_for_paths(&root, &["restore", "--worktree"], &paths)?
+        }
+        RepoAction::DeleteUntracked { paths } => delete_untracked(&root, &paths)?,
         RepoAction::Commit { message, amend } => {
             if message.trim().is_empty() {
                 return Err("Commit message cannot be empty".to_string());
@@ -2159,6 +2272,71 @@ fn git_with_input(repo: &Path, args: &[&str], input: &[u8]) -> Result<Output, St
     } else {
         Err(text(&output.stderr).trim().to_string())
     }
+}
+
+/// Runs `git <args> -- <paths>` in chunks so long file lists stay under Windows' command-line limit.
+fn git_for_paths(root: &Path, args: &[&str], paths: &[String]) -> Result<Output, String> {
+    if paths.is_empty() {
+        return Err("No files selected".to_string());
+    }
+    let literals = paths
+        .iter()
+        .map(|path| literal_path(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut last = None;
+    for chunk in literals.chunks(100) {
+        let mut command: Vec<&str> = args.to_vec();
+        command.push("--");
+        command.extend(chunk.iter().map(String::as_str));
+        last = Some(git(root, &command)?);
+    }
+    last.ok_or_else(|| "No files selected".to_string())
+}
+
+/// Deletes the given files after Git confirms every one of them is untracked and inside the repository.
+fn delete_untracked(root: &Path, paths: &[String]) -> Result<Output, String> {
+    if paths.is_empty() {
+        return Err("No files selected".to_string());
+    }
+    let mut untracked: HashSet<String> = HashSet::new();
+    for chunk in paths.chunks(100) {
+        let output = git_for_paths(
+            root,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+            chunk,
+        )?;
+        untracked.extend(
+            output
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+                .map(text),
+        );
+    }
+    for path in paths {
+        if !untracked.contains(path) {
+            return Err(format!("{path} is not an untracked file"));
+        }
+        let file = root.join(path);
+        let parent = file
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .ok_or("File is outside the repository")?;
+        if !parent.starts_with(root) {
+            return Err("File is outside the repository".to_string());
+        }
+        std::fs::remove_file(&file).map_err(|error| format!("Could not delete {path}: {error}"))?;
+    }
+    Ok(Output {
+        status: std::process::ExitStatus::default(),
+        stdout: format!(
+            "Deleted {} untracked file{}",
+            paths.len(),
+            if paths.len() == 1 { "" } else { "s" }
+        )
+        .into_bytes(),
+        stderr: Vec::new(),
+    })
 }
 
 fn literal_path(path: &str) -> Result<String, String> {

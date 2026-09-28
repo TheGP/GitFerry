@@ -1112,6 +1112,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-window-state",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

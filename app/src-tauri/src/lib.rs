@@ -37,6 +37,48 @@ fn agent_resources(app: &tauri::AppHandle) -> std::path::PathBuf {
     }
 }
 
+/// Colors the native Windows 11 title bar to match the app theme; other platforms keep their own.
+#[tauri::command]
+fn set_titlebar_color(
+    window: tauri::WebviewWindow,
+    background: String,
+    text: String,
+) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+        };
+        // COLORREF is 0x00BBGGRR.
+        let colorref = |hex: &str| -> Result<u32, String> {
+            let hex = hex.trim_start_matches('#');
+            let value = u32::from_str_radix(hex, 16)
+                .ok()
+                .filter(|_| hex.len() == 6)
+                .ok_or("Expected a #rrggbb color")?;
+            Ok(((value & 0xff) << 16) | (value & 0xff00) | ((value >> 16) & 0xff))
+        };
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
+        for (attribute, color) in [
+            (DWMWA_CAPTION_COLOR, colorref(&background)?),
+            (DWMWA_TEXT_COLOR, colorref(&text)?),
+        ] {
+            // Older Windows versions ignore these attributes; that is fine.
+            unsafe {
+                DwmSetWindowAttribute(
+                    hwnd,
+                    attribute as u32,
+                    &color as *const u32 as *const _,
+                    std::mem::size_of::<u32>() as u32,
+                );
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (window, background, text);
+    Ok(())
+}
+
 /// UI settings mirrored from WebView localStorage, which has come back empty after Windows restarts.
 fn settings_file(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
@@ -575,6 +617,7 @@ pub fn run() {
             repo_commit,
             repo_compare,
             load_settings,
+            set_titlebar_color,
             save_settings,
             repo_file_history,
             repo_blame,

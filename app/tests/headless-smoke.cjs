@@ -326,8 +326,8 @@ async function main() {
   assert.deepEqual(await groupExpanded("UNTRACKED"), ["true", "true"]);
   assert.equal(await page.$eval(".summary-diff-card", () => {
     const card = [...document.querySelectorAll(".summary-diff-card")].find(item => item.querySelector(".file-path")?.textContent === "new.txt");
-    return card.querySelector(".file-actions button").textContent;
-  }), "Stage file", "untracked files must not be labeled as conflicts");
+    return card.querySelector(".row-action.stage").textContent;
+  }), "Stage", "untracked files must not be labeled as conflicts");
   const groupControl = await page.evaluate(() => {
     const heading = [...document.querySelectorAll(".file-group-heading")].find(item => item.textContent.trim().startsWith("UNTRACKED"));
     const button = heading.querySelector(".group-disclosure");
@@ -382,13 +382,13 @@ async function main() {
   assert.equal(git(small, "diff", "--cached", "--", "base.txt"), "");
   await waitForAction(page);
   if (await page.$eval(".file-row", row => row.getAttribute("aria-expanded") === "false")) await page.click(".file-row");
-  await page.waitForSelector(".file-actions button");
-  await page.click(".file-actions button");
+  await page.waitForSelector(".row-action.stage");
+  await page.click(".row-action.stage");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("STAGED ")));
   await waitForAction(page);
   if (await page.$eval(".file-row", row => row.getAttribute("aria-expanded") === "false")) await page.click(".file-row");
-  await page.waitForSelector(".file-actions button");
-  await page.click(".file-actions button");
+  await page.waitForSelector(".row-action.stage");
+  await page.click(".row-action.stage");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-group-heading")].some(item => item.textContent.trim().startsWith("UNSTAGED ")));
   await waitForAction(page);
   await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "base.txt")?.querySelector(".summary-open-tab")?.click());
@@ -574,8 +574,8 @@ async function main() {
   fs.writeFileSync(path.join(small, "base.txt"), "temporary unwanted change\n");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-row")].some(row => row.textContent.includes("base.txt")), { timeout: 10000 });
   await page.evaluate(() => { const row = [...document.querySelectorAll(".file-row")].find(item => item.textContent.includes("base.txt")); if (row?.getAttribute("aria-expanded") === "false") row.click(); });
-  await page.waitForSelector(".file-actions .danger");
-  await page.click(".file-actions .danger");
+  await page.waitForSelector(".row-action.danger");
+  await page.click(".row-action.danger");
   await submitActionDialog(page);
   await waitUntil(() => git(small, "status", "--porcelain") === "", "discard file").catch(async error => {
     throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}; status=${git(small, "status", "--short")}`);
