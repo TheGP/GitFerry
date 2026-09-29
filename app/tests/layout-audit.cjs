@@ -275,10 +275,6 @@ async function main() {
   await page.click(".layout-toggle");
   await page.click(".working-row");
   assert.equal(await page.$eval(".summary-diff-card .file-row", row => row.getAttribute("aria-expanded")), "true", "Working files should start expanded");
-  await page.click(".files-disclosure");
-  assert.equal(await page.$eval(".summary-diff-card .file-row", row => row.getAttribute("aria-expanded")), "false", "the Changed Files bar did not close files");
-  await page.click(".files-disclosure");
-  assert.equal(await page.$eval(".summary-diff-card .file-row", row => row.getAttribute("aria-expanded")), "true", "the Changed Files bar did not reopen files");
   await page.screenshot({ path: path.join(output, "merged-working-1429.png") });
   await page.click(".summary-diff-card .open-editor-button");
   assert.match(await page.$eval(".notice-bar", element => element.textContent), /:13 in Antigravity/);

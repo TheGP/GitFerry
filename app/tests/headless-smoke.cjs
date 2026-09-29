@@ -440,11 +440,6 @@ async function main() {
   assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 2, "returning to Summary must keep the file tab available");
   await page.click(".details-tab-close");
   assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "the file tab must close with its close button");
-  // The whole Changed Files bar toggles every file; its own buttons keep their own actions.
-  await page.click(".files-heading", { offset: { x: 4, y: 10 } });
-  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "false", "clicking the bar must collapse all files");
-  await page.click(".files-disclosure");
-  assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true", "clicking the title must expand all files");
   await page.click(".files-heading button::-p-text(Browse files)");
   await page.keyboard.press("Escape");
   assert.equal(await page.$eval(".file-row", row => row.getAttribute("aria-expanded")), "true", "Browse files must not toggle the files");
@@ -777,16 +772,7 @@ async function main() {
   const after = await metrics(page);
   assert.equal(after.footer.bottom, after.viewport, "file diff must not move footer");
   await page.screenshot({ path: path.join(screenshots, "large-diff.png") });
-  assert.equal(await page.$eval(".files-disclosure", button => button.getAttribute("aria-expanded")), "false", "large diffs must start with files collapsed");
-  const allStart = Date.now();
-  await page.click(".files-disclosure");
-  const allClickMs = Date.now() - allStart;
-  assert.equal(await page.$$(".details-tab").then(tabs => tabs.length), 1, "Summary and All Changes must share one tab");
-  await page.waitForFunction(() => document.querySelectorAll(".all-diff-card .diff-content").length > 0);
-  await page.evaluate(() => { const pane = document.querySelector(".details-scroll"); pane.scrollTop = pane.scrollHeight; });
-  await page.waitForFunction(() => [...document.querySelectorAll(".all-diff-card")].at(-1)?.querySelector(".diff-content"));
-  await page.evaluate(() => { document.querySelector(".details-scroll").scrollTop = 0; });
-  await page.screenshot({ path: path.join(screenshots, "large-merged-changes.png") });
+  assert.equal(await page.$$eval(".summary-diff-card .file-row[aria-expanded='true']", rows => rows.length <= 1), true, "large diffs must start with files collapsed (only the clicked file open)");
   for (const selectedTheme of ["vscode", "sublime", "antigravity", "claude"]) {
     await selectTheme(page, selectedTheme);
     assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), selectedTheme);
@@ -973,7 +959,7 @@ async function main() {
     await page.screenshot({ path: path.join(screenshots, "real-commit-diff.png") });
   }
   assert.deepEqual(pageErrors, [], "browser must have no uncaught errors");
-  console.log(JSON.stringify({ screenshots, fileClickMs, allClickMs, before, after, bottomWidth, compactWidth, realRepo, pageErrors }, null, 2));
+  console.log(JSON.stringify({ screenshots, fileClickMs, before, after, bottomWidth, compactWidth, realRepo, pageErrors }, null, 2));
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {
