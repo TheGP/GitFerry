@@ -925,7 +925,8 @@ function App() {
         try {
           const changed = await invoke<boolean>("repo_watch", { path, timeoutMs: 60_000 });
           if (stopped) return;
-          if (changed && document.hasFocus()) await refreshState();
+          // Refresh while visible even without focus, so edits made from another app show up; a hidden window catches up when shown.
+          if (changed && document.visibilityState === "visible") await refreshState();
         } catch {
           if (!stopped) setWatchFallback(true);
           return;
@@ -1855,8 +1856,9 @@ function App() {
       if (Array.isArray(saved)) setRecent(saved.filter((item): item is string => typeof item === "string"));
     } catch { /* Ignore invalid old settings. */ }
     for (const item of restored.tabs) void restoreRepo(item.path);
-    const interval = window.setInterval(() => { if (watchFallback() && document.hasFocus()) void refreshState(); }, 8000);
+    const interval = window.setInterval(() => { if (watchFallback() && document.visibilityState === "visible") void refreshState(); }, 8000);
     const focus = () => void refreshState();
+    const visibility = () => { if (document.visibilityState === "visible") void refreshState(); };
     const keys = (event: KeyboardEvent) => {
       if (event.key === "Escape" && sshPrompt()) { answerSshPrompt(null); return; }
       if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); setActionDialog(null); closeFileFinder(); setRebasePlan(null); setBranchMenu(false); setTabListOpen(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false); return; }
@@ -1889,10 +1891,10 @@ function App() {
       event.preventDefault();
       if (area === "files") moveFile(direction); else void moveCommit(direction);
     };
-    window.addEventListener("focus", focus); window.addEventListener("keydown", keys);
+    window.addEventListener("focus", focus); window.addEventListener("keydown", keys); document.addEventListener("visibilitychange", visibility);
     const resize = () => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); requestAnimationFrame(updateTabScroll); };
     window.addEventListener("resize", resize);
-    onCleanup(() => { unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); window.removeEventListener("resize", resize); });
+    onCleanup(() => { unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize", resize); });
   });
 
   return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); } if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); } }}>
