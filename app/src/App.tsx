@@ -321,9 +321,22 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     return marks;
   });
   // Untracked files arrive as raw content rather than a diff, so their rows map 1:1 to file lines.
+  // A conflicted file's diff is a combined diff ("@@@" hunks, two prefix columns), which parseDiffLines leaves unnumbered;
+  // number its lines in the working file here. Lines without a number (removed ones, headers) open at the first conflict.
+  const conflictLines = createMemo(() => {
+    if (props.item.status !== "U") return [];
+    let next = 0;
+    return lines().map(row => {
+      const header = /^@@@ -\d+(?:,\d+)? -\d+(?:,\d+)? \+(\d+)/.exec(row.line);
+      if (header) { next = Number(header[1]); return null; }
+      if (!next || row.line.startsWith("\\") || row.line.slice(0, 2).includes("-")) return null;
+      return next++;
+    });
+  });
   function editorLine(index: number): number | null {
     const row = rows[index];
     if (!row || !editorOpenable()) return null;
+    if (props.item.status === "U") return conflictLines()[index] ?? 0;
     if (props.item.target === "untracked" && !hunkCount()) return index + 1;
     if (row.hunkIndex < 0) return null;
     if (row.newNumber !== null) return row.newNumber;
@@ -2137,7 +2150,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
               <span>{conflicts().length ? `${conflicts().length} conflicted file${conflicts().length === 1 ? "" : "s"}. Edit or choose a side, then stage each file.` : repo()?.rebaseEditPause ? "Edit pause: stage and amend the commit, then continue." : "Continue or abort the operation."}</span>
               <div class="operation-buttons"><button disabled={actionBusy() || !!conflicts().length} onClick={() => void runAction({ kind: "continue_operation" })}>Continue</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "abort_operation" }, `Abort the ${repo()?.operation?.replace("_", "-")}?`)}>Abort</button></div>
               <Show when={repo()?.rebaseEditPause && !conflicts().length}><div class="rebase-amend"><label>Amend at an Edit pause<textarea aria-label="Amended commit message" placeholder="New message (optional)" value={rebaseAmendMessage()} onInput={event => setRebaseAmendMessage(event.currentTarget.value)} /></label><div class="operation-buttons"><button disabled={actionBusy() || !workingFiles().some(item => item.target === "staged")} onClick={() => void runAction({ kind: "amend_no_edit" })}>Amend staged changes</button><button disabled={actionBusy() || !rebaseAmendMessage().trim()} onClick={() => void runAction({ kind: "commit", value: { message: rebaseAmendMessage(), amend: true } })}>Amend with message</button></div></div></Show>
-              <For each={conflicts()}>{item => <div class="conflict-row"><span title={item.path}>{item.path}</span><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "ours" } }, `Use Git's ours version of ${item.path} and mark it resolved?`)}>Use ours</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "theirs" } }, `Use Git's theirs version of ${item.path} and mark it resolved?`)}>Use theirs</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: item.path } })}>Mark resolved</button></div>}</For>
+              <For each={conflicts()}>{item => <div class="conflict-row"><button class="conflict-file" title={`Resolve ${item.path} in the editor`} onClick={() => openSideEditor({ path: item.path, status: "U", target: "working" }, 0, null)}>{item.path}</button><button disabled={actionBusy()} onClick={() => openSideEditor({ path: item.path, status: "U", target: "working" }, 0, null)}>Resolve in editor</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "ours" } }, `Use Git's ours version of ${item.path} and mark it resolved?`)}>Use ours</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "resolve_file", value: { path: item.path, side: "theirs" } }, `Use Git's theirs version of ${item.path} and mark it resolved?`)}>Use theirs</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: item.path } })}>Mark resolved</button></div>}</For>
             </div></Show>
             <Show when={selected() === "working" && !repo()?.operation && !choice()}><div class="commit-editor"><textarea value={commitMessage()} onInput={event => setCommitMessage(event.currentTarget.value)} placeholder="Commit message" rows="2" /><div class="commit-editor-actions"><label><input type="checkbox" checked={amend()} disabled={!repo()?.head} onChange={event => setAmend(event.currentTarget.checked)} /> Amend previous commit</label><button disabled={!commitMessage().trim() || actionBusy() || (!amend() && !workingFiles().some(item => item.target === "staged"))} onClick={() => void commitChanges()}>{commitLabel()}</button></div></div></Show>
             <Show when={!choice()}><div class="files-heading"><div class="files-heading-spacer" /><button onClick={openFileFinder}>Browse files</button><Show when={selected() === "working" && files().length && !conflicts().length}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_all" })}>Stage All</button></Show></div><Show when={ignoreWhitespace() && files().length}><div class="diff-filter-note">{whitespaceNote()}</div></Show>
@@ -2162,7 +2175,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
             </Show>
           </div>
         </section>
-        <Show when={sideEditor()}>{target => <FileEditor target={target()} active={target().repo === activePath()} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onResize={event => startResize("editor", event)} />}</Show>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} active={target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onResize={event => startResize("editor", event)} />}</Show>
       </main>
       </Show>
     </Show>

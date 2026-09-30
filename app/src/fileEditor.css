@@ -28,11 +28,11 @@
 .editor-scroll { flex: 1; min-height: 0; overflow: auto; }
 /* The highlighted rows and the transparent textarea on top share font, width, padding and wrapping, so the caret lands on the colored text. */
 .editor-body { position: relative; padding: 6px 0 35vh; font-family: var(--code-font); font-size: var(--code-size); line-height: 1.5; }
-.editor-row { min-height: 1.5em; display: grid; grid-template-columns: var(--editor-gutter) minmax(0, 1fr); }
+.editor-row { position: relative; min-height: 1.5em; display: grid; grid-template-columns: var(--editor-gutter) minmax(0, 1fr); }
 .editor-line-number { padding-right: 1.5ch; color: var(--theme-muted); text-align: right; user-select: none; }
 .editor-code, .editor-input { padding: 0 16px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; tab-size: 4; }
 .editor-code { min-width: 0; color: var(--theme-text); }
-.editor-input { position: absolute; top: 6px; bottom: 0; left: var(--editor-gutter); width: calc(100% - var(--editor-gutter)); box-sizing: border-box; margin: 0; border: 0; outline: 0; resize: none; overflow: hidden; background: transparent; color: transparent; caret-color: var(--theme-text); font: inherit; line-height: inherit; letter-spacing: inherit; }
+.editor-input { position: absolute; z-index: 1; top: 6px; bottom: 0; left: var(--editor-gutter); width: calc(100% - var(--editor-gutter)); box-sizing: border-box; margin: 0; border: 0; outline: 0; resize: none; overflow: hidden; background: transparent; color: transparent; caret-color: var(--theme-text); font: inherit; line-height: inherit; letter-spacing: inherit; }
 .editor-input::selection { background: color-mix(in srgb, var(--theme-accent) 40%, transparent); color: transparent; }
 .editor-row.caret { background: color-mix(in srgb, var(--theme-text) 6%, transparent); }
 .editor-row.caret .editor-line-number { color: var(--theme-text); }
@@ -41,3 +41,18 @@
 .editor-row.added .editor-line-number { color: var(--theme-text); box-shadow: inset 3px 0 0 var(--diff-added-word); }
 .editor-row.added.caret { background: color-mix(in srgb, var(--diff-added-bg) 88%, var(--theme-text)); }
 .editor-row.removed-above { box-shadow: inset 0 2px 0 var(--diff-deleted-word); }
+
+/* Merge conflicts: the current side green, the incoming side blue (as in VS Code), with accept buttons on the <<<<<<< line above the text. */
+.editor-row.conflict-current { background: color-mix(in srgb, #3fa66b 20%, transparent); }
+.editor-row.conflict-incoming { background: color-mix(in srgb, #3b8fd6 20%, transparent); }
+.editor-row.conflict-base { background: color-mix(in srgb, var(--theme-text) 7%, transparent); }
+.editor-row.conflict-marker { background: color-mix(in srgb, var(--theme-text) 12%, transparent); }
+.editor-row.conflict-marker-current { background: color-mix(in srgb, #3fa66b 42%, transparent); }
+.editor-row.conflict-marker-incoming { background: color-mix(in srgb, #3b8fd6 42%, transparent); }
+.editor-conflict-actions { position: absolute; z-index: 2; top: 0; right: 12px; bottom: 0; display: flex; align-items: center; gap: 4px; font-family: var(--ui-font); }
+.editor-conflict-actions button { padding: 1px 7px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 11px; line-height: 1.4; cursor: pointer; }
+.editor-conflict-actions button:hover { background: var(--theme-hover); }
+.editor-conflict-count, .editor-mark-resolved { padding: 4px 10px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 12px; }
+.editor-conflict-count { color: #f0b37a; }
+.editor-mark-resolved { border-color: #3fa66b; background: color-mix(in srgb, #3fa66b 25%, transparent); }
+.editor-mark-resolved:disabled { opacity: .5; cursor: default; }

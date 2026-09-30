@@ -541,6 +541,8 @@ button { cursor: pointer; }
 .rebase-amend textarea, .rebase-message-label textarea { width: 100%; min-height: 74px; resize: vertical; padding: 8px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-input); color: var(--theme-text); font: 14px Consolas, monospace; }
 .conflict-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .conflict-row span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: Consolas, monospace; }
+.operation-panel .conflict-row .conflict-file { flex: 1; min-width: 0; padding: 6px 0; overflow: hidden; border: 0; background: transparent; color: var(--theme-text); font-family: var(--code-font); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.operation-panel .conflict-row .conflict-file:hover { color: var(--theme-accent-hover); text-decoration: underline; }
 .commit-actions summary { cursor: pointer; font-weight: 700; }
 .commit-action-buttons { margin-top: 10px; }
 .all-diff-card { margin-bottom: 8px; overflow: hidden; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-details); }

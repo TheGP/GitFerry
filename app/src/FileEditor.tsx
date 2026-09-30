@@ -25,14 +25,27 @@ function indentUnit(text: string): string {
   }
   return " ".repeat(smallest || 2);
 }
+/** A merge conflict as 0-based line indexes of its markers: <<<<<<< (start), optional ||||||| (base), ======= (separator), >>>>>>> (end). */
+type Conflict = { start: number; base: number | null; separator: number; end: number };
+function findConflicts(text: string): Conflict[] {
+  const conflicts: Conflict[] = [];
+  let open: Omit<Conflict, "end"> | null = null;
+  text.split("\n").forEach((line, index) => {
+    if (/^<{7}( |$)/.test(line)) open = { start: index, base: null, separator: -1 };
+    else if (open && open.separator < 0 && /^\|{7}( |$)/.test(line)) open.base = index;
+    else if (open && open.separator < 0 && /^={7}$/.test(line)) open.separator = index;
+    else if (open && open.separator >= 0 && /^>{7}( |$)/.test(line)) { conflicts.push({ ...open, end: index }); open = null; }
+  });
+  return conflicts;
+}
 // execCommand keeps the textarea's native undo history; setRangeText is the fallback.
 function insertText(input: HTMLTextAreaElement, text: string) {
-  if (document.execCommand("insertText", false, text)) return;
+  if (document.execCommand(text ? "insertText" : "delete", false, text)) return;
   input.setRangeText(text, input.selectionStart, input.selectionEnd, "end");
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-export function FileEditor(props: { target: EditorTarget; revision?: string; width: number; active: boolean; load: (repo: string, path: string, commit?: string) => Promise<string>; save: (repo: string, path: string, content: string, expected: string) => Promise<void>; onDirty: (dirty: boolean) => void; onClose: () => void; onResize: (event: PointerEvent) => void }) {
+export function FileEditor(props: { target: EditorTarget; revision?: string; width: number; active: boolean; conflicted: boolean; onMarkResolved: (remaining: number) => void; load: (repo: string, path: string, commit?: string) => Promise<string>; save: (repo: string, path: string, content: string, expected: string) => Promise<void>; onDirty: (dirty: boolean) => void; onClose: () => void; onResize: (event: PointerEvent) => void }) {
   let scroller!: HTMLDivElement;
   let rowsElement!: HTMLDivElement;
   let input!: HTMLTextAreaElement;
@@ -51,6 +64,22 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   const readOnly = () => Boolean(props.target.commit);
   // The editor stays open across repository tabs; a tab other than the file's own shows it empty (the file stays loaded).
   const shown = () => props.active && Boolean(props.target.path);
+  const conflicts = createMemo(() => findConflicts(doc()?.text ?? ""));
+  const conflictAt = createMemo(() => new Map(conflicts().map(item => [item.start, item])));
+  // Per line: which part of a conflict it is (markers, the current side, the common base, the incoming side).
+  const conflictClasses = createMemo(() => {
+    const classes: string[] = [];
+    for (const { start, base, separator, end } of conflicts()) {
+      for (let index = start + 1; index < (base ?? separator); index++) classes[index] = "conflict-current";
+      if (base !== null) for (let index = base + 1; index < separator; index++) classes[index] = "conflict-base";
+      for (let index = separator + 1; index < end; index++) classes[index] = "conflict-incoming";
+      classes[start] = "conflict-marker conflict-marker-current";
+      if (base !== null) classes[base] = "conflict-marker";
+      classes[separator] = "conflict-marker";
+      classes[end] = "conflict-marker conflict-marker-incoming";
+    }
+    return classes;
+  });
   const crumbs = () => props.target.path.split(/[\\/]/);
   let loadId = 0;
 
@@ -76,7 +105,8 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   function reveal() {
     const text = doc()?.text;
     if (text === undefined) return;
-    const line = Math.max(1, Math.min(props.target.line, lines().length));
+    // Line 0 asks for the first conflict (or the top of the file).
+    const line = Math.max(1, Math.min(props.target.line || (conflicts()[0]?.start ?? 0) + 1, lines().length));
     const target = props.target.marks;
     // A removal at the very end of the file marks the last line.
     setMarks(target && { added: new Set(target.added), removed: new Set(target.removed.map(item => Math.min(item, lines().length))) });
@@ -123,6 +153,40 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     finally { setSaving(false); }
   }
 
+  // Replaces a conflict (markers included) with one side or both, as one undoable edit.
+  function resolveConflict(conflict: Conflict, choice: "current" | "incoming" | "both") {
+    const text = input.value;
+    const fileLines = text.split("\n");
+    const current = fileLines.slice(conflict.start + 1, conflict.base ?? conflict.separator);
+    const incoming = fileLines.slice(conflict.separator + 1, conflict.end);
+    const kept = choice === "current" ? current : choice === "incoming" ? incoming : [...current, ...incoming];
+    let start = 0;
+    for (let index = 0; index < conflict.start; index++) start += fileLines[index].length + 1;
+    let end = start;
+    for (let index = conflict.start; index <= conflict.end; index++) end += fileLines[index].length + 1;
+    const last = end > text.length;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(start, Math.min(end, text.length));
+    insertText(input, kept.length ? kept.join("\n") + (last ? "" : "\n") : "");
+  }
+  function nextConflict() {
+    const next = conflicts().find(item => item.start > caretLine()) ?? conflicts()[0];
+    if (!next) return;
+    const row = rowsElement.children[next.start] as HTMLElement | undefined;
+    if (row) scroller.scrollTop = Math.max(0, row.offsetTop - scroller.clientHeight / 4);
+    const text = input.value;
+    let offset = 0;
+    for (let index = 0; index < next.start; index++) offset = text.indexOf("\n", offset) + 1;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(offset, offset);
+    updateCaret();
+  }
+  // Saves pending edits first; the caller stages the file (and asks first if conflict markers remain).
+  async function markResolved() {
+    if (dirty()) { await save(); if (dirty()) return; }
+    props.onMarkResolved(conflicts().length);
+  }
+
   function indent(outdent: boolean) {
     const text = input.value;
     const unit = indentUnit(text);
@@ -157,14 +221,14 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     <div class="splitter editor-splitter" onPointerDown={event => props.onResize(event)} />
     <aside class="editor-pane" style={{ width: `${props.width}px` }} aria-label={shown() ? `Editor for ${props.target.path}` : "Editor"}>
       <div class="editor-tabs"><div class={`editor-tab ${shown() ? "" : "empty"}`} title={shown() ? props.target.path : undefined}><span class="editor-tab-name">{shown() ? fileName() : "No file"}</span><Show when={dirty()} fallback={<button class="editor-tab-close" title="Close editor (Esc)" aria-label="Close editor" onClick={props.onClose}>×</button>}><button class="editor-tab-close dirty" title="Unsaved changes. Close editor" aria-label="Close editor" onClick={props.onClose}><span class="dirty-dot" /></button></Show></div>
-        <div class="editor-tabs-actions"><Show when={shown()}><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit}`}>{props.target.commit!.split("..").map(part => part.slice(0, 8)).join("..")} · read-only</span></Show></Show></div></div>
+        <div class="editor-tabs-actions"><Show when={shown() && !readOnly() && conflicts().length}><button class="editor-conflict-count" title="Go to the next conflict" onClick={nextConflict}>{conflicts().length} conflict{conflicts().length === 1 ? "" : "s"}</button></Show><Show when={shown() && props.conflicted}><button class="editor-mark-resolved" disabled={saving()} title="Save and stage the file as resolved" onClick={() => void markResolved()}>Mark resolved</button></Show><Show when={shown()}><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit}`}>{props.target.commit!.split("..").map(part => part.slice(0, 8)).join("..")} · read-only</span></Show></Show></div></div>
       <Show when={!shown()}><div class="editor-empty">Double-click a line in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
       <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
       <Show when={shown() && error()}>{message => <div class="editor-error">{message()}</div>}</Show>
       <div class="editor-scroll" ref={scroller} style={{ display: shown() ? undefined : "none" }}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>
           <div class="editor-body" style={{ "--editor-gutter": gutter() }}>
-            <div class="editor-rows" ref={rowsElement} aria-hidden="true"><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /></div>}</Index></div>
+            <div class="editor-rows" ref={rowsElement}><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""} ${conflictClasses()[index] ?? ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /><Show when={!readOnly() && conflictAt().get(index)}>{conflict => <span class="editor-conflict-actions"><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "current")}>Accept current</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "incoming")}>Accept incoming</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "both")}>Accept both</button></span>}</Show></div>}</Index></div>
             <textarea class="editor-input" ref={input} aria-label={`Edit ${props.target.path}`} spellcheck={false} autocapitalize="off" autocomplete="off" wrap="soft" rows={1} cols={1} readOnly={saving() || readOnly()} value={doc()?.text ?? ""} onInput={event => {
               const text = event.currentTarget.value;
               const before = lines().length;
