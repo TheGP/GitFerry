@@ -9,6 +9,7 @@ import { formatCommitDate } from "./commitDate";
 import { version } from "../package.json";
 import { createHunkNotes, HunkNotes } from "./HunkNote";
 import { FileEditor, type EditorTarget } from "./FileEditor";
+import { growWindow, shrinkWindow, shrinkWindowOnClose } from "./windowGrow";
 import "./App.css";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
@@ -577,6 +578,9 @@ function App() {
   const [sideEditorWidth, setSideEditorWidth] = createSignal(Number(localStorage.getItem("gitferry.editorWidth")) || 620);
   const sideEditorShown = () => sideEditor()?.repo === activePath();
   let sideEditorNonce = 0;
+  // Opening the editor widens the window by the editor's width, so the rest of the layout keeps its size; closing it narrows the window back.
+  createEffect(on(() => Boolean(sideEditor()), open => void (open ? growWindow(sideEditorWidth() + 1) : shrinkWindow()), { defer: true }));
+  onMount(() => { const unlisten = shrinkWindowOnClose(); onCleanup(() => void unlisten.then(stop => stop())); });
   const [fileHistory, setFileHistory] = createSignal<FileHistoryResult | null>(null);
   const [fileBlame, setFileBlame] = createSignal<BlameResult | null>(null);
   const [fileInfoLoading, setFileInfoLoading] = createSignal(false);
