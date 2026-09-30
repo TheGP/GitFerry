@@ -147,10 +147,11 @@ function groupRefs(refs: Ref[], folders: boolean): RefNode[] {
   return root.children;
 }
 
-function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrides: Record<string, boolean>; onToggle: (key: string, open: boolean) => void; onSelect: (hash: string) => void; onMenu: (ref: Ref, anchor: HTMLElement) => void; colorFor: (ref: Ref) => string | undefined }) {
-  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<div class="ref-entry"><button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${(props.kind === "branch" ? 22 : 25) + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)}>
+function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrides: Record<string, boolean>; onToggle: (key: string, open: boolean) => void; onSelect: (hash: string) => void; onMenu: (ref: Ref, anchor: HTMLElement, point?: { x: number; y: number }) => void; colorFor: (ref: Ref) => string | undefined }) {
+  const hasMenu = (ref: Ref) => ["branch", "remote", "tag"].includes(props.kind) && !(props.kind === "remote" && ref.name.endsWith("/HEAD"));
+  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<div class="ref-entry"><button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${(props.kind === "branch" ? 22 : 25) + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)} onContextMenu={event => { if (!hasMenu(node.ref!)) return; event.preventDefault(); props.onMenu(node.ref!, event.currentTarget, { x: event.clientX, y: event.clientY }); }}>
     <Show when={props.colorFor(node.ref!)}>{color => <span class="branch-dot" style={{ background: color() }} />}</Show><Show when={props.kind !== "branch" && !props.colorFor(node.ref!)}><span class="ref-icon">{props.kind === "remote" ? "☁" : props.kind === "stash" ? "◷" : props.kind === "submodule" ? "▣" : "◇"}</span></Show><span class="ref-name">{node.label}</span><Show when={node.ref?.isHead}><span class="ref-head">HEAD</span></Show><Show when={node.ref?.ahead}><span class="ref-tracking" title={`${node.ref!.ahead} commits to push`}>{node.ref!.ahead}↑</span></Show><Show when={node.ref?.behind}><span class="ref-tracking" title={`${node.ref!.behind} commits to pull`}>{node.ref!.behind}↓</span></Show>
-  </button><Show when={["branch", "remote", "tag"].includes(props.kind) && !(props.kind === "remote" && node.ref?.name.endsWith("/HEAD"))}><button class="ref-action-trigger" title={`Actions for ${node.path}`} aria-label={`Actions for ${node.path}`} onClick={event => props.onMenu(node.ref!, event.currentTarget)}><Icon name="more" /></button></Show></div>}>
+  </button><Show when={hasMenu(node.ref!)}><button class="ref-action-trigger" title={`Actions for ${node.path}`} aria-label={`Actions for ${node.path}`} onClick={event => props.onMenu(node.ref!, event.currentTarget)}><Icon name="more" /></button></Show></div>}>
     {(() => {
       const key = `${props.kind}:${node.path}`;
       const open = () => props.overrides[key] ?? node.containsHead;
@@ -637,6 +638,10 @@ function App() {
   const [pushMenu, setPushMenu] = createSignal(false);
   const [pullMenu, setPullMenu] = createSignal(false);
   const [stashMenu, setStashMenu] = createSignal(false);
+  const [moreMenu, setMoreMenu] = createSignal(false);
+  const [searchOpen, setSearchOpen] = createSignal(false);
+  // Errors and Git progress show in the toolbar's center box instead of pushing the panes down.
+  const [errorDetails, setErrorDetails] = createSignal(false);
   const [newBranch, setNewBranch] = createSignal("");
   const [searchInput, setSearchInput] = createSignal("");
   const [searchQuery, setSearchQuery] = createSignal("");
@@ -729,7 +734,7 @@ function App() {
     if (previous === path) return;
     if (previous) tabViews.set(previous, { selected: selected(), scrollTop: commitScroll?.scrollTop ?? 0 });
     setActivePath(path); setNotice(""); setStashMenu(false); setTabListOpen(false);
-    setScrollTop(0); setSearchQuery(""); setSearchInput("");
+    setScrollTop(0); setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
     if (commitScroll) commitScroll.scrollTop = 0;
     const view = tabViews.get(path);
     if (view?.selected === "compare" && comparisons()[path]) showComparison();
@@ -742,6 +747,8 @@ function App() {
   createEffect(() => { activePath(); requestAnimationFrame(revealActiveTab); });
   createEffect(() => { tabOverflow(); requestAnimationFrame(updateTabScroll); });
   const repoReady = createMemo(() => Boolean(repo() && !repo()?.loading && !repo()?.loadError));
+  const busyStatus = () => actionBusy() && Boolean(progress() || cancelToken());
+  createEffect(on(error, () => setErrorDetails(false), { defer: true }));
   const stashes = createMemo(() => repo()?.refs.filter(item => item.kind === "stash") ?? []);
   const conflicts = createMemo(() => repo()?.status.filter(item => item.index === "U" || item.worktree === "U" || ["AA", "DD"].includes(item.index + item.worktree)) ?? []);
   const displayedCommits = createMemo(() => searchQuery() ? searchResult().commits : repo()?.commits ?? []);
@@ -879,7 +886,7 @@ function App() {
       { label: "Open repository", run: () => setShowOpen(true) },
       { label: "Settings", run: () => setShowSettings(true) },
       { label: "Refresh repository", run: () => { void refresh(); } },
-      { label: "Search commits", run: () => document.querySelector<HTMLInputElement>(".search-box input")?.focus() },
+      { label: "Search commits", run: openSearch },
     ];
     if (repoReady()) {
       commands.push(
@@ -915,13 +922,16 @@ function App() {
     if (!path || !repoReady() || !isTauri() || demoMode) return;
     let stopped = false;
     setWatchFallback(false);
+    // Catch up on changes made while another tab was active; the watcher may have handed them to that tab's loop.
+    untrack(() => void refreshState());
     const loop = async () => {
       while (!stopped) {
         try {
           const changed = await invoke<boolean>("repo_watch", { path, timeoutMs: 60_000 });
-          if (stopped) return;
           // Refresh while visible even without focus, so edits made from another app show up; a hidden window catches up when shown.
-          if (changed && document.visibilityState === "visible") await refreshState();
+          // The watcher reports each change once, so a replaced loop still passes its change on when its repository is active.
+          if (changed && activePath() === path && document.visibilityState === "visible") void refreshState();
+          if (stopped) return;
         } catch {
           if (!stopped) setWatchFallback(true);
           return;
@@ -976,7 +986,7 @@ function App() {
     try {
       const result = await invoke<Repo>("repo_snapshot", { path: path.trim(), offset: 0 });
       setTabs(current => current.some(item => item.path === result.path) ? current.map(item => item.path === result.path ? result : item) : [...current, result]);
-      setActivePath(result.path); setScrollTop(0); setSearchQuery(""); setSearchInput(""); if (commitScroll) commitScroll.scrollTop = 0;
+      setActivePath(result.path); setScrollTop(0); setSearchQuery(""); setSearchInput(""); setSearchOpen(false); if (commitScroll) commitScroll.scrollTop = 0;
       selectWorking(); setShowOpen(false); saveRecent(result.path); saveTabs();
     } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
@@ -1067,6 +1077,16 @@ function App() {
       setTabs(tabs => tabs.map(item => item.path === current.path ? { ...update, commits: [...item.commits, ...update.commits] } : item));
     } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
+  }
+  // Search takes the branch box's place, as in Sublime Merge, until it is cleared or dismissed.
+  let searchInputRef: HTMLInputElement | undefined;
+  function openSearch() {
+    setSearchOpen(true);
+    requestAnimationFrame(() => searchInputRef?.focus());
+  }
+  function closeSearch() {
+    setSearchOpen(false);
+    if (searchQuery() || searchInput()) void performSearch("");
   }
   async function performSearch(query = searchInput()) {
     const path = activePath();
@@ -1454,7 +1474,7 @@ function App() {
       setNotice(output || "Done");
       if (["merge", "rebase", "interactive_rebase", "pull", "pull_merge", "pull_rebase", "cherry_pick", "revert", "reset", "detach", "continue_operation", "abort_operation"].includes(operation.kind)) selectWorking();
       if (!previousFile) { setChoice(null); setDiff(null); }
-      setBranchMenu(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false);
+      setBranchMenu(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setMoreMenu(false); setStashMenu(false);
       if (fileAction) await refreshState(); else await refresh();
       if (previousFile) {
         const nextFile = workingFiles().find(item => item.path === previousFile.path && item.target === previousFile.target)
@@ -1550,9 +1570,23 @@ function App() {
       onSubmit: ({ remote, branch }) => void runAction({ kind: "delete_remote_branch", value: { remote, branch } }),
     });
   }
-  function openRefMenu(ref: Ref, anchor: HTMLElement) {
+  // A right-click opens the menu at the cursor; the ⋯ button opens it next to itself.
+  function openRefMenu(ref: Ref, anchor: HTMLElement, point?: { x: number; y: number }) {
     const rect = anchor.getBoundingClientRect();
-    setRefMenu({ ref, x: Math.max(8, Math.min(rect.right - 8, innerWidth - 222)), y: Math.max(8, Math.min(rect.top + 20, innerHeight - 218)) });
+    const x = point?.x ?? rect.right - 8, y = point?.y ?? rect.top + 20;
+    setRefMenu({ ref, x: Math.max(8, Math.min(x, innerWidth - 222)), y: Math.max(8, Math.min(y, innerHeight - 250)) });
+  }
+  function copyText(text: string) {
+    // Fall back to a hidden textarea when the webview denies the async clipboard API.
+    const fallback = () => {
+      const area = document.createElement("textarea");
+      area.value = text; area.style.position = "fixed"; area.style.opacity = "0";
+      document.body.append(area); area.select();
+      const copied = document.execCommand("copy");
+      area.remove();
+      if (!copied) throw new Error("Could not copy to the clipboard");
+    };
+    navigator.clipboard.writeText(text).catch(fallback).then(() => setNotice("Copied to the clipboard"), cause => setError(String(cause)));
   }
   async function loadFileHistory(offset: number) {
     const path = activePath();
@@ -1856,9 +1890,9 @@ function App() {
     const visibility = () => { if (document.visibilityState === "visible") void refreshState(); };
     const keys = (event: KeyboardEvent) => {
       if (event.key === "Escape" && sshPrompt()) { answerSshPrompt(null); return; }
-      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); setActionDialog(null); closeFileFinder(); setRebasePlan(null); setBranchMenu(false); setTabListOpen(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setStashMenu(false); return; }
+      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); setActionDialog(null); closeFileFinder(); setRebasePlan(null); setBranchMenu(false); setTabListOpen(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setMoreMenu(false); setStashMenu(false); setErrorDetails(false); return; }
       const target = event.target instanceof Element ? event.target : null;
-      const modalOpen = Boolean(sshPrompt()) || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || stashMenu();
+      const modalOpen = Boolean(sshPrompt()) || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || moreMenu() || stashMenu();
       const editable = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !modalOpen) {
         const inCommitEditor = Boolean(target?.closest(".commit-editor textarea"));
@@ -1892,7 +1926,7 @@ function App() {
     onCleanup(() => { unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize", resize); });
   });
 
-  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); } if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); } }}>
+  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); } }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
     <header class="tabbar">
       <div class={`tab-strip ${tabDrag() ? "reordering" : ""}`} ref={tabStrip} onScroll={updateTabScroll} onWheel={event => { if (tabOverflow() && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.preventDefault(); tabStrip.scrollLeft += event.deltaY; } }}>
@@ -1904,25 +1938,29 @@ function App() {
       <button class="settings-button" title="Settings" aria-label="Settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button>
     </header>
     <div class="toolbar">
-      <button class="toolbar-icon" title="Toggle locations" onClick={() => setLocationsOpen(!locationsOpen())}><Icon name="sidebar" /></button>
-      <button class="toolbar-icon layout-toggle" title={bottomLayout() ? "Show details beside history" : "Show details below history"} onClick={() => { const next = !bottomLayout(); setBottomLayout(next); localStorage.setItem("gitferry.bottomLayout", String(next)); requestAnimationFrame(() => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); }); }}><Icon name={bottomLayout() ? "rows" : "columns"} /></button>
-      <Show when={repo()} fallback={<span class="toolbar-title">Open a repository to begin</span>}>
-        <div class="branch-control"><button class="branch-chip" title={repo()?.branch} disabled={!repoReady()} aria-expanded={branchMenu()} onClick={() => { const opening = !branchMenu(); setBranchMenu(opening); if (opening) { setBranchFilter(""); requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".branch-menu-filter")?.focus()); } }}><span class="branch-icon"><Icon name="branch" /></span><span class="branch-name">{repo()?.branch}</span><span class="branch-arrow"><ChevronDown /></span></button>
+      <div class="toolbar-side">
+        <button class="toolbar-icon" title="Toggle locations" onClick={() => setLocationsOpen(!locationsOpen())}><Icon name="sidebar" /></button>
+        <button class="toolbar-icon layout-toggle" title={bottomLayout() ? "Show details beside history" : "Show details below history"} onClick={() => { const next = !bottomLayout(); setBottomLayout(next); localStorage.setItem("gitferry.bottomLayout", String(next)); requestAnimationFrame(() => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); }); }}><Icon name={bottomLayout() ? "rows" : "columns"} /></button>
+      </div>
+        <div class="toolbar-center">
+          <Show when={repoReady()}><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={stashChanges}><Icon name="stash" /><span>Stash</span></button><div class="stash-control"><button class="toolbar-button" title="Unstash" aria-expanded={stashMenu()} disabled={actionBusy()} onClick={() => setStashMenu(!stashMenu())}><Icon name="unstash" /><span>Unstash</span><Show when={stashes().length}><small>{stashes().length}</small></Show></button><Show when={stashMenu()}><div class="stash-menu"><div class="eyebrow">SAVED STASHES</div><Show when={stashes().length} fallback={<div class="stash-empty">No saved stashes</div>}><For each={stashes()}>{item => <div class="stash-menu-row"><div class="stash-menu-label" title={item.name}>{item.name}</div><div class="stash-menu-actions"><button disabled={actionBusy()} title="Restore changes and keep this stash" onClick={() => void runAction({ kind: "apply_stash", value: { hash: item.target } })}>Apply</button><button disabled={actionBusy()} title="Restore changes and remove this stash" onClick={() => void runAction({ kind: "pop_stash", value: { hash: item.target } })}>Pop</button></div></div>}</For></Show></div></Show></div></Show>
+          <Show when={!busyStatus() && !error()} fallback={<div class="status-control"><Show when={busyStatus()} fallback={<div class="error-bar status-chip" role="alert"><button class="status-chip-text" title="Show the full error" aria-expanded={errorDetails()} onClick={() => setErrorDetails(!errorDetails())}>{error().split("\n")[0]}</button><button title="Dismiss error" aria-label="Dismiss error" onClick={() => setError("")}><Icon name="close" /></button></div>}><div class="progress-bar status-chip" role="status"><span>{progress() || "Starting Git operation…"}</span><Show when={cancelToken()}><button disabled={cancelRequested()} onClick={() => void cancelAction()}>{cancelRequested() ? "Cancelling…" : "Cancel"}</button></Show></div></Show>
+            <Show when={errorDetails() && error() && !busyStatus()}><div class="error-details"><pre>{error()}</pre><div class="error-details-actions"><button onClick={() => copyText(error())}>Copy</button><button onClick={() => setError("")}>Dismiss</button></div></div></Show></div>}><Show when={repo()} fallback={<span class="toolbar-title">Open a repository to begin</span>}><Show when={searchOpen() || searchQuery()} fallback={<div class="branch-control"><button class="branch-chip" title={repo()?.branch} disabled={!repoReady()} aria-expanded={branchMenu()} onClick={() => { const opening = !branchMenu(); setBranchMenu(opening); if (opening) { setBranchFilter(""); requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".branch-menu-filter")?.focus()); } }}><span class="branch-icon"><Icon name="branch" /></span><span class="branch-name">{repo()?.branch}</span><span class="branch-arrow"><ChevronDown /></span></button>
           <Show when={branchMenu()}><div class="branch-menu"><input class="branch-menu-filter" type="search" aria-label="Filter branches" placeholder="Filter branches" value={branchFilter()} onInput={event => setBranchFilter(event.currentTarget.value)} />
             <div class="branch-menu-list"><div class="eyebrow">LOCAL BRANCHES</div><For each={matchingLocalBranches()}>{item => <div class="branch-menu-row"><button disabled={actionBusy()} onClick={() => void runAction({ kind: "checkout", value: { branch: item.name } })}>{item.isHead ? "✓ " : ""}{item.name}</button><Show when={!item.isHead}><button title={`Merge ${item.name} into ${repo()?.branch}`} disabled={actionBusy()} onClick={() => void runAction({ kind: "merge", value: { branch: item.name } }, `Merge ${item.name} into ${repo()?.branch}?`)}>Merge</button><button title={`Rebase ${repo()?.branch} onto ${item.name}`} disabled={actionBusy()} onClick={() => void runAction({ kind: "rebase", value: { branch: item.name } }, `Rebase ${repo()?.branch} onto ${item.name}?`)}>Rebase</button><button title={`Plan an interactive rebase onto ${item.name}`} disabled={actionBusy() || rebaseLoading()} onClick={() => void openRebasePlan(item.name)}>Plan…</button><button class="branch-delete" title={`Delete ${item.name}`} disabled={actionBusy()} onClick={() => void runAction({ kind: "delete_branch", value: { branch: item.name } }, `Delete branch ${item.name}?`)}><Icon name="close" /></button></Show><button title={`More actions for ${item.name}`} aria-label={`More actions for ${item.name}`} disabled={actionBusy()} onClick={event => openRefMenu(item, event.currentTarget)}><Icon name="more" /></button></div>}</For>
               <div class="eyebrow branch-menu-section">REMOTE BRANCHES</div><For each={matchingRemoteBranches()}>{item => <div class="branch-menu-row branch-menu-remote"><button title={`Create tracking branch from ${item.name}`} disabled={actionBusy()} onClick={() => { const target = remoteBranch(item); if (target) void runAction({ kind: "track_remote_branch", value: target }); }}>{item.name}</button></div>}</For>
               <Show when={!matchingLocalBranches().length && !matchingRemoteBranches().length}><div class="branch-menu-empty">No matching branches</div></Show></div>
             <form onSubmit={event => { event.preventDefault(); void runAction({ kind: "create_branch", value: { branch: newBranch() } }); setNewBranch(""); }}><input value={newBranch()} onInput={event => setNewBranch(event.currentTarget.value)} placeholder="New branch name" /><button type="submit" disabled={actionBusy()}>Create</button></form></div></Show>
-        </div><div class="path-label" title={repo()?.path}>{repo()?.path}</div>
-      </Show>
-      <div class="toolbar-spacer" />
-      <Show when={repoReady()}><form class="search-box" onSubmit={event => { event.preventDefault(); void performSearch(); }}><Icon name="search" /><input value={searchInput()} onInput={event => { setSearchInput(event.currentTarget.value); if (!event.currentTarget.value) void performSearch(""); }} placeholder="Search commits" title="Search message, author:name, or path:file" /><Show when={searchQuery()}><button type="button" onClick={() => void performSearch("")}><Icon name="close" /></button></Show></form></Show>
-      <Show when={repoReady()}><button class="toolbar-button" title="Refresh" onClick={() => void refresh()}><Icon name="refresh" /><span>Refresh</span></button><span class="toolbar-divider" /><button class="toolbar-button" title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}><Icon name="fetch" /><span>Fetch</span></button><div class="push-control"><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}><Icon name="pull" /><span>Pull</span></button><button class="toolbar-button push-more" title="More pull options" aria-label="More pull options" aria-expanded={pullMenu()} disabled={actionBusy()} onClick={() => setPullMenu(!pullMenu())}><ChevronDown /></button><Show when={pullMenu()}><div class="push-menu"><button onClick={() => void runAction({ kind: "pull_merge" })}>Pull with merge</button><button onClick={() => void runAction({ kind: "pull_rebase" })}>Pull with rebase</button><p>Choose how to combine diverged branches.</p></div></Show></div><div class="push-control"><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}><Icon name="push" /><span>Push</span></button><button class="toolbar-button push-more" title="More push options" aria-label="More push options" aria-expanded={pushMenu()} disabled={actionBusy()} onClick={() => setPushMenu(!pushMenu())}><ChevronDown /></button><Show when={pushMenu()}><div class="push-menu"><button title="Force push with lease" disabled={actionBusy()} onClick={forcePushWithLease}>Force push with lease</button><p>Push only if the remote branch still matches your tracking branch.</p></div></Show></div><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={stashChanges}><Icon name="stash" /><span>Stash</span></button><div class="stash-control"><button class="toolbar-button" title="Unstash" aria-expanded={stashMenu()} disabled={actionBusy()} onClick={() => setStashMenu(!stashMenu())}><Icon name="unstash" /><span>Unstash</span><Show when={stashes().length}><small>{stashes().length}</small></Show></button><Show when={stashMenu()}><div class="stash-menu"><div class="eyebrow">SAVED STASHES</div><Show when={stashes().length} fallback={<div class="stash-empty">No saved stashes</div>}><For each={stashes()}>{item => <div class="stash-menu-row"><div class="stash-menu-label" title={item.name}>{item.name}</div><div class="stash-menu-actions"><button disabled={actionBusy()} title="Restore changes and keep this stash" onClick={() => void runAction({ kind: "apply_stash", value: { hash: item.target } })}>Apply</button><button disabled={actionBusy()} title="Restore changes and remove this stash" onClick={() => void runAction({ kind: "pop_stash", value: { hash: item.target } })}>Pop</button></div></div>}</For></Show></div></Show></div></Show>
-      <button class="toolbar-button primary" title="Open repository" onClick={() => setShowOpen(true)}><Icon name="plus" /><span>Open repo</span></button>
+        </div>}><form class="search-box" onSubmit={event => { event.preventDefault(); void performSearch(); }}><Icon name="search" /><input ref={searchInputRef} value={searchInput()} onKeyDown={event => { if (event.key === "Escape") closeSearch(); }} onInput={event => { setSearchInput(event.currentTarget.value); if (!event.currentTarget.value) void performSearch(""); }} placeholder="Search commits" title="Search message, author:name, or path:file" /><Show when={searchQuery()}><button type="button" title="Clear search" onClick={closeSearch}><Icon name="close" /></button></Show></form></Show></Show></Show>
+          <Show when={repoReady()}><button class="toolbar-icon" title="Search commits" aria-pressed={searchOpen() || Boolean(searchQuery())} onClick={() => searchOpen() || searchQuery() ? closeSearch() : openSearch()}><Icon name="search" /></button>
+            <div class="push-control"><button class="toolbar-icon" title="More actions" aria-label="More actions" aria-expanded={moreMenu()} onClick={() => setMoreMenu(!moreMenu())}><Icon name="more" /></button><Show when={moreMenu()}><div class="push-menu"><button title="Refresh" onClick={() => { setMoreMenu(false); void refresh(); }}>Refresh</button><button onClick={() => { setMoreMenu(false); setShowOpen(true); }}>Open repository…</button></div></Show></div></Show>
+        </div>
+      <div class="toolbar-side end">
+        <Show when={repoReady()}><div class="push-control"><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}><Icon name="pull" /></button><button class="toolbar-button push-more" title="More pull options" aria-label="More pull options" aria-expanded={pullMenu()} disabled={actionBusy()} onClick={() => setPullMenu(!pullMenu())}><ChevronDown /></button><Show when={pullMenu()}><div class="push-menu"><button title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}>Fetch</button><button onClick={() => void runAction({ kind: "pull_merge" })}>Pull with merge</button><button onClick={() => void runAction({ kind: "pull_rebase" })}>Pull with rebase</button><p>Choose how to combine diverged branches.</p></div></Show></div><div class="push-control"><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}><Icon name="push" /></button><button class="toolbar-button push-more" title="More push options" aria-label="More push options" aria-expanded={pushMenu()} disabled={actionBusy()} onClick={() => setPushMenu(!pushMenu())}><ChevronDown /></button><Show when={pushMenu()}><div class="push-menu"><button title="Force push with lease" disabled={actionBusy()} onClick={forcePushWithLease}>Force push with lease</button><p>Push only if the remote branch still matches your tracking branch.</p></div></Show></div></Show>
+      </div>
     </div>
-    <Show when={error()}><div class="error-bar">{error()}<button onClick={() => setError("")}><Icon name="close" /></button></div></Show>
-    <Show when={actionBusy() && (progress() || cancelToken())}><div class="progress-bar" role="status"><span>{progress() || "Starting Git operation…"}</span><Show when={cancelToken()}><button disabled={cancelRequested()} onClick={() => void cancelAction()}>{cancelRequested() ? "Cancelling…" : "Cancel"}</button></Show></div></Show>
         <Show when={refMenu()}>{menu => <div class="ref-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label={`Actions for ${menu().ref.name}`}><div class="ref-action-title" title={menu().ref.name}>{menu().ref.name}</div>
+      <button onClick={() => { const name = menu().ref.name; setRefMenu(null); copyText(name); }}>Copy {menu().ref.kind === "tag" ? "tag" : "branch"} name</button>
       <Show when={(menu().ref.kind === "branch" || menu().ref.kind === "remote") && baseBranch() && baseBranch()!.name !== menu().ref.name && !menu().ref.name.endsWith("/HEAD")}><button onClick={() => { const ref = menu().ref; setRefMenu(null); void compareWithBase(ref); }}>Compare with {baseBranch()!.name}</button></Show>
       <Show when={menu().ref.kind === "branch"}><button disabled={actionBusy()} onClick={() => renameBranch(menu().ref.name)}>Rename branch…</button><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push to remote…</button><Show when={!menu().ref.isHead}><button disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_branch", value: { branch } }, `Delete merged branch ${branch}?`); }}>Delete branch</button><button class="danger" disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "force_delete_branch", value: { branch } }, `Force delete branch ${branch}? Unmerged commits may become unreachable.`); }}>Force delete branch</button></Show></Show>
       <Show when={menu().ref.kind === "remote" && !menu().ref.name.endsWith("/HEAD")}><button class="danger" disabled={actionBusy()} onClick={() => { const target = remoteBranch(menu().ref); setRefMenu(null); if (target) void runAction({ kind: "delete_remote_branch", value: target }, `Delete branch ${target.branch} from ${target.remote}?`); }}>Delete remote branch</button></Show>

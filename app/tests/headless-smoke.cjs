@@ -195,7 +195,7 @@ async function waitUntil(check, label) {
 }
 
 async function waitForAction(page) {
-  await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
+  await page.waitForFunction(() => !document.querySelector("button[title='Pull']")?.disabled);
 }
 
 async function submitActionDialog(page, { text, remote } = {}) {
@@ -331,7 +331,8 @@ async function main() {
     window.__unchangedCard = [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "new.txt");
     return window.__snapshotResponses;
   });
-  await page.click("button[title='Refresh']");
+  await page.click("button[title='More actions']");
+  await page.click(".push-menu button[title='Refresh']");
   await page.waitForFunction(count => window.__snapshotResponses > count, {}, snapshotResponses);
   assert.equal(await page.evaluate(() => document.contains(window.__unchangedCard)), true, "refresh must preserve an unchanged file card and its loaded diff");
   const groupExpanded = name => page.evaluate(groupName => {
@@ -427,7 +428,8 @@ async function main() {
   assert.equal(git(small, "diff", "--cached", "--", "base.txt"), "", "editing an unstaged file must not stage it");
   await page.click(".details-tab:first-child");
   fs.writeFileSync(path.join(small, "new.txt"), "new file\r\n");
-  await page.click("button[title='Refresh']");
+  await page.click("button[title='More actions']");
+  await page.click(".push-menu button[title='Refresh']");
   await page.evaluate(() => [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "new.txt")?.querySelector(".summary-open-tab")?.click());
   await page.waitForSelector(".file-view-switch");
   await page.evaluate(() => [...document.querySelectorAll(".file-view-switch button")].find(button => button.textContent.trim() === "Edit")?.click());
@@ -467,7 +469,7 @@ async function main() {
   await page.click("button[title='Push']");
   // The status bar shows a notice's first line; the full Git output is in its tooltip.
   await page.waitForFunction(() => document.querySelector(".notice-bar")?.title.includes("main"));
-  await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
+  await page.waitForFunction(() => !document.querySelector("button[title='Pull']")?.disabled);
   assert.equal(git(remote, "rev-parse", "refs/heads/main"), git(small, "rev-parse", "HEAD"));
   assert.ok(progressEvents.length, "Git transfer progress must stream before the final RPC response");
   const other = path.join(sandbox, "other");
@@ -478,13 +480,14 @@ async function main() {
   git(other, "add", "remote.txt");
   git(other, "commit", "-m", "Remote update");
   git(other, "push");
-  await page.click("button[title='Fetch']");
+  await page.click("button[title='More pull options']");
+  await page.click(".push-menu button[title='Fetch']");
   await waitUntil(() => git(small, "rev-parse", "refs/remotes/origin/main") === git(remote, "rev-parse", "refs/heads/main"), "Fetch").catch(async error => { throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}`); });
   await page.waitForFunction(() => !document.querySelector("button[title='Pull']")?.disabled);
   assert.equal(git(small, "rev-parse", "refs/remotes/origin/main"), git(remote, "rev-parse", "refs/heads/main"));
   await page.click("button[title='Pull']");
   await waitUntil(() => git(small, "rev-parse", "HEAD") === git(remote, "rev-parse", "refs/heads/main"), "Pull");
-  await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
+  await page.waitForFunction(() => !document.querySelector("button[title='Pull']")?.disabled);
   assert.equal(git(small, "rev-parse", "HEAD"), git(remote, "rev-parse", "refs/heads/main"));
   git(small, "commit", "--amend", "-m", "Remote update amended");
   fs.writeFileSync(path.join(other, "remote-later.txt"), "new remote work\n");
@@ -500,7 +503,8 @@ async function main() {
   await page.waitForSelector(".error-bar");
   assert.equal(git(remote, "rev-parse", "refs/heads/main"), advancedRemote, "stale lease must reject the push");
   await waitForAction(page);
-  await page.click("button[title='Fetch']");
+  await page.click("button[title='More pull options']");
+  await page.click(".push-menu button[title='Fetch']");
   await waitUntil(() => git(small, "rev-parse", "refs/remotes/origin/main") === advancedRemote, "fetch advanced lease");
   await waitForAction(page);
   git(small, "branch", "extra");
@@ -519,7 +523,8 @@ async function main() {
   await waitUntil(() => git(remote, "branch", "--list", "extra") === "", "remote branch deletion dialog");
   await waitForAction(page);
   git(small, "tag", "ui-remote-tag");
-  await page.click("button[title='Refresh']");
+  await page.click("button[title='More actions']");
+  await page.click(".push-menu button[title='Refresh']");
   await page.waitForSelector('[aria-label="Actions for ui-remote-tag"]');
   await page.evaluate(() => document.querySelector('[aria-label="Actions for ui-remote-tag"]')?.click());
   await page.evaluate(() => [...document.querySelectorAll(".ref-action-popover button")].find(button => button.textContent.includes("Push tag"))?.click());
@@ -532,6 +537,7 @@ async function main() {
   await submitActionDialog(page);
   await waitUntil(() => git(remote, "tag", "--list", "ui-remote-tag") === "", "remote tag deletion dialog");
   await waitForAction(page);
+  await page.click("button[title='Search commits']");
   await page.locator(".search-box input").fill("Test UI commit");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelector(".commits-pane .pane-heading")?.textContent.includes("SEARCH RESULTS"));
@@ -543,7 +549,8 @@ async function main() {
   git(remote, "update-ref", "refs/heads/team/ui-track", git(small, "rev-parse", "HEAD"));
   git(small, "fetch", "origin");
   git(small, "remote", "set-head", "origin", "-a");
-  await page.click("button[title='Refresh']");
+  await page.click("button[title='More actions']");
+  await page.click(".push-menu button[title='Refresh']");
   await page.waitForSelector(".branch-chip");
   await page.click(".branch-chip");
   await page.waitForSelector(".branch-menu-remote button[title='Create tracking branch from origin/team/ui-track']");
@@ -589,12 +596,12 @@ async function main() {
   await page.evaluate(() => [...document.querySelectorAll(".branch-menu-row button")].find(button => button.textContent.trim() === "main")?.click());
   await page.waitForFunction(() => document.querySelector(".branch-chip")?.textContent.includes("main"));
   assert.equal(git(small, "branch", "--show-current"), "main");
-  await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
+  await page.waitForFunction(() => !document.querySelector("button[title='Pull']")?.disabled);
   await page.click(".branch-chip");
   await page.evaluate(branch => [...document.querySelectorAll(".branch-menu-row")].find(row => row.textContent.includes(branch))?.querySelector(".branch-delete")?.click(), longBranch);
   await submitActionDialog(page);
   await waitUntil(() => !git(small, "branch", "--list", longBranch), "branch deletion");
-  await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
+  await page.waitForFunction(() => !document.querySelector("button[title='Pull']")?.disabled);
   await page.click(".working-row");
   fs.writeFileSync(path.join(small, "base.txt"), "temporary unwanted change\n");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-row")].some(row => row.textContent.includes("base.txt")), { timeout: 10000 });
@@ -615,9 +622,10 @@ async function main() {
   await waitUntil(() => git(small, "status", "--porcelain") === "", "discard file").catch(async error => {
     throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}; status=${git(small, "status", "--short")}`);
   });
-  await page.waitForFunction(() => !document.querySelector("button[title='Fetch']")?.disabled);
+  await page.waitForFunction(() => !document.querySelector("button[title='Pull']")?.disabled);
   fs.writeFileSync(path.join(small, "stash.tmp"), "temporary stash\n");
-  await page.click("button[title='Refresh']");
+  await page.click("button[title='More actions']");
+  await page.click(".push-menu button[title='Refresh']");
   await page.waitForFunction(() => [...document.querySelectorAll(".file-row")].some(row => row.textContent.includes("stash.tmp")));
   await page.click("button[title='Stash']");
   await page.waitForSelector(".action-dialog input");
@@ -639,7 +647,8 @@ async function main() {
   assert.match(git(small, "stash", "list", "-1"), /Headless stash/, "Apply must keep the stash");
   fs.unlinkSync(path.join(small, "stash.tmp"));
   await page.waitForFunction(() => !document.querySelector("button[title='Unstash']")?.disabled);
-  await page.click("button[title='Refresh']");
+  await page.click("button[title='More actions']");
+  await page.click(".push-menu button[title='Refresh']");
   await page.click("button[title='Unstash']");
   await page.waitForSelector(".stash-menu-actions button:last-child");
   await page.click(".stash-menu-actions button:last-child");

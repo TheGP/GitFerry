@@ -178,6 +178,7 @@ async function main() {
   await page.click(".summary-diff-card .file-row");
   await page.waitForSelector(".summary-diff-card .diff-content");
   await page.screenshot({ path: path.join(output, "merged-working-960.png") });
+  await page.click("button[title='Search commits']");
   await page.locator(".search-box input").fill("layout");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelectorAll(".commit-row.search-result").length === 1);
@@ -374,12 +375,13 @@ async function main() {
   await page.keyboard.press("Enter");
   await page.keyboard.up(modifier);
   await page.waitForFunction(() => window.__commitClicks === 1);
+  await page.click("button[title='Search commits']");
   await page.focus(".search-box input");
   await page.keyboard.down(modifier);
   await page.keyboard.press("Enter");
   await page.keyboard.up(modifier);
   assert.equal(await page.evaluate(() => window.__commitClicks), 1, "Ctrl+Enter in search triggered a commit");
-  await page.evaluate(() => document.querySelector(".error-bar button")?.click());
+  await page.evaluate(() => document.querySelector(".error-bar button[title='Dismiss error']")?.click());
   await page.setViewport({ width: 1429, height: 918, deviceScaleFactor: 1 });
   await page.click("button[title='Stash']");
   await page.waitForSelector(".action-dialog");
