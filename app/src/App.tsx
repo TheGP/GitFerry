@@ -149,15 +149,15 @@ function groupRefs(refs: Ref[], folders: boolean): RefNode[] {
   return root.children;
 }
 
-function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrides: Record<string, boolean>; onToggle: (key: string, open: boolean) => void; onSelect: (hash: string) => void; onMenu: (ref: Ref, anchor: HTMLElement, point?: { x: number; y: number }) => void; colorFor: (ref: Ref) => string | undefined }) {
+function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrides: Record<string, boolean>; onToggle: (key: string, open: boolean) => void; onSelect: (hash: string) => void; onMenu: (ref: Ref, anchor: HTMLElement, point?: { x: number; y: number }) => void; onCheckout: (ref: Ref) => void; colorFor: (ref: Ref) => string | undefined }) {
   const hasMenu = (ref: Ref) => ["branch", "remote", "tag"].includes(props.kind) && !(props.kind === "remote" && ref.name.endsWith("/HEAD"));
-  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<div class="ref-entry"><button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${(props.kind === "branch" ? 22 : 25) + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)} onContextMenu={event => { if (!hasMenu(node.ref!)) return; event.preventDefault(); props.onMenu(node.ref!, event.currentTarget, { x: event.clientX, y: event.clientY }); }}>
+  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<div class="ref-entry"><button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${(props.kind === "branch" ? 22 : 25) + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)} onDblClick={() => { if (props.kind === "branch" || props.kind === "remote") props.onCheckout(node.ref!); }} onContextMenu={event => { if (!hasMenu(node.ref!)) return; event.preventDefault(); props.onMenu(node.ref!, event.currentTarget, { x: event.clientX, y: event.clientY }); }}>
     <Show when={props.colorFor(node.ref!)}>{color => <span class="branch-dot" style={{ background: color() }} />}</Show><Show when={props.kind !== "branch" && !props.colorFor(node.ref!)}><span class="ref-icon">{props.kind === "remote" ? "☁" : props.kind === "stash" ? "◷" : props.kind === "submodule" ? "▣" : "◇"}</span></Show><span class="ref-name">{node.label}</span><Show when={node.ref?.isHead}><span class="ref-head">HEAD</span></Show><Show when={node.ref?.ahead}><span class="ref-tracking" title={`${node.ref!.ahead} commits to push`}>{node.ref!.ahead}↑</span></Show><Show when={node.ref?.behind}><span class="ref-tracking" title={`${node.ref!.behind} commits to pull`}>{node.ref!.behind}↓</span></Show>
   </button><Show when={hasMenu(node.ref!)}><button class="ref-action-trigger" title={`Actions for ${node.path}`} aria-label={`Actions for ${node.path}`} onClick={event => props.onMenu(node.ref!, event.currentTarget)}><Icon name="more" /></button></Show></div>}>
     {(() => {
       const key = `${props.kind}:${node.path}`;
       const open = () => props.overrides[key] ?? node.containsHead;
-      return <><button class="ref-folder" style={{ "padding-left": `${14 + props.depth * 14}px` }} aria-expanded={open()} onClick={() => props.onToggle(key, !open())}><span class="ref-disclosure"><ChevronDown /></span><span class="ref-folder-name">{node.label}</span><span class="ref-folder-count">{node.count}</span></button><Show when={open()}><RefTree nodes={node.children} kind={props.kind} depth={props.depth + 1} overrides={props.overrides} onToggle={props.onToggle} onSelect={props.onSelect} onMenu={props.onMenu} colorFor={props.colorFor} /></Show></>;
+      return <><button class="ref-folder" style={{ "padding-left": `${14 + props.depth * 14}px` }} aria-expanded={open()} onClick={() => props.onToggle(key, !open())}><span class="ref-disclosure"><ChevronDown /></span><span class="ref-folder-name">{node.label}</span><span class="ref-folder-count">{node.count}</span></button><Show when={open()}><RefTree nodes={node.children} kind={props.kind} depth={props.depth + 1} overrides={props.overrides} onToggle={props.onToggle} onSelect={props.onSelect} onMenu={props.onMenu} onCheckout={props.onCheckout} colorFor={props.colorFor} /></Show></>;
     })()}
   </Show>}</For>;
 }
@@ -1595,6 +1595,18 @@ function App() {
     const branch = ref.name.slice(remote.length + 1);
     return branch === "HEAD" ? null : { remote, branch };
   }
+  // Switches to a local branch; a remote branch switches to its local branch, creating a tracking branch if there is none.
+  function checkoutRef(ref: Ref) {
+    setRefMenu(null);
+    if (actionBusy() || ref.isHead) return;
+    if (ref.kind === "branch") { void runAction({ kind: "checkout", value: { branch: ref.name } }); return; }
+    if (ref.kind !== "remote") return;
+    const target = remoteBranch(ref);
+    if (!target) return;
+    const local = repo()?.refs.find(item => item.kind === "branch" && item.name === target.branch);
+    if (local?.isHead) return;
+    void runAction(local ? { kind: "checkout", value: { branch: local.name } } : { kind: "track_remote_branch", value: target });
+  }
   function renameBranch(branch: string) {
     setRefMenu(null);
     openActionDialog({ title: "Rename branch", description: branch, submitLabel: "Rename", fields: [{ key: "name", label: "New branch name", value: branch }], onSubmit: ({ name }) => {
@@ -2034,6 +2046,7 @@ function App() {
         <Show when={refMenu()}>{menu => <div class="ref-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label={`Actions for ${menu().ref.name}`}><div class="ref-action-title" title={menu().ref.name}>{menu().ref.name}</div>
       <button onClick={() => { const name = menu().ref.name; setRefMenu(null); copyText(name); }}>Copy {menu().ref.kind === "tag" ? "tag" : "branch"} name</button>
       <Show when={(menu().ref.kind === "branch" || menu().ref.kind === "remote") && baseBranch() && baseBranch()!.name !== menu().ref.name && !menu().ref.name.endsWith("/HEAD")}><button onClick={() => { const ref = menu().ref; setRefMenu(null); void compareWithBase(ref); }}>Compare with {baseBranch()!.name}</button></Show>
+      <Show when={(menu().ref.kind === "branch" && !menu().ref.isHead) || menu().ref.kind === "remote"}><button disabled={actionBusy()} onClick={() => checkoutRef(menu().ref)}>{menu().ref.kind === "remote" ? "Check out as local branch" : "Check out"}</button></Show>
       <Show when={menu().ref.kind === "branch"}><button disabled={actionBusy()} onClick={() => renameBranch(menu().ref.name)}>Rename branch…</button><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push to remote…</button><Show when={!menu().ref.isHead}><button disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_branch", value: { branch } }, `Delete merged branch ${branch}?`); }}>Delete branch</button><button class="danger" disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "force_delete_branch", value: { branch } }, `Force delete branch ${branch}? Unmerged commits may become unreachable.`); }}>Force delete branch</button></Show></Show>
       <Show when={menu().ref.kind === "remote" && !menu().ref.name.endsWith("/HEAD")}><button class="danger" disabled={actionBusy()} onClick={() => { const target = remoteBranch(menu().ref); setRefMenu(null); if (target) void runAction({ kind: "delete_remote_branch", value: target }, `Delete branch ${target.branch} from ${target.remote}?`); }}>Delete remote branch</button></Show>
       <Show when={menu().ref.kind === "tag"}><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push tag to remote…</button><button disabled={actionBusy()} onClick={() => { const name = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_tag", value: { name } }, `Delete local tag ${name}?`); }}>Delete local tag</button><button class="danger" disabled={actionBusy()} onClick={() => deleteRemoteTag(menu().ref.name)}>Delete remote tag…</button></Show>
@@ -2049,7 +2062,7 @@ function App() {
         <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
           <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
             <div class="section-heading"><ChevronDown />{kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span><Show when={kind === "remote"}><button class="ref-section-action" title="Delete a remote branch by name" onClick={deleteRemoteBranchByName}>Delete…</button></Show><Show when={kind === "tag"}><button class="ref-section-action" title="Delete a remote tag by name" onClick={() => deleteRemoteTag()}>Remote…</button></Show></div>
-            <RefTree nodes={groupRefs(repo()?.refs.filter(item => item.kind === kind) ?? [], kind === "branch" || kind === "remote")} kind={kind} depth={0} overrides={folderOverrides()} onToggle={(key, open) => setFolderOverrides(previous => ({ ...previous, [key]: open }))} onSelect={hash => void jumpToCommit(hash, kind !== "stash")} onMenu={openRefMenu} colorFor={ref => kind === "branch" || kind === "remote" ? branchColor(branchKey(ref.name, repo()?.remotes ?? [])) : undefined} />
+            <RefTree nodes={groupRefs(repo()?.refs.filter(item => item.kind === kind) ?? [], kind === "branch" || kind === "remote")} kind={kind} depth={0} overrides={folderOverrides()} onToggle={(key, open) => setFolderOverrides(previous => ({ ...previous, [key]: open }))} onSelect={hash => void jumpToCommit(hash, kind !== "stash")} onMenu={openRefMenu} onCheckout={checkoutRef} colorFor={ref => kind === "branch" || kind === "remote" ? branchColor(branchKey(ref.name, repo()?.remotes ?? [])) : undefined} />
           </section>}</For></div><div class="locations-footer"><span class="connection-dot" /> {repo()?.path.startsWith("ssh://") ? "SSH REPOSITORY" : "LOCAL REPOSITORY"}</div>
         </aside><div class="splitter locations-splitter" onPointerDown={event => startResize("locations", event)} /></Show>
         <section class="commits-pane" style={{ width: `${commitsWidth()}px` }} onPointerDown={() => { navigationArea = "commits"; }}><div class="pane-heading">{searchQuery() ? "SEARCH RESULTS" : "COMMITS"} <span class="heading-count">{displayedCommits().length}{hasMore() ? "+" : ""}</span></div>
