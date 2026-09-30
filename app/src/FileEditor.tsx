@@ -2,8 +2,10 @@ import { createEffect, createMemo, createSignal, Index, on, onCleanup, Show } fr
 import { highlightFileLines } from "./diffHighlight";
 import "./fileEditor.css";
 
-/** What to open: a working-tree file, the line to put the caret on and an optional 1-based line range (the hunk) to highlight. */
-export type EditorTarget = { repo: string; path: string; line: number; range: [number, number] | null; nonce: number };
+/** A hunk's changes in the new file, as 1-based lines: added lines, and lines that removed lines sat directly above. */
+export type HunkMarks = { added: number[]; removed: number[] };
+/** What to open: a working-tree file, the line to put the caret on and optionally the hunk to highlight. */
+export type EditorTarget = { repo: string; path: string; line: number; marks: HunkMarks | null; nonce: number };
 type EditorDoc = { source: string; original: string; text: string; newline: "\n" | "\r\n" | "\r" };
 
 const newlineOf = (content: string): EditorDoc["newline"] => content.includes("\r\n") ? "\r\n" : content.includes("\r") ? "\r" : "\n";
@@ -38,7 +40,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal("");
   const [caretLine, setCaretLine] = createSignal(0);
-  const [range, setRange] = createSignal<[number, number] | null>(null);
+  const [marks, setMarks] = createSignal<{ added: Set<number>; removed: Set<number> } | null>(null);
   const dirty = createMemo(() => { const current = doc(); return Boolean(current && current.text !== current.original); });
   createEffect(() => props.onDirty(dirty()));
   onCleanup(() => props.onDirty(false));
@@ -70,10 +72,13 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     const text = doc()?.text;
     if (text === undefined) return;
     const line = Math.max(1, Math.min(props.target.line, lines().length));
-    setRange(props.target.range);
+    const target = props.target.marks;
+    // A removal at the very end of the file marks the last line.
+    setMarks(target && { added: new Set(target.added), removed: new Set(target.removed.map(item => Math.min(item, lines().length))) });
+    const firstLine = target ? Math.min(...target.added, ...target.removed) : Infinity;
     requestAnimationFrame(() => {
       const row = rowsElement.children[line - 1] as HTMLElement | undefined;
-      const first = props.target.range ? rowsElement.children[props.target.range[0] - 1] as HTMLElement | undefined : undefined;
+      const first = Number.isFinite(firstLine) ? rowsElement.children[firstLine - 1] as HTMLElement | undefined : undefined;
       if (row) {
         // Keep the whole hunk in view when it fits, otherwise start at the double-clicked line.
         const anchor = first && row.offsetTop - first.offsetTop < scroller.clientHeight * 0.6 ? first : row;
@@ -140,7 +145,8 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     }
   }
 
-  const inRange = (index: number) => { const current = range(); return Boolean(current && index + 1 >= current[0] && index + 1 <= current[1]); };
+  const isAdded = (index: number) => Boolean(marks()?.added.has(index + 1));
+  const removedAbove = (index: number) => Boolean(marks()?.removed.has(index + 1));
   return <>
     <div class="splitter editor-splitter" style={{ display: props.hidden ? "none" : undefined }} onPointerDown={event => props.onResize(event)} />
     <aside class="editor-pane" style={{ width: `${props.width}px`, display: props.hidden ? "none" : undefined }} aria-label={`Editor for ${props.target.path}`}>
@@ -151,13 +157,13 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       <div class="editor-scroll" ref={scroller}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>
           <div class="editor-body" style={{ "--editor-gutter": gutter() }}>
-            <div class="editor-rows" ref={rowsElement} aria-hidden="true"><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${inRange(index) ? "hunk" : ""} ${inRange(index) && !inRange(index - 1) ? "hunk-start" : ""} ${inRange(index) && !inRange(index + 1) ? "hunk-end" : ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /></div>}</Index></div>
+            <div class="editor-rows" ref={rowsElement} aria-hidden="true"><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /></div>}</Index></div>
             <textarea class="editor-input" ref={input} aria-label={`Edit ${props.target.path}`} spellcheck={false} autocapitalize="off" autocomplete="off" wrap="soft" rows={1} cols={1} readOnly={saving()} value={doc()?.text ?? ""} onInput={event => {
               const text = event.currentTarget.value;
               const before = lines().length;
               setDoc(value => value && { ...value, text });
               // Added or removed lines shift the highlighted hunk off its lines.
-              if (lines().length !== before) setRange(null);
+              if (lines().length !== before) setMarks(null);
               updateCaret();
             }} onKeyDown={onKeyDown} onFocus={updateCaret} />
           </div>
