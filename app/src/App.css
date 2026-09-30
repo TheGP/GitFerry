@@ -192,14 +192,14 @@ button { cursor: pointer; }
 .line-text { flex: 1; min-width: 0; padding-right: 24px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff-line.added .word-change { background: var(--diff-added-word); border-radius: 2px; }
 .diff-line.deleted .word-change { background: var(--diff-deleted-word); border-radius: 2px; }
-.diff-line .syntax-keyword, .diff-line .syntax-boolean { color: #db9bd1; }
-.diff-line .syntax-string, .diff-line .syntax-char { color: #a9d88f; }
-.diff-line .syntax-number, .diff-line .syntax-constant { color: #ddb78b; }
-.diff-line .syntax-function, .diff-line .syntax-class-name { color: #d8c69a; }
-.diff-line .syntax-comment, .diff-line .syntax-prolog { color: #9caab2; font-style: italic; }
-.diff-line .syntax-property, .diff-line .syntax-attr-name { color: #9bc5e9; }
-.diff-line .syntax-operator, .diff-line .syntax-punctuation { color: #c2cbd0; }
-.diff-line .syntax-tag, .diff-line .syntax-selector { color: #e9a6a0; }
+.diff-line .syntax-keyword, .diff-line .syntax-boolean, .editor-code .syntax-keyword, .editor-code .syntax-boolean { color: #db9bd1; }
+.diff-line .syntax-string, .diff-line .syntax-char, .editor-code .syntax-string, .editor-code .syntax-char { color: #a9d88f; }
+.diff-line .syntax-number, .diff-line .syntax-constant, .editor-code .syntax-number, .editor-code .syntax-constant { color: #ddb78b; }
+.diff-line .syntax-function, .diff-line .syntax-class-name, .editor-code .syntax-function, .editor-code .syntax-class-name { color: #d8c69a; }
+.diff-line .syntax-comment, .diff-line .syntax-prolog, .editor-code .syntax-comment, .editor-code .syntax-prolog { color: #9caab2; font-style: italic; }
+.diff-line .syntax-property, .diff-line .syntax-attr-name, .editor-code .syntax-property, .editor-code .syntax-attr-name { color: #9bc5e9; }
+.diff-line .syntax-operator, .diff-line .syntax-punctuation, .editor-code .syntax-operator, .editor-code .syntax-punctuation { color: #c2cbd0; }
+.diff-line .syntax-tag, .diff-line .syntax-selector, .editor-code .syntax-tag, .editor-code .syntax-selector { color: #e9a6a0; }
 .line-selection-toolbar { min-height: 34px; display: flex; align-items: center; gap: 9px; padding: 5px 12px; border-bottom: 1px solid var(--theme-border); background: var(--theme-heading); color: var(--theme-secondary); font: 13px Inter, "Segoe UI", sans-serif; }
 .line-selection-toolbar span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .line-selection-toolbar button { flex: none; padding: 4px 9px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; }
@@ -692,7 +692,6 @@ button { cursor: pointer; }
 .workspace.alt .commit-row .commit-main { flex-direction: row; align-items: center; gap: 12px; }
 .workspace.alt .commit-subject { flex: 0 1 auto; min-width: 0; }
 .workspace.alt .commit-meta { flex: 0 1 auto; margin-left: auto; gap: 14px; }
-.line-edit { flex: 1; min-width: 0; margin: 0; padding: 0 6px; border: 0; outline: 1px solid var(--theme-accent); background: var(--theme-input); color: var(--theme-text); font: inherit; line-height: inherit; }
 .commit-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 14px; margin: 0 0 12px; font-size: 13px; }
 .commit-facts dt { color: var(--theme-muted); font-style: italic; text-align: right; }
 .commit-facts dd { min-width: 0; margin: 0; color: var(--theme-secondary); overflow-wrap: anywhere; }

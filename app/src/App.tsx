@@ -8,6 +8,7 @@ import { highlightDiff } from "./diffHighlight";
 import { formatCommitDate } from "./commitDate";
 import { version } from "../package.json";
 import { createHunkNotes, HunkNotes } from "./HunkNote";
+import { FileEditor, type EditorTarget } from "./FileEditor";
 import "./App.css";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
@@ -251,7 +252,7 @@ function ConfirmButton(props: { class: string; disabled?: boolean; resetKey?: un
 // Branch comparisons diff "<merge base>..<head>"; other targets are a commit hash or a working-tree area.
 const isComparisonTarget = (target: string) => target.includes("..");
 
-function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWhitespace: boolean; fullContext?: boolean; actionBusy: boolean; repoPath: string; onAction: (operation: Operation, confirmation?: string) => void; onEdited: () => void; onError: (error: string) => void }) {
+function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWhitespace: boolean; fullContext?: boolean; actionBusy: boolean; repoPath: string; onAction: (operation: Operation, confirmation?: string) => void; onOpenEditor?: (line: number, range: [number, number] | null) => void }) {
   const lines = createMemo(() => parseDiffLines(props.value));
   const highlighted = createMemo(() => highlightDiff(lines(), props.item.path, props.value.text.length));
   // Rows keyed by content keep their DOM when the diff reloads; only changed lines, shifted line numbers and tokens update.
@@ -283,37 +284,45 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     const kind = lines()[index]?.kind;
     return lineActionable() && (kind === "added" || kind === "deleted");
   };
-  // Working-tree lines (context or added) can be edited in place: double-click, Enter or blur saves, Escape cancels.
-  const [editingLine, setEditingLine] = createSignal<number | null>(null);
+  // Double-clicking a working-tree line opens the file in the side editor at that line, with its hunk highlighted.
+  const editorOpenable = createMemo(() => Boolean(props.onOpenEditor) && props.working && props.item.status !== "D" && ["working", "staged", "untracked"].includes(props.item.target));
+  // Where a hunk sits in the new file: its added lines, or for a pure deletion the line the removed lines were above.
+  const hunkRanges = createMemo(() => {
+    const ranges = new Map<number, [number, number]>();
+    let next = 1;
+    for (const row of lines()) {
+      if (row.kind === "hunk") { next = Number(/\+(\d+)/.exec(row.line)?.[1] ?? 1); continue; }
+      if (row.hunkIndex < 0) continue;
+      const current = ranges.get(row.hunkIndex);
+      if (row.kind === "added" && row.newNumber !== null) ranges.set(row.hunkIndex, current && current[0] !== -1 ? [current[0], row.newNumber] : [row.newNumber, row.newNumber]);
+      else if (row.kind === "deleted" && !current) ranges.set(row.hunkIndex, [-1, Math.max(1, next)]);
+      if (row.newNumber !== null) next = row.newNumber + 1;
+    }
+    for (const [index, range] of ranges) if (range[0] === -1) ranges.set(index, [range[1], range[1]]);
+    return ranges;
+  });
   // Untracked files arrive as raw content rather than a diff, so their rows map 1:1 to file lines.
-  const editTarget = (index: number): { number: number; text: string } | null => {
+  function editorLine(index: number): number | null {
     const row = rows[index];
-    if (!row || demoMode || !props.working || props.value.truncated || props.item.status === "D") return null;
-    if (props.item.target === "untracked" && !hunkCount()) return index < rows.length - 1 || row.line ? { number: index + 1, text: row.line.replace(/\r$/, "") } : null;
-    if (props.item.target !== "working" && props.item.target !== "untracked") return null;
-    if (row.newNumber === null || row.hunkIndex < 0 || !(row.kind === "added" || row.line.startsWith(" "))) return null;
-    return { number: row.newNumber, text: row.line.slice(1).replace(/\r$/, "") };
-  };
-  const lineEditable = (index: number) => editTarget(index) !== null;
-  async function saveLine(index: number, text: string) {
-    const target = editTarget(index);
-    if (editingLine() !== index || !target) return;
-    setEditingLine(null);
-    if (text === target.text) return;
-    try {
-      const file = await invoke<EditableFile>("repo_read_file", { path: props.repoPath, file: props.item.path });
-      const newline = file.content.includes("\r\n") ? "\r\n" : "\n";
-      const fileLines = file.content.split(/\r?\n/);
-      if (fileLines[target.number - 1] !== target.text) throw new Error(`${props.item.path} changed since the diff was loaded. Refresh and try again.`);
-      fileLines[target.number - 1] = text;
-      await invoke<SavedFile>("repo_save_file", { path: props.repoPath, file: props.item.path, content: fileLines.join(newline), expectedContent: file.content, stage: false });
-      props.onEdited();
-    } catch (cause) { props.onError(cause instanceof Error ? cause.message : String(cause)); }
+    if (!row || !editorOpenable()) return null;
+    if (props.item.target === "untracked" && !hunkCount()) return index + 1;
+    if (row.hunkIndex < 0) return null;
+    if (row.newNumber !== null) return row.newNumber;
+    // A deleted line or hunk header opens where the hunk sits in the new file.
+    return hunkRanges().get(row.hunkIndex)?.[0] ?? Number(/\+(\d+)/.exec(lines()[index].line)?.[1] ?? 1);
+  }
+  function openEditorAt(index: number, event: MouseEvent) {
+    const line = editorLine(index);
+    if (line === null) return;
+    event.preventDefault();
+    window.getSelection()?.removeAllRanges();
+    const row = rows[index];
+    props.onOpenEditor?.(line, row.hunkIndex >= 0 ? hunkRanges().get(row.hunkIndex) ?? null : null);
   }
   let anchor = -1;
   let dragStart = -1;
   let dragged = false;
-  createEffect(() => { void props.value.text; setSelectedLines([]); setSelectedHunk(0); setEditingLine(null); anchor = -1; });
+  createEffect(() => { void props.value.text; setSelectedLines([]); setSelectedHunk(0); anchor = -1; });
   const selectRange = (from: number, to: number) => {
     const range: number[] = [];
     for (let index = Math.min(from, to); index <= Math.max(from, to); index++) if (changed(index)) range.push(index);
@@ -346,9 +355,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     <Show when={actionable() && hunkCount()}><div class="line-selection-toolbar" data-mode={selectedLines().length ? "lines" : "hunk"}><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : `Hunk ${selectedHunk() + 1} of ${hunkCount()}`)}</span><Show when={props.item.target === "working"}><ConfirmButton class="discard-selection" disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} resetKey={`${selectedHunk()}:${selectedLines().join()}`} onConfirm={() => applySelection(true)}>{selectedLines().length ? "Discard Lines" : "Discard Hunk"}</ConfirmButton></Show><button class={selectedLines().length ? "stage-lines" : "hunk-action"} disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(false)}>{props.item.target === "staged" ? "Unstage" : "Stage"} {selectedLines().length ? "Lines" : "Hunk"}</button></div></Show>
     <div class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""}`} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
       <Show when={changed(index())} fallback={<span class="line-number"><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select ${row.kind === "added" ? "new" : "old"} line ${row.kind === "added" ? row.newNumber : row.oldNumber}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></button></Show>
-      <Show when={editingLine() === index()} fallback={<span class="line-text" title={lineEditable(index()) ? "Double-click to edit" : undefined} onDblClick={event => { if (!lineEditable(index())) return; event.preventDefault(); window.getSelection()?.removeAllRanges(); setEditingLine(index()); }}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>}>
-        <input class="line-edit" aria-label={`Edit line ${editTarget(index())?.number}`} value={editTarget(index())?.text ?? ""} spellcheck={false} ref={element => requestAnimationFrame(() => { element.focus(); element.select(); })} onClick={event => event.stopPropagation()} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void saveLine(index(), event.currentTarget.value); } else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setEditingLine(null); } }} onBlur={event => void saveLine(index(), event.currentTarget.value)} />
-      </Show>
+      <span class="line-text" title={editorOpenable() && editorLine(index()) !== null ? "Double-click to edit in the side editor" : undefined} onDblClick={event => openEditorAt(index(), event)}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>
     </div></>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
   </>;
 }
@@ -357,7 +364,7 @@ function demoDiff(item: Choice): Diff {
   return { text: `diff --git a/${item.path} b/${item.path}\nindex 2a6d9f1..a83f140 100644\n--- a/${item.path}\n+++ b/${item.path}\n@@ -12,6 +12,9 @@ function RepositoryView() {\n   const branch = repository.branch;\n-  const loading = false;\n+  const loading = repository.isLoading;\n+  const remote = repository.remoteHost;\n+  const preview = "This long sample line checks that changed code wraps inside the diff pane instead of disappearing beyond its right edge, even when the file contains a full sentence with many words and a long identifier like RepositoryPreviewConfigurationWithRemoteTrackingEnabled";\n   return renderHistory(branch);\n }\n`, truncated: false };
 }
 
-function DiffCard(props: { item: Choice; repoPath: string; working: boolean; recent: boolean; expanded: boolean; eager: boolean; keyboardSelected: boolean; ignoreWhitespace: boolean; actionBusy: boolean; scrollRoot: HTMLElement; onSelect: () => void; onToggle: () => void; onOpenTab: () => void; onOpenEditor: (diff: Diff | null) => void; onEdited: () => void; onAction: (operation: Operation, confirmation?: string) => void; onError: (error: string) => void }) {
+function DiffCard(props: { item: Choice; repoPath: string; working: boolean; recent: boolean; expanded: boolean; eager: boolean; keyboardSelected: boolean; ignoreWhitespace: boolean; actionBusy: boolean; scrollRoot: HTMLElement; onSelect: () => void; onToggle: () => void; onOpenTab: () => void; onOpenEditor: (diff: Diff | null) => void; onOpenEditorLine: (line: number, range: [number, number] | null) => void; onAction: (operation: Operation, confirmation?: string) => void; onError: (error: string) => void }) {
   let element!: HTMLDivElement;
   const [value, setValue] = createSignal<Diff | null>(null);
   const [loading, setLoading] = createSignal(false);
@@ -413,7 +420,7 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
       <Show when={props.item.target === "working" && props.item.status !== "U"}><ConfirmButton class="row-action" disabled={props.actionBusy} onConfirm={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } })}>Discard</ConfirmButton></Show>
       <Show when={props.item.target === "staged"} fallback={<button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_file", value: { path: props.item.path } })}>{props.item.target === "working" && props.item.status === "U" ? "Mark resolved" : "Stage"}</button>}><button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "unstage_file", value: { path: props.item.path } })}>Unstage</button></Show>
     </span></Show><button class="summary-open-tab" title={`Open ${props.item.path} in a tab`} aria-label={`Open ${props.item.path} in a tab`} onClick={props.onOpenTab}><Icon name="external" /></button><button class="open-editor-button" title={`Open ${props.item.path} in editor`} aria-label={`Open ${props.item.path} in editor`} onClick={() => props.onOpenEditor(value())}><Icon name="code" /></button></div>
-    <Show when={props.expanded}><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() || "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} onEdited={props.onEdited} onError={props.onError} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
+    <Show when={props.expanded}><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() || "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} onOpenEditor={props.onOpenEditorLine} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
   </div>;
 }
 
@@ -564,6 +571,12 @@ function App() {
     const draft = fileDraft();
     return draft?.repo === activePath() && draft.path === choice()?.path ? draft : null;
   });
+  // The side editor opened by double-clicking a diff line.
+  const [sideEditor, setSideEditor] = createSignal<EditorTarget | null>(null);
+  const [sideEditorDirty, setSideEditorDirty] = createSignal(false);
+  const [sideEditorWidth, setSideEditorWidth] = createSignal(Number(localStorage.getItem("gitferry.editorWidth")) || 620);
+  const sideEditorShown = () => sideEditor()?.repo === activePath();
+  let sideEditorNonce = 0;
   const [fileHistory, setFileHistory] = createSignal<FileHistoryResult | null>(null);
   const [fileBlame, setFileBlame] = createSignal<BlameResult | null>(null);
   const [fileInfoLoading, setFileInfoLoading] = createSignal(false);
@@ -1393,6 +1406,30 @@ function App() {
       await invoke("open_in_editor", { repo: path, file: item.path, line, editor: editor(), executable: editorExecutable() });
     } catch (cause) { setError(String(cause)); }
   }
+  function openSideEditor(item: Choice, line: number, range: [number, number] | null) {
+    const path = activePath();
+    if (!path) return;
+    const current = sideEditor();
+    const open = () => setSideEditor({ repo: path, path: item.path, line, range, nonce: ++sideEditorNonce });
+    if (current && sideEditorDirty() && (current.repo !== path || current.path !== item.path)) {
+      openActionDialog({ title: `Discard unsaved edits to ${current.path}?`, submitLabel: "Discard", danger: true, fields: [], onSubmit: open });
+    } else open();
+  }
+  function closeSideEditor() {
+    const current = sideEditor();
+    if (current && sideEditorDirty()) openActionDialog({ title: `Discard unsaved edits to ${current.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => setSideEditor(null) });
+    else setSideEditor(null);
+  }
+  async function readSideEditorFile(path: string, file: string) {
+    if (demoMode) return demoDiff({ path: file, status: "M", target: "working" }).text;
+    return (await invoke<EditableFile>("repo_read_file", { path, file })).content;
+  }
+  async function saveSideEditorFile(path: string, file: string, content: string, expectedContent: string) {
+    if (demoMode) { setNotice("File saved"); return; }
+    const result = await invoke<SavedFile>("repo_save_file", { path, file, content, expectedContent, stage: false });
+    if (result.warning) setError(result.warning);
+    if (activePath() === path) void refreshState();
+  }
   function changeIgnoreWhitespace(value: boolean) {
     setIgnoreWhitespace(value);
     if (choice()) void selectFile(choice()!);
@@ -1762,6 +1799,12 @@ function App() {
       return;
     }
     if (draft?.repo === path) setFileDraft(null);
+    const editing = sideEditor();
+    if (editing?.repo === path && sideEditorDirty()) {
+      openActionDialog({ title: `Close repository with unsaved edits to ${editing.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => { setSideEditor(null); closeTab(path); } });
+      return;
+    }
+    if (editing?.repo === path) setSideEditor(null);
     const next = tabs().filter(item => item.path !== path);
     setTabs(next);
     tabViews.delete(path); pendingComparisons.delete(path); initialSelection.delete(path); updateComparison(path, () => null);
@@ -1822,8 +1865,16 @@ function App() {
     if (drag.to < drag.from && index >= drag.to && index < drag.from) return `translateX(${drag.width}px)`;
     return undefined;
   }
-  function startResize(which: "locations" | "commits" | "history", event: PointerEvent) {
+  function startResize(which: "locations" | "commits" | "history" | "editor", event: PointerEvent) {
     event.preventDefault();
+    if (which === "editor") {
+      // The editor sits on the right, so dragging its splitter left widens it.
+      const startX = event.clientX, start = sideEditorWidth();
+      const move = (next: PointerEvent) => setSideEditorWidth(Math.max(320, Math.min(window.innerWidth - 480, start - next.clientX + startX)));
+      const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); localStorage.setItem("gitferry.editorWidth", String(sideEditorWidth())); };
+      window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop);
+      return;
+    }
     const startPosition = which === "history" ? event.clientY : event.clientX;
     const startWidth = which === "locations" ? locationsWidth() : which === "history" ? commitsHeight() : commitsWidth();
     const move = (next: PointerEvent) => {
@@ -1973,7 +2024,7 @@ function App() {
       <Show when={recent().length}><div class="recent-list"><div class="eyebrow">RECENT</div><For each={recent()}>{path => <button onClick={() => void openRepo(path)}><Icon name="folder" /><span>{path}</span></button>}</For></div></Show>
     </main>}>
       <Show when={repoReady()} fallback={<main class="repo-startup" role="status"><div class="repo-startup-icon">◇</div><strong>{repo()?.loading ? `Opening ${repo()?.name}…` : `Could not open ${repo()?.name}`}</strong><span>{repo()?.loadError || "Your saved repositories are loading."}</span><Show when={repo()?.loadError}><button onClick={() => retryRestoredRepo(repo()!.path)}>Retry</button></Show></main>}>
-      <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"}`} style={{ "--history-height": `${commitsHeight()}px` }}>
+      <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditorShown() ? "with-editor" : ""}`} style={{ "--history-height": `${commitsHeight()}px` }}>
         <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
           <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
             <div class="section-heading"><ChevronDown />{kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span><Show when={kind === "remote"}><button class="ref-section-action" title="Delete a remote branch by name" onClick={deleteRemoteBranchByName}>Delete…</button></Show><Show when={kind === "tag"}><button class="ref-section-action" title="Delete a remote tag by name" onClick={() => deleteRemoteTag()}>Remote…</button></Show></div>
@@ -2043,12 +2094,12 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
                   <Show when={group.title === "UNSTAGED" && discardable().length}><ConfirmButton class="row-action" disabled={actionBusy()} resetKey={discardable().join("\0")} onConfirm={() => void runAction({ kind: "discard_files", value: { paths: discardable() } })}>Discard All</ConfirmButton></Show>
                   <Show when={group.title === "STAGED"} fallback={<button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_files", value: { paths: paths() } })}>Stage All</button>}><button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_files", value: { paths: paths() } })}>Unstage All</button></Show>
                 </>;
-              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onEdited={() => void refreshState()} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
+              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onOpenEditorLine={(line, range) => openSideEditor(item, line, range)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
             <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
               <Show when={fileView() === "diff"}>
                 <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.target === "working" && choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
                 <Show when={choice()?.target === "working" && choice()?.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show>
-                <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} onEdited={() => void refreshState()} onError={setError} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
+                <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it in the side editor.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} onOpenEditor={(line, range) => openSideEditor(choice()!, line, range)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
               </Show>
               <Show when={fileView() === "edit" && selected() === "working"}><div class="file-edit-view"><Show when={activeFileDraft()} fallback={<div class="empty-note">{fileEditError() || (fileEditLoading() ? "Loading file…" : "No editable file loaded")}</div>}>{draft => <><div class="file-edit-toolbar"><span>{draft().stageOnSave ? "Saving stages the whole file" : "Edits remain unstaged until you stage them"}</span><button disabled={fileEditSaving()} onClick={discardEditedFile}>Cancel</button><button class="file-edit-save" disabled={fileEditSaving() || draft().text === draft().original} onClick={() => void saveEditedFile()}>{fileEditSaving() ? "Saving…" : "Save · Ctrl+S"}</button></div><Show when={fileEditError()}>{message => <div class="file-edit-error">{message()}</div>}</Show><textarea class="file-edit-textarea" aria-label={`Edit ${draft().path}`} spellcheck={false} disabled={fileEditSaving()} value={draft().text} onInput={event => setFileDraft(current => current ? { ...current, text: event.currentTarget.value } : current)} onKeyDown={event => { if (event.key === "Tab") { event.preventDefault(); const input = event.currentTarget; const start = input.selectionStart; const end = input.selectionEnd; input.setRangeText("  ", start, end, "end"); setFileDraft(current => current ? { ...current, text: input.value } : current); } }} /></>}</Show></div></Show>
               <Show when={fileView() === "history"}><div class="file-inspection"><div class="file-inspection-heading">File history · {inspectRevision().slice(0, 8)}</div><Show when={fileInfoError()}>{message => <div class="empty-note">{message()}</div>}</Show><Show when={fileHistory()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading file history…" : "No file history loaded"}</div>}>{history => <><For each={history().commits}>{entry => <button class="file-history-row" title={`${entry.path} · ${entry.hash}`} onClick={() => void openHistoryCommit(entry)}><span class="file-history-subject">{entry.subject}</span><span class="file-history-meta">{entry.author} · {new Date(entry.timestamp * 1000).toLocaleDateString()} · {entry.hash.slice(0, 8)}</span></button>}</For><Show when={!history().commits.length && !fileInfoLoading()}><div class="empty-note">No committed history for this file.</div></Show><Show when={history().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileHistory(history().commits.length)}>{fileInfoLoading() ? "Loading…" : "Load more history"}</button></Show></>}</Show></div></Show>
@@ -2056,6 +2107,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
             </Show>
           </div>
         </section>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} hidden={!sideEditorShown()} revision={repo()?.status.find(item => item.path === target().path)?.worktreeRevision} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onResize={event => startResize("editor", event)} />}</Show>
       </main>
       </Show>
     </Show>

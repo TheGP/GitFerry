@@ -1,0 +1,37 @@
+.editor-pane { flex: none; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--theme-details); }
+.workspace.alt.with-editor { grid-template-columns: auto 1px minmax(0, 1fr) 1px auto; }
+.workspace.alt.no-locations.with-editor { grid-template-columns: minmax(0, 1fr) 1px auto; }
+.workspace.alt .editor-splitter { grid-column: 4; grid-row: 1 / 4; }
+.workspace.alt .editor-pane { grid-column: 5; grid-row: 1 / 4; }
+.workspace.alt.no-locations .editor-splitter { grid-column: 2; }
+.workspace.alt.no-locations .editor-pane { grid-column: 3; }
+
+.editor-tabs { height: 38px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-bottom: 1px solid var(--theme-border); background: var(--theme-heading); }
+.editor-tab { min-width: 0; display: flex; align-items: center; gap: 6px; padding: 4px 5px 4px 10px; border-radius: 4px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; font-style: italic; }
+.editor-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-tab-close { width: 18px; height: 18px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--theme-secondary); font-size: 16px; font-style: normal; line-height: 1; }
+.editor-tab-close:hover { background: var(--theme-hover); color: var(--theme-text); }
+.dirty-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--theme-text); }
+.editor-tabs-actions { margin-left: auto; display: flex; gap: 6px; }
+.editor-save { padding: 4px 11px; border: 1px solid var(--theme-accent); border-radius: 3px; background: var(--theme-accent-soft); color: var(--theme-text); font-size: 12px; }
+.editor-save:disabled { border-color: var(--theme-border); background: var(--theme-raised); opacity: .5; cursor: default; }
+.editor-breadcrumbs { flex: none; padding: 6px 14px; overflow: hidden; border-bottom: 1px solid var(--theme-border); color: var(--theme-muted); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.editor-crumb-separator { margin: 0 6px; opacity: .7; }
+.editor-crumb-file { color: var(--theme-text); }
+.editor-error { flex: none; padding: 6px 14px; border-bottom: 1px solid var(--theme-border); color: #f3a8a0; font-size: 12px; overflow-wrap: anywhere; }
+.editor-status { flex: none; display: flex; justify-content: space-between; gap: 12px; padding: 3px 12px; border-top: 1px solid var(--theme-border); background: var(--theme-heading); color: var(--theme-muted); font-size: 12px; }
+
+.editor-scroll { flex: 1; min-height: 0; overflow: auto; }
+/* The highlighted rows and the transparent textarea on top share font, width, padding and wrapping, so the caret lands on the colored text. */
+.editor-body { position: relative; padding: 6px 0 35vh; font-family: var(--code-font); font-size: var(--code-size); line-height: 1.5; }
+.editor-row { min-height: 1.5em; display: grid; grid-template-columns: var(--editor-gutter) minmax(0, 1fr); }
+.editor-line-number { padding-right: 1.5ch; color: var(--theme-muted); text-align: right; user-select: none; }
+.editor-code, .editor-input { padding: 0 16px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; tab-size: 4; }
+.editor-code { min-width: 0; color: var(--theme-text); }
+.editor-input { position: absolute; top: 6px; bottom: 0; left: var(--editor-gutter); width: calc(100% - var(--editor-gutter)); box-sizing: border-box; margin: 0; border: 0; outline: 0; resize: none; overflow: hidden; background: transparent; color: transparent; caret-color: var(--theme-text); font: inherit; line-height: inherit; letter-spacing: inherit; }
+.editor-input::selection { background: color-mix(in srgb, var(--theme-accent) 40%, transparent); color: transparent; }
+.editor-row.caret { background: color-mix(in srgb, var(--theme-text) 6%, transparent); }
+.editor-row.caret .editor-line-number { color: var(--theme-text); }
+.editor-row.hunk { background: color-mix(in srgb, var(--theme-accent) 16%, transparent); }
+.editor-row.hunk .editor-line-number { color: var(--theme-text); box-shadow: inset 3px 0 0 var(--theme-accent); }
+.editor-row.hunk.caret { background: color-mix(in srgb, var(--theme-accent) 24%, transparent); }

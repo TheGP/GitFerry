@@ -102,6 +102,27 @@ function renderParts(code: string, grammar: Prism.Grammar | undefined, ranges: R
   return parts;
 }
 
+const escapeHtml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** Highlights a whole file at once (so multi-line comments and strings color correctly) and returns one HTML string per line. */
+export function highlightFileLines(text: string, path: string): string[] {
+  const grammar = grammarFor(path);
+  const tokens: TokenPart[] = [];
+  if (grammar && text.length <= 400_000) {
+    try { flatten(Prism.tokenize(text, grammar), [], tokens); }
+    catch { tokens.length = 0; tokens.push({ text, types: [] }); }
+  } else tokens.push({ text, types: [] });
+  const lines: string[] = [""];
+  for (const token of tokens) {
+    const open = token.types.length ? `<span class="${token.types.map(type => `syntax-${type}`).join(" ")}">` : "";
+    token.text.split("\n").forEach((piece, index) => {
+      if (index) lines.push("");
+      if (piece) lines[lines.length - 1] += open ? `${open}${escapeHtml(piece)}</span>` : escapeHtml(piece);
+    });
+  }
+  return lines;
+}
+
 export function highlightDiff(rows: DiffRow[], path: string, diffLength: number): HighlightPart[][] {
   const changed = new Map<number, Range[]>();
   for (let index = 0; diffLength <= 180_000 && index < rows.length;) {
