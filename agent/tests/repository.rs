@@ -1444,6 +1444,40 @@ fn watcher_notices_nested_worktree_changes() {
 }
 
 #[test]
+fn watcher_reports_changes_made_between_calls_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("file.txt"), "before\n").unwrap();
+    let path = dir.to_str().unwrap();
+    // The first call starts the watcher; nothing has changed yet.
+    assert!(!watch(path, 1_000).unwrap());
+    // A change while nobody waits (the app is refreshing) is still reported by the next call, right away.
+    std::fs::write(dir.join("file.txt"), "after\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let start = std::time::Instant::now();
+    assert!(watch(path, 5_000).unwrap());
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    // The change was handed out once; the following call waits for a new one.
+    assert!(!watch(path, 1_000).unwrap());
+}
+
+#[test]
+fn watcher_ignores_git_objects_and_lock_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    let path = dir.to_str().unwrap();
+    assert!(!watch(path, 1_000).unwrap());
+    std::fs::write(dir.join(".git").join("objects").join("probe"), "x").unwrap();
+    std::fs::write(dir.join(".git").join("index.lock"), "x").unwrap();
+    std::fs::remove_file(dir.join(".git").join("index.lock")).unwrap();
+    std::fs::create_dir(dir.join("node_modules")).unwrap();
+    std::fs::write(dir.join("node_modules").join("probe"), "x").unwrap();
+    assert!(!watch(path, 1_000).unwrap());
+}
+
+#[test]
 fn interactive_rebase_plan_is_ordered_and_rejects_stale_steps() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();

@@ -370,65 +370,129 @@ fn joined<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> Result<T, String> 
         .map_err(|_| "Git worker thread failed".to_string())
 }
 
-pub fn watch(path: &str, timeout_ms: u64) -> Result<bool, String> {
-    let root = repo_root(path)?;
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(sender).map_err(|error| error.to_string())?;
-    watcher
-        .watch(&root, RecursiveMode::Recursive)
-        .map_err(|error| error.to_string())?;
-    let git_dir = git(&root, &["rev-parse", "--absolute-git-dir"])?;
+/// Whether a file event can change what the app shows; Git's object store, logs and lock files never do.
+fn relevant_change(event: &notify::Event, git_dir: &Path) -> bool {
+    if matches!(event.kind, EventKind::Access(_)) {
+        return false;
+    }
+    event.paths.is_empty()
+        || event.paths.iter().any(|path| {
+            let mut in_git_dir = false;
+            for part in path.components() {
+                let name = part.as_os_str().to_string_lossy();
+                if name == "node_modules"
+                    || name == "target"
+                    || (in_git_dir && (name == "objects" || name == "logs"))
+                {
+                    return false;
+                }
+                if name == ".git" {
+                    in_git_dir = true;
+                }
+            }
+            // Other tools' `git status` briefly creates index.lock without changing anything.
+            let in_git_dir = in_git_dir || path.starts_with(git_dir);
+            !(in_git_dir
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension == "lock"))
+                && path != git_dir
+                && path.file_name().is_none_or(|name| name != ".git")
+        })
+}
+
+#[derive(Default)]
+struct WatchState {
+    changes: u64,
+    delivered: u64,
+    error: Option<String>,
+}
+
+struct RepoWatch {
+    _watcher: notify::RecommendedWatcher,
+    state: Arc<(Mutex<WatchState>, std::sync::Condvar)>,
+    last_used: std::time::Instant,
+}
+
+fn start_watch(root: &Path) -> Result<RepoWatch, String> {
+    let git_dir = git(root, &["rev-parse", "--absolute-git-dir"])?;
     let git_dir = PathBuf::from(text(&git_dir.stdout).trim());
-    if !git_dir.starts_with(&root) {
+    let state = Arc::new((Mutex::new(WatchState::default()), std::sync::Condvar::new()));
+    let shared = state.clone();
+    let events_git_dir = git_dir.clone();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        let (lock, wake) = &*shared;
+        let Ok(mut state) = lock.lock() else { return };
+        match result {
+            Ok(event) if relevant_change(&event, &events_git_dir) => state.changes += 1,
+            Ok(_) => return,
+            Err(error) => state.error = Some(error.to_string()),
+        }
+        wake.notify_all();
+    })
+    .map_err(|error| error.to_string())?;
+    watcher
+        .watch(root, RecursiveMode::Recursive)
+        .map_err(|error| error.to_string())?;
+    if !git_dir.starts_with(root) {
         watcher
             .watch(&git_dir, RecursiveMode::Recursive)
             .map_err(|error| error.to_string())?;
     }
+    Ok(RepoWatch {
+        _watcher: watcher,
+        state,
+        last_used: std::time::Instant::now(),
+    })
+}
+
+/// Waits up to `timeout_ms` for a relevant change and reports whether one happened.
+/// The watcher outlives each call, so changes made between calls (while the caller refreshes) still count.
+pub fn watch(path: &str, timeout_ms: u64) -> Result<bool, String> {
+    static WATCHES: std::sync::OnceLock<Mutex<std::collections::HashMap<PathBuf, RepoWatch>>> =
+        std::sync::OnceLock::new();
+    let root = repo_root(path)?;
+    let watches = WATCHES.get_or_init(Default::default);
+    let state = {
+        let mut watches = watches.lock().map_err(|_| "Watcher lock failed")?;
+        // Forget repositories nobody has asked about for a while, such as closed tabs.
+        watches.retain(|_, watch| watch.last_used.elapsed() < std::time::Duration::from_secs(300));
+        if !watches.contains_key(&root) {
+            let watch = start_watch(&root)?;
+            watches.insert(root.clone(), watch);
+        }
+        let watch = watches.get_mut(&root).ok_or("Watcher missing")?;
+        watch.last_used = std::time::Instant::now();
+        watch.state.clone()
+    };
     let deadline = std::time::Instant::now()
         + std::time::Duration::from_millis(timeout_ms.clamp(1_000, 60_000));
+    let (lock, wake) = &*state;
+    let mut current = lock.lock().map_err(|_| "Watcher lock failed")?;
     loop {
+        if let Some(error) = current.error.take() {
+            drop(current);
+            if let Ok(mut watches) = watches.lock() {
+                watches.remove(&root);
+            }
+            return Err(error);
+        }
+        if current.changes > current.delivered {
+            // Let a burst of writes (a commit, a formatter run) finish before the caller reads the repository.
+            drop(current);
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let mut current = lock.lock().map_err(|_| "Watcher lock failed")?;
+            current.delivered = current.changes;
+            return Ok(true);
+        }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             return Ok(false);
         }
-        match receiver.recv_timeout(remaining) {
-            Ok(Ok(event)) => {
-                if matches!(event.kind, EventKind::Access(_)) {
-                    continue;
-                }
-                let relevant = event.paths.is_empty()
-                    || event.paths.iter().any(|path| {
-                        let mut in_git_dir = false;
-                        for part in path.components() {
-                            let name = part.as_os_str().to_string_lossy();
-                            if name == "node_modules"
-                                || name == "target"
-                                || (in_git_dir && (name == "objects" || name == "logs"))
-                            {
-                                return false;
-                            }
-                            if name == ".git" {
-                                in_git_dir = true;
-                            }
-                        }
-                        // Other tools' `git status` briefly creates index.lock without changing anything.
-                        let in_git_dir = in_git_dir || path.starts_with(&git_dir);
-                        !(in_git_dir
-                            && path
-                                .extension()
-                                .is_some_and(|extension| extension == "lock"))
-                            && path != git_dir.as_path()
-                            && path.file_name().is_none_or(|name| name != ".git")
-                    });
-                if relevant {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    return Ok(true);
-                }
-            }
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(false),
-            Err(error) => return Err(error.to_string()),
-        }
+        current = wake
+            .wait_timeout(current, remaining)
+            .map_err(|_| "Watcher lock failed")?
+            .0;
     }
 }
 
