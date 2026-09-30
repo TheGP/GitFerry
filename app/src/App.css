@@ -149,6 +149,7 @@ button { cursor: pointer; }
 .file-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 7px 25px; background: #263038; border-bottom: 1px solid #1a232a; }
 .file-actions button.danger { border-color: #855454; background: #543a3b; color: #f0c5c1; }
 .files-heading { display: flex; gap: 9px; align-items: center; height: 39px; padding: 0 32px; color: #a5b3bd; font-size: 13px; letter-spacing: 1px; font-weight: 800; }
+.files-title { min-width: 0; font-weight: inherit; white-space: nowrap; }
 .files-heading span { color: #71828e; }
 .files-list { margin: 0 0 25px; border-top: 1px solid #1d252c; border-bottom: 1px solid #1d252c; overflow: hidden; }
 .file-group-heading { min-height: 34px; border-bottom: 1px solid #222b33; background: #252f37; color: #8195a1; font-size: 13px; font-weight: 800; letter-spacing: 1px; }
@@ -662,6 +663,7 @@ button { cursor: pointer; }
   .commit-editor-actions { flex-wrap: wrap; gap: 8px; }
   .commit-editor-actions button { margin-left: auto; }
   .files-heading { height: auto; min-height: 39px; flex-wrap: wrap; gap: 7px; padding: 7px 12px; }
+  .files-heading.multiple-actions .files-title { flex: 0 0 100%; }
   .files-heading-spacer { display: none; }
   .files-heading button { white-space: nowrap; }
   .files-heading button:last-child { margin-left: auto; }
@@ -720,6 +722,11 @@ button { cursor: pointer; }
 .compare-close { width: 34px; flex: none; display: grid; place-items: center; border: 0; background: none; color: var(--theme-muted); cursor: pointer; }
 .compare-close:hover { background: var(--theme-hover); color: var(--theme-text); }
 .compare-close .icon { width: 13px; height: 13px; }
+.files-heading .files-disclosure { display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 800; letter-spacing: inherit; cursor: pointer; }
+.files-heading.toggles { cursor: pointer; }
+.files-heading.toggles:hover .files-disclosure { color: var(--theme-text); }
+.files-disclosure svg { width: 12px; height: 12px; flex: none; transition: transform .12s ease; }
+.files-disclosure[aria-expanded="false"] svg { transform: rotate(-90deg); }
 /* File headers stick to the top of the details pane until their diff scrolls past (overflow must stay visible for sticky). */
 .files-list, .files-list .summary-diff-card { overflow: visible; }
 .summary-diff-heading { position: sticky; top: 0; z-index: 3; }
