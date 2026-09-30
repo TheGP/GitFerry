@@ -1,0 +1,11 @@
+[package]
+name = "gitferry-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+gitferry-agent = { path = "../agent" }
+gix = { version = "0.88", default-features = false, features = ["max-performance-safe", "sha1", "status", "revision"] }
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+serde_json = "1"

@@ -8,6 +8,7 @@ gitferry-proto = { path = "../proto" }
 serde_json = "1"
 libc = "0.2"
 notify = "8.2"
+gix = { version = "0.88", default-features = false, features = ["max-performance-safe", "sha1", "status", "revision"] }
 
 [dev-dependencies]
 tempfile = "3"
