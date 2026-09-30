@@ -9,7 +9,7 @@ import { formatCommitDate } from "./commitDate";
 import { version } from "../package.json";
 import { createHunkNotes, HunkNotes } from "./HunkNote";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
-import { growWindow, shrinkWindow, shrinkWindowOnClose } from "./windowGrow";
+import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
 import "./App.css";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
@@ -54,6 +54,7 @@ const whitespaceKey = "gitferry.ignoreWhitespace";
 const uiFontKey = "gitferry.uiFont";
 const codeFontKey = "gitferry.codeFont";
 const codeSizeKey = "gitferry.codeSize";
+const sideEditorKey = "gitferry.sideEditor";
 const uiFontFallback = `"Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif`;
 const codeFontFallback = `Consolas, "SFMono-Regular", Menlo, "Liberation Mono", monospace`;
 // A chosen font goes first, with the defaults behind it in case it is not installed.
@@ -80,6 +81,14 @@ type ThemeId = (typeof themeOptions)[number]["id"];
 const storedTheme = localStorage.getItem(themeKey);
 const initialTheme: ThemeId = themeOptions.find(option => option.id === storedTheme)?.id ?? "antigravity";
 const demoMode = import.meta.env.DEV && new URLSearchParams(location.search).has("demo");
+function savedSideEditor(): EditorTarget | null {
+  if (demoMode) return null;
+  try {
+    const saved = JSON.parse(localStorage.getItem(sideEditorKey) ?? "null");
+    if (!saved || typeof saved.repo !== "string" || typeof saved.path !== "string") return null;
+    return { repo: saved.repo, path: saved.path, commit: typeof saved.commit === "string" ? saved.commit : undefined, line: Number(saved.line) || 0, marks: null, nonce: 0 };
+  } catch { return null; }
+}
 function savedSession(): { tabs: Repo[]; activePath: string | null } {
   if (!isTauri() || demoMode) return { tabs: [], activePath: null };
   try {
@@ -605,7 +614,14 @@ function App() {
     return draft?.repo === activePath() && draft.path === choice()?.path ? draft : null;
   });
   // The side editor opened by double-clicking a diff line.
-  const [sideEditor, setSideEditor] = createSignal<EditorTarget | null>(null);
+  // The editor is part of the window: it reopens after a restart with the same file (the window was saved widened with it).
+  const [sideEditor, setSideEditor] = createSignal<EditorTarget | null>(savedSideEditor());
+  if (!sideEditor()) forgetWindowGrowth();
+  createEffect(() => {
+    const target = sideEditor();
+    if (target) localStorage.setItem(sideEditorKey, JSON.stringify({ repo: target.repo, path: target.path, commit: target.commit, line: target.line }));
+    else localStorage.removeItem(sideEditorKey);
+  });
   const [sideEditorDirty, setSideEditorDirty] = createSignal(false);
   const [sideEditorWidth, setSideEditorWidth] = createSignal(Number(localStorage.getItem("gitferry.editorWidth")) || 620);
   let sideEditorNonce = 0;
@@ -628,7 +644,6 @@ function App() {
     setSideEditor(null);
     setWorkspaceLock(null);
   }
-  onMount(() => { const unlisten = shrinkWindowOnClose(); onCleanup(() => void unlisten.then(stop => stop())); });
   const [fileHistory, setFileHistory] = createSignal<FileHistoryResult | null>(null);
   const [fileBlame, setFileBlame] = createSignal<BlameResult | null>(null);
   const [fileInfoLoading, setFileInfoLoading] = createSignal(false);

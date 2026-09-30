@@ -1,8 +1,20 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { currentMonitor, getCurrentWindow, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 
-// How much the window was widened (and moved left to stay on screen), so shrinking can undo exactly that.
-let grown = { width: 0, shift: 0 };
+// How much the window was widened (and moved left to stay on screen), so shrinking can undo exactly that. It is saved
+// because the window keeps its widened size across restarts (the editor reopens with it) and can still be narrowed later.
+const grownKey = "gitferry.windowGrown";
+let grown = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(grownKey) ?? "null");
+    if (Number.isFinite(saved?.width) && Number.isFinite(saved?.shift)) return { width: Number(saved.width), shift: Number(saved.shift) };
+  } catch { /* Ignore an invalid saved value. */ }
+  return { width: 0, shift: 0 };
+})();
+function setGrown(value: { width: number; shift: number }) {
+  grown = value;
+  if (value.width) localStorage.setItem(grownKey, JSON.stringify(value)); else localStorage.removeItem(grownKey);
+}
 // Grow and shrink calls run one after another so a quick open/close cannot interleave.
 let queue = Promise.resolve();
 const enqueue = (task: () => Promise<void>) => { queue = queue.then(task).catch(() => {}); return queue; };
@@ -14,6 +26,9 @@ function nextResize(): Promise<void> {
     window.addEventListener("resize", done);
   });
 }
+
+/** Forgets a saved widening when the editor it was for did not come back (e.g. after a crash), so the next open widens again. */
+export function forgetWindowGrowth() { setGrown({ width: 0, shift: 0 }); }
 
 /** Widens the window to the right by `extra` CSS pixels so side content can open without squeezing the rest. A maximized window stays as it is. */
 export function growWindow(extra: number): Promise<void> {
@@ -35,7 +50,7 @@ export function growWindow(extra: number): Promise<void> {
     const resized = nextResize();
     await appWindow.setSize(new PhysicalSize(inner.width + width, inner.height));
     await resized;
-    grown = { width, shift: position.x - x };
+    setGrown({ width, shift: position.x - x });
   });
 }
 
@@ -44,7 +59,7 @@ export function shrinkWindow(): Promise<void> {
   return enqueue(async () => {
     if (!isTauri() || !grown.width) return;
     const { width, shift } = grown;
-    grown = { width: 0, shift: 0 };
+    setGrown({ width: 0, shift: 0 });
     const appWindow = getCurrentWindow();
     if (await appWindow.isMaximized() || await appWindow.isFullscreen()) return;
     const [inner, position] = await Promise.all([appWindow.innerSize(), appWindow.outerPosition()]);
@@ -53,10 +68,4 @@ export function shrinkWindow(): Promise<void> {
     await resized;
     if (shift) await appWindow.setPosition(new PhysicalPosition(position.x + shift, position.y));
   });
-}
-
-/** Shrinks a widened window before it closes, so the saved window size does not include the side content. */
-export function shrinkWindowOnClose(): Promise<() => void> {
-  if (!isTauri()) return Promise.resolve(() => {});
-  return getCurrentWindow().onCloseRequested(() => shrinkWindow());
 }
