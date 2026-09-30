@@ -579,7 +579,24 @@ function App() {
   const sideEditorShown = () => sideEditor()?.repo === activePath();
   let sideEditorNonce = 0;
   // Opening the editor widens the window by the editor's width, so the rest of the layout keeps its size; closing it narrows the window back.
-  createEffect(on(() => Boolean(sideEditor()), open => void (open ? growWindow(sideEditorWidth() + 1) : shrinkWindow()), { defer: true }));
+  // While the window resizes, the workspace is pinned to its final width (the window clips the overflow), so the
+  // existing panes keep their size instead of squeezing for a frame and springing back.
+  const [workspaceLock, setWorkspaceLock] = createSignal<number | null>(null);
+  let workspaceElement: HTMLElement | undefined;
+  async function showSideEditor(target: EditorTarget) {
+    if (sideEditor()) { setSideEditor(target); return; }
+    const extra = sideEditorWidth() + 1;
+    setWorkspaceLock((workspaceElement?.clientWidth ?? window.innerWidth) + extra);
+    setSideEditor(target);
+    await growWindow(extra);
+    setWorkspaceLock(null);
+  }
+  async function hideSideEditor() {
+    setWorkspaceLock(workspaceElement?.clientWidth ?? null);
+    await shrinkWindow();
+    setSideEditor(null);
+    setWorkspaceLock(null);
+  }
   onMount(() => { const unlisten = shrinkWindowOnClose(); onCleanup(() => void unlisten.then(stop => stop())); });
   const [fileHistory, setFileHistory] = createSignal<FileHistoryResult | null>(null);
   const [fileBlame, setFileBlame] = createSignal<BlameResult | null>(null);
@@ -1414,15 +1431,15 @@ function App() {
     const path = activePath();
     if (!path) return;
     const current = sideEditor();
-    const open = () => setSideEditor({ repo: path, path: item.path, line, range, nonce: ++sideEditorNonce });
+    const open = () => void showSideEditor({ repo: path, path: item.path, line, range, nonce: ++sideEditorNonce });
     if (current && sideEditorDirty() && (current.repo !== path || current.path !== item.path)) {
       openActionDialog({ title: `Discard unsaved edits to ${current.path}?`, submitLabel: "Discard", danger: true, fields: [], onSubmit: open });
     } else open();
   }
   function closeSideEditor() {
     const current = sideEditor();
-    if (current && sideEditorDirty()) openActionDialog({ title: `Discard unsaved edits to ${current.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => setSideEditor(null) });
-    else setSideEditor(null);
+    if (current && sideEditorDirty()) openActionDialog({ title: `Discard unsaved edits to ${current.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => void hideSideEditor() });
+    else void hideSideEditor();
   }
   async function readSideEditorFile(path: string, file: string) {
     if (demoMode) return demoDiff({ path: file, status: "M", target: "working" }).text;
@@ -1805,10 +1822,10 @@ function App() {
     if (draft?.repo === path) setFileDraft(null);
     const editing = sideEditor();
     if (editing?.repo === path && sideEditorDirty()) {
-      openActionDialog({ title: `Close repository with unsaved edits to ${editing.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => { setSideEditor(null); closeTab(path); } });
+      openActionDialog({ title: `Close repository with unsaved edits to ${editing.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => { setSideEditorDirty(false); closeTab(path); } });
       return;
     }
-    if (editing?.repo === path) setSideEditor(null);
+    if (editing?.repo === path) void hideSideEditor();
     const next = tabs().filter(item => item.path !== path);
     setTabs(next);
     tabViews.delete(path); pendingComparisons.delete(path); initialSelection.delete(path); updateComparison(path, () => null);
@@ -2028,7 +2045,7 @@ function App() {
       <Show when={recent().length}><div class="recent-list"><div class="eyebrow">RECENT</div><For each={recent()}>{path => <button onClick={() => void openRepo(path)}><Icon name="folder" /><span>{path}</span></button>}</For></div></Show>
     </main>}>
       <Show when={repoReady()} fallback={<main class="repo-startup" role="status"><div class="repo-startup-icon">◇</div><strong>{repo()?.loading ? `Opening ${repo()?.name}…` : `Could not open ${repo()?.name}`}</strong><span>{repo()?.loadError || "Your saved repositories are loading."}</span><Show when={repo()?.loadError}><button onClick={() => retryRestoredRepo(repo()!.path)}>Retry</button></Show></main>}>
-      <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditorShown() ? "with-editor" : ""}`} style={{ "--history-height": `${commitsHeight()}px` }}>
+      <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditorShown() ? "with-editor" : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
         <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
           <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
             <div class="section-heading"><ChevronDown />{kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span><Show when={kind === "remote"}><button class="ref-section-action" title="Delete a remote branch by name" onClick={deleteRemoteBranchByName}>Delete…</button></Show><Show when={kind === "tag"}><button class="ref-section-action" title="Delete a remote tag by name" onClick={() => deleteRemoteTag()}>Remote…</button></Show></div>

@@ -6,6 +6,14 @@ let grown = { width: 0, shift: 0 };
 // Grow and shrink calls run one after another so a quick open/close cannot interleave.
 let queue = Promise.resolve();
 const enqueue = (task: () => Promise<void>) => { queue = queue.then(task).catch(() => {}); return queue; };
+// Resolves once the page has laid out at the new window size (or after a short timeout if no resize arrives).
+function nextResize(): Promise<void> {
+  return new Promise(resolve => {
+    const done = () => { window.clearTimeout(timer); window.removeEventListener("resize", done); requestAnimationFrame(() => resolve()); };
+    const timer = window.setTimeout(done, 300);
+    window.addEventListener("resize", done);
+  });
+}
 
 /** Widens the window to the right by `extra` CSS pixels so side content can open without squeezing the rest. A maximized window stays as it is. */
 export function growWindow(extra: number): Promise<void> {
@@ -24,7 +32,9 @@ export function growWindow(extra: number): Promise<void> {
     }
     if (!width) return;
     if (x !== position.x) await appWindow.setPosition(new PhysicalPosition(x, position.y));
+    const resized = nextResize();
     await appWindow.setSize(new PhysicalSize(inner.width + width, inner.height));
+    await resized;
     grown = { width, shift: position.x - x };
   });
 }
@@ -38,7 +48,9 @@ export function shrinkWindow(): Promise<void> {
     const appWindow = getCurrentWindow();
     if (await appWindow.isMaximized() || await appWindow.isFullscreen()) return;
     const [inner, position] = await Promise.all([appWindow.innerSize(), appWindow.outerPosition()]);
+    const resized = nextResize();
     await appWindow.setSize(new PhysicalSize(Math.max(400, inner.width - width), inner.height));
+    await resized;
     if (shift) await appWindow.setPosition(new PhysicalPosition(position.x + shift, position.y));
   });
 }
