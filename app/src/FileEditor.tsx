@@ -4,8 +4,9 @@ import "./fileEditor.css";
 
 /** A hunk's changes in the new file, as 1-based lines: added lines, and lines that removed lines sat directly above. */
 export type HunkMarks = { added: number[]; removed: number[] };
-/** What to open: a working-tree file, the line to put the caret on and optionally the hunk to highlight. */
-export type EditorTarget = { repo: string; path: string; line: number; marks: HunkMarks | null; nonce: number };
+/** What to open: a file, the line to put the caret on and optionally the hunk to highlight. Without `commit` it is the
+ * editable working-tree file; with it, the file as of that diff target (a commit or a comparison), read-only. An empty path is an empty editor. */
+export type EditorTarget = { repo: string; path: string; commit?: string; line: number; marks: HunkMarks | null; nonce: number };
 type EditorDoc = { source: string; original: string; text: string; newline: "\n" | "\r\n" | "\r" };
 
 const newlineOf = (content: string): EditorDoc["newline"] => content.includes("\r\n") ? "\r\n" : content.includes("\r") ? "\r" : "\n";
@@ -31,7 +32,7 @@ function insertText(input: HTMLTextAreaElement, text: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-export function FileEditor(props: { target: EditorTarget; revision?: string; width: number; hidden: boolean; load: (repo: string, path: string) => Promise<string>; save: (repo: string, path: string, content: string, expected: string) => Promise<void>; onDirty: (dirty: boolean) => void; onClose: () => void; onResize: (event: PointerEvent) => void }) {
+export function FileEditor(props: { target: EditorTarget; revision?: string; width: number; active: boolean; load: (repo: string, path: string, commit?: string) => Promise<string>; save: (repo: string, path: string, content: string, expected: string) => Promise<void>; onDirty: (dirty: boolean) => void; onClose: () => void; onResize: (event: PointerEvent) => void }) {
   let scroller!: HTMLDivElement;
   let rowsElement!: HTMLDivElement;
   let input!: HTMLTextAreaElement;
@@ -47,15 +48,19 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   const lines = createMemo(() => highlightFileLines(doc()?.text ?? "", props.target.path));
   const gutter = createMemo(() => `${String(lines().length).length + 3}ch`);
   const fileName = () => props.target.path.split(/[\\/]/).pop() ?? props.target.path;
+  const readOnly = () => Boolean(props.target.commit);
+  // The editor stays open across repository tabs; a tab other than the file's own shows it empty (the file stays loaded).
+  const shown = () => props.active && Boolean(props.target.path);
   const crumbs = () => props.target.path.split(/[\\/]/);
   let loadId = 0;
 
   async function load(keepView: boolean) {
-    const { repo, path } = props.target;
+    const { repo, path, commit } = props.target;
     const id = ++loadId;
+    if (!path) { setDoc(null); setLoading(false); setError(""); return; }
     setLoading(!keepView); setError("");
     try {
-      const content = await props.load(repo, path);
+      const content = await props.load(repo, path, commit);
       // Edits typed while a background reload was in flight win over the reloaded content.
       if (id !== loadId || (keepView && dirty())) return;
       if (!keepView) { setDoc(docOf(content)); reveal(); return; }
@@ -91,10 +96,10 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       updateCaret();
     });
   }
-  createEffect(on(() => `${props.target.repo}\u0000${props.target.path}`, () => { setDoc(null); void load(false); }));
+  createEffect(on(() => `${props.target.repo}\u0000${props.target.path}\u0000${props.target.commit ?? ""}`, () => { setDoc(null); setMarks(null); void load(false); }));
   createEffect(on(() => props.target.nonce, () => { if (doc()) reveal(); }, { defer: true }));
   // The file changed on disk (a discard, a checkout, another editor): pick it up unless there are unsaved edits.
-  createEffect(on(() => props.revision, () => { if (doc() && !dirty() && !saving()) void load(true); }, { defer: true }));
+  createEffect(on(() => props.revision, () => { if (doc() && !readOnly() && !dirty() && !saving()) void load(true); }, { defer: true }));
 
   function updateCaret() {
     const text = doc()?.text ?? "";
@@ -108,7 +113,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
 
   async function save() {
     const current = doc();
-    if (!current || !dirty() || saving()) return;
+    if (!current || !dirty() || saving() || readOnly()) return;
     setSaving(true); setError("");
     const content = current.newline === "\n" ? current.text : current.text.replace(/\n/g, current.newline);
     try {
@@ -135,6 +140,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   function onKeyDown(event: KeyboardEvent) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); event.stopPropagation(); void save(); return; }
     if (event.key === "Escape" && !dirty()) { event.preventDefault(); props.onClose(); return; }
+    if (readOnly()) return;
     if (event.key === "Tab" && !event.ctrlKey && !event.altKey) { event.preventDefault(); indent(event.shiftKey); return; }
     if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.isComposing) {
       const text = input.value;
@@ -148,17 +154,18 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   const isAdded = (index: number) => Boolean(marks()?.added.has(index + 1));
   const removedAbove = (index: number) => Boolean(marks()?.removed.has(index + 1));
   return <>
-    <div class="splitter editor-splitter" style={{ display: props.hidden ? "none" : undefined }} onPointerDown={event => props.onResize(event)} />
-    <aside class="editor-pane" style={{ width: `${props.width}px`, display: props.hidden ? "none" : undefined }} aria-label={`Editor for ${props.target.path}`}>
-      <div class="editor-tabs"><div class="editor-tab" title={props.target.path}><span class="editor-tab-name">{fileName()}</span><Show when={dirty()} fallback={<button class="editor-tab-close" title="Close editor (Esc)" aria-label="Close editor" onClick={props.onClose}>×</button>}><button class="editor-tab-close dirty" title="Unsaved changes. Close editor" aria-label="Close editor" onClick={props.onClose}><span class="dirty-dot" /></button></Show></div>
-        <div class="editor-tabs-actions"><button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button></div></div>
-      <div class="editor-breadcrumbs" title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
-      <Show when={error()}>{message => <div class="editor-error">{message()}</div>}</Show>
-      <div class="editor-scroll" ref={scroller}>
+    <div class="splitter editor-splitter" onPointerDown={event => props.onResize(event)} />
+    <aside class="editor-pane" style={{ width: `${props.width}px` }} aria-label={shown() ? `Editor for ${props.target.path}` : "Editor"}>
+      <div class="editor-tabs"><div class={`editor-tab ${shown() ? "" : "empty"}`} title={shown() ? props.target.path : undefined}><span class="editor-tab-name">{shown() ? fileName() : "No file"}</span><Show when={dirty()} fallback={<button class="editor-tab-close" title="Close editor (Esc)" aria-label="Close editor" onClick={props.onClose}>×</button>}><button class="editor-tab-close dirty" title="Unsaved changes. Close editor" aria-label="Close editor" onClick={props.onClose}><span class="dirty-dot" /></button></Show></div>
+        <div class="editor-tabs-actions"><Show when={shown()}><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit}`}>{props.target.commit!.split("..").map(part => part.slice(0, 8)).join("..")} · read-only</span></Show></Show></div></div>
+      <Show when={!shown()}><div class="editor-empty">Double-click a line in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
+      <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
+      <Show when={shown() && error()}>{message => <div class="editor-error">{message()}</div>}</Show>
+      <div class="editor-scroll" ref={scroller} style={{ display: shown() ? undefined : "none" }}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>
           <div class="editor-body" style={{ "--editor-gutter": gutter() }}>
             <div class="editor-rows" ref={rowsElement} aria-hidden="true"><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /></div>}</Index></div>
-            <textarea class="editor-input" ref={input} aria-label={`Edit ${props.target.path}`} spellcheck={false} autocapitalize="off" autocomplete="off" wrap="soft" rows={1} cols={1} readOnly={saving()} value={doc()?.text ?? ""} onInput={event => {
+            <textarea class="editor-input" ref={input} aria-label={`Edit ${props.target.path}`} spellcheck={false} autocapitalize="off" autocomplete="off" wrap="soft" rows={1} cols={1} readOnly={saving() || readOnly()} value={doc()?.text ?? ""} onInput={event => {
               const text = event.currentTarget.value;
               const before = lines().length;
               setDoc(value => value && { ...value, text });
@@ -169,7 +176,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
           </div>
         </Show>
       </div>
-      <div class="editor-status"><span>Ln {caretLine() + 1}</span><span>{saving() ? "Saving…" : dirty() ? "Unsaved · Ctrl+S to save" : "Saved to working tree"}</span></div>
+      <div class="editor-status" style={{ display: shown() ? undefined : "none" }}><span>Ln {caretLine() + 1}</span><span>{readOnly() ? "Read-only · file as of this commit" : saving() ? "Saving…" : dirty() ? "Unsaved · Ctrl+S to save" : "Saved to working tree"}</span></div>
     </aside>
   </>;
 }

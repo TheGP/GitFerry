@@ -252,6 +252,20 @@ function ConfirmButton(props: { class: string; disabled?: boolean; resetKey?: un
 
 // Branch comparisons diff "<merge base>..<head>"; other targets are a commit hash or a working-tree area.
 const isComparisonTarget = (target: string) => target.includes("..");
+const isWorkingTarget = (target: string) => target === "working" || target === "staged" || target === "untracked";
+// A full-context diff lists every line of the file's new version, so it rebuilds the file as of a commit.
+function fileFromFullDiff(value: Diff): string {
+  if (value.truncated) throw new Error("This file is too large to show as of a commit.");
+  if (!value.text.includes("\n@@ ")) throw new Error("This file has no text content in this commit.");
+  const lines: string[] = [];
+  let noNewline = false;
+  for (const row of parseDiffLines(value)) {
+    if (row.hunkIndex < 0) continue;
+    if (row.newNumber !== null) { lines.push(row.line.slice(1)); noNewline = false; }
+    else if (row.line.startsWith("\\") && lines.length) noNewline = true;
+  }
+  return lines.join("\n") + (noNewline ? "" : "\n");
+}
 
 function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWhitespace: boolean; fullContext?: boolean; actionBusy: boolean; repoPath: string; onAction: (operation: Operation, confirmation?: string) => void; onOpenEditor?: (line: number, marks: HunkMarks | null) => void }) {
   const lines = createMemo(() => parseDiffLines(props.value));
@@ -286,7 +300,8 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     return lineActionable() && (kind === "added" || kind === "deleted");
   };
   // Double-clicking a working-tree line opens the file in the side editor at that line, with its hunk highlighted.
-  const editorOpenable = createMemo(() => Boolean(props.onOpenEditor) && props.working && props.item.status !== "D" && ["working", "staged", "untracked"].includes(props.item.target));
+  // Working-tree files open editable; a commit's or comparison's files open read-only as of that diff.
+  const editorOpenable = createMemo(() => Boolean(props.onOpenEditor) && props.item.status !== "D" && props.item.target !== "tracked" && (props.working || !isWorkingTarget(props.item.target)));
   // What each hunk changed in the new file: its added lines, and the lines that removed lines (not replaced by added ones) sat above.
   const hunkMarks = createMemo(() => {
     const marks = new Map<number, HunkMarks>();
@@ -360,7 +375,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     <Show when={actionable() && hunkCount()}><div class="line-selection-toolbar" data-mode={selectedLines().length ? "lines" : "hunk"}><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : `Hunk ${selectedHunk() + 1} of ${hunkCount()}`)}</span><Show when={props.item.target === "working"}><ConfirmButton class="discard-selection" disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} resetKey={`${selectedHunk()}:${selectedLines().join()}`} onConfirm={() => applySelection(true)}>{selectedLines().length ? "Discard Lines" : "Discard Hunk"}</ConfirmButton></Show><button class={selectedLines().length ? "stage-lines" : "hunk-action"} disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(false)}>{props.item.target === "staged" ? "Unstage" : "Stage"} {selectedLines().length ? "Lines" : "Hunk"}</button></div></Show>
     <div class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""}`} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
       <Show when={changed(index())} fallback={<span class="line-number"><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select ${row.kind === "added" ? "new" : "old"} line ${row.kind === "added" ? row.newNumber : row.oldNumber}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></button></Show>
-      <span class="line-text" title={editorOpenable() && editorLine(index()) !== null ? "Double-click to edit in the side editor" : undefined} onDblClick={event => openEditorAt(index(), event)}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>
+      <span class="line-text" title={editorOpenable() && editorLine(index()) !== null ? (isWorkingTarget(props.item.target) ? "Double-click to edit in the side editor" : "Double-click to view the file as of this commit") : undefined} onDblClick={event => openEditorAt(index(), event)}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>
     </div></>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
   </>;
 }
@@ -580,7 +595,6 @@ function App() {
   const [sideEditor, setSideEditor] = createSignal<EditorTarget | null>(null);
   const [sideEditorDirty, setSideEditorDirty] = createSignal(false);
   const [sideEditorWidth, setSideEditorWidth] = createSignal(Number(localStorage.getItem("gitferry.editorWidth")) || 620);
-  const sideEditorShown = () => sideEditor()?.repo === activePath();
   let sideEditorNonce = 0;
   // Opening the editor widens the window by the editor's width, so the rest of the layout keeps its size; closing it narrows the window back.
   // While the window resizes, the workspace is pinned to its final width (the window clips the overflow), so the
@@ -1435,8 +1449,9 @@ function App() {
     const path = activePath();
     if (!path) return;
     const current = sideEditor();
-    const open = () => void showSideEditor({ repo: path, path: item.path, line, marks, nonce: ++sideEditorNonce });
-    if (current && sideEditorDirty() && (current.repo !== path || current.path !== item.path)) {
+    const commit = isWorkingTarget(item.target) ? undefined : item.target;
+    const open = () => void showSideEditor({ repo: path, path: item.path, commit, line, marks, nonce: ++sideEditorNonce });
+    if (current && sideEditorDirty() && (current.repo !== path || current.path !== item.path || current.commit !== commit)) {
       openActionDialog({ title: `Discard unsaved edits to ${current.path}?`, submitLabel: "Discard", danger: true, fields: [], onSubmit: open });
     } else open();
   }
@@ -1445,7 +1460,8 @@ function App() {
     if (current && sideEditorDirty()) openActionDialog({ title: `Discard unsaved edits to ${current.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => void hideSideEditor() });
     else void hideSideEditor();
   }
-  async function readSideEditorFile(path: string, file: string) {
+  async function readSideEditorFile(path: string, file: string, commit?: string) {
+    if (commit) return fileFromFullDiff(demoMode ? demoDiff({ path: file, status: "M", target: commit }) : await invoke<Diff>("repo_diff", { path, target: commit, file, ignoreWhitespace: false, fullContext: true }));
     if (demoMode) return demoDiff({ path: file, status: "M", target: "working" }).text;
     return (await invoke<EditableFile>("repo_read_file", { path, file })).content;
   }
@@ -1841,7 +1857,8 @@ function App() {
       openActionDialog({ title: `Close repository with unsaved edits to ${editing.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => { setSideEditorDirty(false); closeTab(path); } });
       return;
     }
-    if (editing?.repo === path) void hideSideEditor();
+    // The editor stays open for the other tabs, empty.
+    if (editing?.repo === path) setSideEditor({ ...editing, repo: "", path: "", commit: undefined, marks: null });
     const next = tabs().filter(item => item.path !== path);
     setTabs(next);
     tabViews.delete(path); pendingComparisons.delete(path); initialSelection.delete(path); updateComparison(path, () => null);
@@ -2062,7 +2079,7 @@ function App() {
       <Show when={recent().length}><div class="recent-list"><div class="eyebrow">RECENT</div><For each={recent()}>{path => <button onClick={() => void openRepo(path)}><Icon name="folder" /><span>{path}</span></button>}</For></div></Show>
     </main>}>
       <Show when={repoReady()} fallback={<main class="repo-startup" role="status"><div class="repo-startup-icon">◇</div><strong>{repo()?.loading ? `Opening ${repo()?.name}…` : `Could not open ${repo()?.name}`}</strong><span>{repo()?.loadError || "Your saved repositories are loading."}</span><Show when={repo()?.loadError}><button onClick={() => retryRestoredRepo(repo()!.path)}>Retry</button></Show></main>}>
-      <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditorShown() ? "with-editor" : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
+      <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditor() ? "with-editor" : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
         <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
           <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
             <div class="section-heading"><ChevronDown />{kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span><Show when={kind === "remote"}><button class="ref-section-action" title="Delete a remote branch by name" onClick={deleteRemoteBranchByName}>Delete…</button></Show><Show when={kind === "tag"}><button class="ref-section-action" title="Delete a remote tag by name" onClick={() => deleteRemoteTag()}>Remote…</button></Show></div>
@@ -2145,7 +2162,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
             </Show>
           </div>
         </section>
-        <Show when={sideEditor()}>{target => <FileEditor target={target()} hidden={!sideEditorShown()} revision={repo()?.status.find(item => item.path === target().path)?.worktreeRevision} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onResize={event => startResize("editor", event)} />}</Show>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} active={target().repo === activePath()} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onResize={event => startResize("editor", event)} />}</Show>
       </main>
       </Show>
     </Show>

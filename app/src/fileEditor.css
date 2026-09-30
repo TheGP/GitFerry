@@ -11,6 +11,10 @@
 .editor-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .editor-tab-close { width: 18px; height: 18px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--theme-secondary); font-size: 16px; font-style: normal; line-height: 1; }
 .editor-tab-close:hover { background: var(--theme-hover); color: var(--theme-text); }
+.editor-tab.empty { color: var(--theme-muted); }
+.editor-commit { color: var(--theme-muted); font-family: var(--code-font); font-size: 12px; }
+.editor-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; color: var(--theme-muted); font-size: 13px; text-align: center; }
+.editor-empty-dirty { color: var(--theme-secondary); }
 .dirty-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--theme-text); }
 .editor-tabs-actions { margin-left: auto; display: flex; gap: 6px; }
 .editor-save { padding: 4px 11px; border: 1px solid var(--theme-accent); border-radius: 3px; background: var(--theme-accent-soft); color: var(--theme-text); font-size: 12px; }
