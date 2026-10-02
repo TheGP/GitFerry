@@ -42,6 +42,12 @@ pub fn handle(request: Request) -> Response {
             offset,
             limit,
         } => search(&path, &query, offset, limit).map(Response::Search),
+        Request::FindChanges {
+            path,
+            query,
+            offset,
+            limit,
+        } => search(&path, &format!("code:{query}"), offset, limit).map(Response::Search),
         Request::CommitDetails { path, hash } => {
             commit_details(&path, &hash).map(Response::CommitDetails)
         }
@@ -783,6 +789,7 @@ fn log(
     if let Some((kind, term)) = filter {
         match kind {
             "author" => args.extend(["--author", term]),
+            "code" => args.extend(["-S", term]),
             "path" => {
                 pathspec = literal_path(term)?;
                 args.extend(["--", pathspec.as_str()]);
@@ -927,6 +934,7 @@ pub fn search(
             has_more: false,
         });
     }
+    let code_term = query.strip_prefix("code:");
     let query = query.trim();
     if query.is_empty() {
         return Ok(SearchResult {
@@ -938,6 +946,8 @@ pub fn search(
         ("author", term.trim())
     } else if let Some(term) = query.strip_prefix("path:") {
         ("path", term.trim())
+    } else if let Some(term) = code_term {
+        ("code", term)
     } else {
         ("message", query)
     };

@@ -38,6 +38,26 @@ Open a local folder, or enter an SSH host and absolute repository path in the Op
 - Compare a branch with main (or master, develop, trunk) from its branch menu: the commits and combined diff since it left the base branch. The comparison follows both branches as they move.
 - AI change notes shown above the diff lines they explain (see below).
 
+## MCP: AI navigation
+
+In Settings, enable **MCP for AI navigation**, then **Copy MCP configuration** into your AI client's MCP configuration. The app must stay running. The server listens on `127.0.0.1` (default port `39847`); choose a different port for another GitFerry instance. Its bearer token is saved in the OS credential store and is not included in repository files or saved UI settings. The endpoint requires that token and rejects browser Origins.
+
+The server exposes `get_view`, `list_repositories`, `open_repository`, `list_branches`, `show_branch`, `search_commits`, `find_changes`, `get_commit`, `get_diff`, `file_history`, `blame`, and `reveal_change`. Local and SSH repositories use the same Git services as the app; SSH sign-in questions appear in GitFerry.
+
+`list_repositories` returns each open tab's canonical path as `tabId`, its checked-out `branch`, `head`, active flag, and selected commit. Recent paths appear separately because their current branch is unknown until opened. Pass the matching tab's path as `repository`. `open_repository` reuses existing tabs; its optional `branch` checks the checked-out branch and reports a mismatch rather than changing it. `show_branch` browses a branch's tip without checkout.
+
+For example, after reading a commit diff, an AI can navigate to the evidence with:
+
+```json
+{"repository":"C:/work/my-repo","branch":"topic","commit":"<full commit SHA>","file":"src/example.ts","highlights":[{"kind":"lines","side":"new","startLine":42,"endLine":44,"quote":"retry"}]}
+```
+
+That is the argument object for `reveal_change`. Line numbers are 1-based and refer to the old or new side of that exact diff. A hunk selection uses `{"kind":"hunk","hunkIndex":0}` (0-based). Multiple ranges in one file are supported. For a merge, supply a `parent` SHA; otherwise the first parent is used. The tool confirms success after the view renders, and fails for missing ranges, mismatched quotes, or truncated diffs. Gold emphasis is separate from staging selections; clear it with **Clear AI highlights**. Working, staged, and untracked targets are also supported. Emphasis disappears if the diff changes.
+
+`find_changes` searches literal code introductions/removals using Git `-S`. Rebuild the bundled SSH agents from this source before using code search remotely; an older agent reports that it needs rebuilding. `get_view` includes the active diff's staging selection, text selection, and AI highlights. MCP tools read Git data and navigate; they do not expose commit, checkout, stage, reset, or file-edit actions.
+
+The [GitFerry MCP skill](docs/skills/gitferry-mcp/SKILL.md) teaches agents to choose the correct repository/worktree branch, investigate changes, and reveal verified lines or hunks. Install its folder as `~/.agents/skills/gitferry-mcp` for Codex or `~/.claude/skills/gitferry-mcp` for Claude Code. Invoke it with `$gitferry-mcp` in Codex or `/gitferry-mcp` in Claude Code, or let the agent select it when your request matches. If an existing chat has not loaded native MCP tools, its Python 3.11+ helper calls the same authenticated local server using the saved client configuration without printing tokens. This skill is separate from the change-notes skill below.
+
 ## AI change notes
 
 AI coding agents can explain why they changed something, and GitFerry shows each explanation directly above the code it describes in working-tree, staged, and branch-comparison diffs.

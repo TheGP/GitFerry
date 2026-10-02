@@ -10,6 +10,7 @@ import { version } from "../package.json";
 import { createHunkNotes, HunkNotes } from "./HunkNote";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
+import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, type McpRequest, type McpConnection } from "./mcpNavigation";
 import "./App.css";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
@@ -276,7 +277,10 @@ function fileFromFullDiff(value: Diff): string {
   return lines.join("\n") + (noNewline ? "" : "\n");
 }
 
-function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWhitespace: boolean; fullContext?: boolean; actionBusy: boolean; repoPath: string; onAction: (operation: Operation, confirmation?: string) => void; onOpenEditor?: (line: number, marks: HunkMarks | null) => void }) {
+// Each mounted diff owns its selection, including expanded Summary cards. Weak keys disappear when a card closes.
+const diffViews = new WeakMap<HTMLElement, () => { value: Diff; item: Choice; selection: { rows: number[]; hunkIndex: number | null } }>();
+
+function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWhitespace: boolean; fullContext?: boolean; actionBusy: boolean; repoPath: string; aiRows?: ReadonlySet<number>; onSelection?: (value: { rows: number[]; hunkIndex: number | null }) => void; onAction: (operation: Operation, confirmation?: string) => void; onOpenEditor?: (line: number, marks: HunkMarks | null) => void }) {
   const lines = createMemo(() => parseDiffLines(props.value));
   const highlighted = createMemo(() => highlightDiff(lines(), props.item.path, props.value.text.length));
   // Rows keyed by content keep their DOM when the diff reloads; only changed lines, shifted line numbers and tokens update.
@@ -284,11 +288,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
   createComputed(() => {
     const parts = highlighted();
     const seen = new Map<string, number>();
-    // Untracked files arrive as raw content: number the lines as the new file's lines (not the empty tail after the last newline).
-    const raw = props.item.target === "untracked" && !lines().some(row => row.kind === "hunk");
-    const total = lines().length;
-    setRows(reconcile(lines().map((original, index) => {
-      const row = raw ? { ...original, kind: "", newNumber: index < total - 1 || original.line ? index + 1 : null } : original;
+    setRows(reconcile(numberedDiffRows(lines(), props.item.target).map((row, index) => {
       const base = `${row.kind}\u0000${row.line}`;
       const occurrence = seen.get(base) ?? 0;
       seen.set(base, occurrence + 1);
@@ -299,6 +299,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
   const hunkNotes = createHunkNotes(() => props.repoPath, () => props.item.path, lines, () => (props.working && ["working", "staged", "untracked"].includes(props.item.target)) || isComparisonTarget(props.item.target));
   const [selectedLines, setSelectedLines] = createSignal<number[]>([]);
   const [selectedHunk, setSelectedHunk] = createSignal(0);
+  createEffect(() => props.onSelection?.({ rows: selectedLines(), hunkIndex: hunkCount() ? selectedHunk() : null }));
   const selectedSet = createMemo(() => new Set(selectedLines()));
   const fileOnlyChange = createMemo(() => /(^|\n)(new file mode|deleted file mode|rename from|rename to|copy from|copy to|old mode|new mode)/.test(props.value.text));
   const lineStageNote = createMemo(() => props.value.truncated ? "Diff too large for line actions; use the file action." : props.value.text.includes("\\ No newline at end of file") ? "Use the hunk action when a file has no final newline." : fileOnlyChange() ? "Use the file action for rename or mode changes." : "");
@@ -395,7 +396,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
   }
   return <>
     <Show when={actionable() && hunkCount()}><div class="line-selection-toolbar" data-mode={selectedLines().length ? "lines" : "hunk"}><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : `Hunk ${selectedHunk() + 1} of ${hunkCount()}`)}</span><Show when={props.item.target === "working"}><ConfirmButton class="discard-selection" disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} resetKey={`${selectedHunk()}:${selectedLines().join()}`} onConfirm={() => applySelection(true)}>{selectedLines().length ? "Discard Lines" : "Discard Hunk"}</ConfirmButton></Show><button class={selectedLines().length ? "stage-lines" : "hunk-action"} disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(false)}>{props.item.target === "staged" ? "Unstage" : "Stage"} {selectedLines().length ? "Lines" : "Hunk"}</button></div></Show>
-    <div class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""}`} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
+    <div ref={element => diffViews.set(element, () => ({ value: props.value, item: props.item, selection: { rows: selectedLines(), hunkIndex: hunkCount() ? selectedHunk() : null } }))} class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""} ${props.aiRows?.has(index()) ? "ai-highlight" : ""}`} data-row-index={index()} data-old-line={row.oldNumber ?? undefined} data-new-line={row.newNumber ?? undefined} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
       <Show when={changed(index())} fallback={<span class="line-number"><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select ${row.kind === "added" ? "new" : "old"} line ${row.kind === "added" ? row.newNumber : row.oldNumber}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></button></Show>
       <span class="line-text" title={editorOpenable() && editorLine(index()) !== null ? (isWorkingTarget(props.item.target) ? "Double-click to edit in the side editor" : "Double-click to view the file as of this commit") : undefined} onDblClick={event => openEditorAt(index(), event)}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>
     </div></>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
@@ -456,7 +457,7 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
     observer.observe(element);
     onCleanup(() => observer.disconnect());
   });
-  return <div class="all-diff-card summary-diff-card" ref={element} data-path={props.item.path} data-target={props.item.target}>
+  return <div class="all-diff-card summary-diff-card" ref={element} data-path={props.item.path} data-target={props.item.target} onPointerDown={props.onSelect}>
     <div class="summary-diff-heading"><button class={`file-row ${props.keyboardSelected ? "keyboard-selected" : ""}`} aria-expanded={props.expanded} aria-current={props.keyboardSelected ? "true" : undefined} onFocus={props.onSelect} onClick={props.onToggle}><span class={`file-status ${props.item.status === "A" || props.item.status === "U" ? "added" : props.item.status === "D" ? "deleted" : "modified"}`}>{props.item.status}</span><Show when={props.recent}><span class="recent-icon" title="Recently modified"><Icon name="clock" /></span></Show><span class="file-path">{props.item.path}</span><Show when={props.item.target === "staged"}><span class="file-tag">STAGED</span></Show><Show when={props.item.additions != null || props.item.deletions != null}><span class="commit-stats file-stats"><span class="stat-deleted">-{props.item.deletions ?? 0}</span><span class="stat-added">+{props.item.additions ?? 0}</span></span></Show><span class="file-chevron"><ChevronDown /></span></button><Show when={props.working}><span class="row-actions">
       <Show when={props.item.target === "untracked"}><ConfirmButton class="row-action" disabled={props.actionBusy} onConfirm={() => props.onAction({ kind: "delete_untracked", value: { paths: [props.item.path] } })}>Delete</ConfirmButton></Show>
       <Show when={props.item.target === "working" && props.item.status !== "U"}><ConfirmButton class="row-action" disabled={props.actionBusy} onConfirm={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } })}>Discard</ConfirmButton></Show>
@@ -746,6 +747,13 @@ function App() {
   const [commitsWidth, setCommitsWidth] = createSignal(Number(localStorage.getItem("gitferry.commitsWidth")) || 365);
   const [commitsHeight, setCommitsHeight] = createSignal(Number(localStorage.getItem("gitferry.commitsHeight")) || 320);
   const [recent, setRecent] = createSignal<string[]>([]);
+  const [mcpConnection, setMcpConnection] = createSignal<McpConnection | null>(null);
+  const [mcpError, setMcpError] = createSignal("");
+  const [mcpBusy, setMcpBusy] = createSignal(false);
+  const [mcpPort, setMcpPort] = createSignal(Number(localStorage.getItem("gitferry.mcpPort")) || 39847);
+  const [mcpHighlight, setMcpHighlight] = createSignal<{ repo: string; target: string; file: string; text: string; rows: Set<number> } | null>(null);
+  const [diffSelection, setDiffSelection] = createSignal<{ rows: number[]; hunkIndex: number | null }>({ rows: [], hunkIndex: null });
+  const [revealedCommit, setRevealedCommit] = createSignal<{ repo: string; commit: Commit } | null>(null);
   const [scrollTop, setScrollTop] = createSignal(0);
   const [viewportHeight, setViewportHeight] = createSignal(600);
   createEffect(() => {
@@ -780,15 +788,10 @@ function App() {
   let detailsScroll!: HTMLDivElement;
   const repo = createMemo(() => tabs().find(item => item.path === activePath()) ?? null);
   const tabBranchVisibility = createMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of tabs()) {
-      const name = item.name.toLocaleLowerCase();
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-    }
     const seen = new Set<string>();
     return new Map(tabs().map(item => {
       const name = item.name.toLocaleLowerCase();
-      const visible = (counts.get(name) ?? 0) > 1 ? seen.has(name) : showTabBranch();
+      const visible = showTabBranch() || seen.has(name);
       seen.add(name);
       return [item.path, visible] as const;
     }));
@@ -846,7 +849,11 @@ function App() {
   createEffect(on(error, () => setErrorDetails(false), { defer: true }));
   const stashes = createMemo(() => repo()?.refs.filter(item => item.kind === "stash") ?? []);
   const conflicts = createMemo(() => repo()?.status.filter(item => item.index === "U" || item.worktree === "U" || ["AA", "DD"].includes(item.index + item.worktree)) ?? []);
-  const displayedCommits = createMemo(() => searchQuery() ? searchResult().commits : repo()?.commits ?? []);
+  const displayedCommits = createMemo(() => {
+    const commits = searchQuery() ? searchResult().commits : repo()?.commits ?? [];
+    const revealed = revealedCommit();
+    return revealed?.repo === activePath() && selected() === revealed.commit.hash && !commits.some(item => item.hash === revealed.commit.hash) ? [revealed.commit, ...commits] : commits;
+  });
   const hasMore = createMemo(() => searchQuery() ? searchResult().hasMore : repo()?.hasMore ?? false);
   // A keyed store keeps each file's object stable across refreshes; a changed revision or status
   // updates that one card in place instead of remounting it.
@@ -1124,6 +1131,7 @@ function App() {
         const overlap = item.commits.findIndex(commit => commit.hash === update.commits[update.commits.length - 1]?.hash);
         return mergeRepo(item, { ...update, commits: overlap >= 0 ? [...update.commits, ...item.commits.slice(overlap + 1)] : update.commits });
       }));
+      refreshWorkingDiff(path);
       setError("");
     } catch (cause) { setError(String(cause)); }
   }
@@ -1150,11 +1158,7 @@ function App() {
         if (activePath() === path) await refresh();
       } else if (JSON.stringify(update.status) !== JSON.stringify(current.status)) {
         setTabs(items => items.map(item => item.path === path ? { ...item, status: reuseEqual(item.status, update.status, entry => entry.path) } : item));
-        const selectedFile = choice();
-        if (activePath() === path && selected() === "working" && selectedFile && selectedFile.target !== "tracked") {
-          const fresh = workingFiles().find(item => item.target === selectedFile.target && item.path === selectedFile.path);
-          if (!fresh || (fresh.revision ?? "") !== shownDiffRevision) void reloadFileDiff();
-        }
+        refreshWorkingDiff(path);
       }
     } catch (cause) { setError(String(cause)); }
     finally { stateBusy = false; }
@@ -1206,15 +1210,19 @@ function App() {
     } catch (cause) { setError(String(cause)); }
     finally { setSearchBusy(false); }
   }
-  // The branch a feature is compared against: a local main line first, then its remote-tracking copy.
+  // Compare against the remote merge destination; a local main line may be stale or have unpushed commits.
   function findBaseBranch(refs: Ref[]) {
     for (const name of ["main", "master", "develop", "trunk"]) {
-      const local = refs.find(item => item.kind === "branch" && item.name === name);
-      if (local) return local;
+      const origin = refs.find(item => item.kind === "remote" && item.name === `origin/${name}`);
+      if (origin) return origin;
     }
     for (const name of ["main", "master", "develop", "trunk"]) {
       const remote = refs.find(item => item.kind === "remote" && item.name.endsWith(`/${name}`));
       if (remote) return remote;
+    }
+    for (const name of ["main", "master", "develop", "trunk"]) {
+      const local = refs.find(item => item.kind === "branch" && item.name === name);
+      if (local) return local;
     }
     return null;
   }
@@ -1286,7 +1294,7 @@ function App() {
     for (const tab of tabs()) {
       if (tab.loading || tab.loadError || pendingComparisons.has(tab.path)) continue;
       const current = open[tab.path], base = findBaseBranch(tab.refs);
-      const feature = base && !["main", "master", base.name].includes(tab.branch) && tab.refs.some(ref => ref.kind === "branch" && ref.name === tab.branch);
+      const feature = base && !["main", "master", base.name, base.name.split("/").pop()].includes(tab.branch) && tab.refs.some(ref => ref.kind === "branch" && ref.name === tab.branch);
       untrack(() => {
         if (!feature) {
           if (current?.automatic) {
@@ -1298,7 +1306,7 @@ function App() {
         }
         if (current?.base === base.name && current.head === tab.branch) {
           if (!current.automatic) updateComparison(tab.path, value => value ? { ...value, automatic: true } : null);
-        } else if (!current || current.automatic) void runComparison(tab.path, base.name, tab.branch, false, true);
+        } else if (!current || current.automatic || current.head === tab.branch) void runComparison(tab.path, base.name, tab.branch, false, true);
       });
     }
   });
@@ -1437,6 +1445,12 @@ function App() {
       const previous = diff();
       if (choice() === item && (!previous || previous.text !== result.text || previous.truncated !== result.truncated)) setDiff(result);
     });
+  }
+  function refreshWorkingDiff(path: string) {
+    const item = choice();
+    if (activePath() !== path || selected() !== "working" || !item || item.target === "tracked") return;
+    const fresh = workingFiles().find(file => file.target === item.target && file.path === item.path);
+    if (!fresh || (fresh.revision ?? "") !== shownDiffRevision) void reloadFileDiff();
   }
   // A newer request (another file, commit or reload) makes an older result stale.
   async function loadFileDiff(path: string, item: Choice, show: (result: Diff) => void) {
@@ -1795,6 +1809,147 @@ function App() {
     const file = details()?.hash === entry.hash ? details()?.files.find(item => item.path === entry.path) : null;
     if (file) await selectFile({ ...file, target: entry.hash });
   }
+
+  // Share the normal navigation and Git commands with MCP, rather than operating a second UI model.
+  const mcpRows = (value: Diff, target: string) => numberedDiffRows(parseDiffLines(value), target);
+  function mcpView() {
+    const nativeSelection = window.getSelection();
+    const nativeRange = nativeSelection && !nativeSelection.isCollapsed && nativeSelection.rangeCount && detailsScroll?.contains(nativeSelection.anchorNode)
+      ? nativeSelection.getRangeAt(0) : null;
+    const anchor = nativeSelection?.anchorNode;
+    const anchorElement = anchor instanceof Element ? anchor : anchor?.parentElement;
+    const content = choice() ? detailsScroll?.querySelector<HTMLElement>(".diff-content")
+      : (nativeRange ? anchorElement?.closest<HTMLElement>(".diff-content") : null)
+        ?? detailsScroll?.querySelector<HTMLElement>(".summary-diff-card:has(.file-row.keyboard-selected) .diff-content");
+    const context = content ? diffViews.get(content)?.() : null;
+    const value = context?.value ?? diff(), item = context?.item ?? choice(), rows = value && item ? mcpRows(value, item.target) : [];
+    const highlighted = mcpHighlight();
+    const aiRows = highlighted?.repo === activePath() && highlighted.target === item?.target && highlighted.file === item?.path && highlighted.text === value?.text ? highlighted.rows : new Set<number>();
+    const selection = context?.selection ?? (choice() ? diffSelection() : { rows: [], hunkIndex: null });
+    const textRows = new Map<HTMLElement, ReturnType<typeof mcpRows>>();
+    const textSelection = nativeRange && nativeSelection
+      ? { text: nativeSelection.toString(), lines: [...detailsScroll.querySelectorAll<HTMLElement>(".diff-line")].filter(element => nativeRange.intersectsNode(element)).flatMap(element => {
+        const root = element.closest<HTMLElement>(".diff-content"), view = root && diffViews.get(root)?.();
+        if (!root || !view) return [];
+        let numbered = textRows.get(root);
+        if (!numbered) { numbered = mcpRows(view.value, view.item.target); textRows.set(root, numbered); }
+        const row = numbered[Number(element.dataset.rowIndex)];
+        return row ? [{ ...row, file: view.item.path, target: view.item.target }] : [];
+      }) } : null;
+    return {
+      tabId: activePath(), repository: activePath(), branch: repo()?.branch ?? null, head: repo()?.head ?? null,
+      commit: selected(), file: item?.path ?? null, target: item?.target ?? null, fileView: fileView(),
+      selection: { hunkIndex: selection.hunkIndex, lines: selection.rows.map(index => rows[index]).filter(Boolean), textSelection },
+      highlights: [...aiRows].map(index => ({ rowIndex: index, ...rows[index] })),
+    };
+  }
+  async function setMcpEnabled(enabled: boolean) {
+    setMcpBusy(true); setMcpError("");
+    try {
+      if (enabled) {
+        const connection = await invoke<McpConnection>("mcp_start", { port: mcpPort() });
+        setMcpConnection(connection);
+        localStorage.setItem("gitferry.mcpPort", String(mcpPort()));
+      } else { await invoke("mcp_stop"); setMcpConnection(null); }
+      localStorage.setItem("gitferry.mcpEnabled", String(enabled));
+    } catch (cause) { setMcpError(String(cause)); }
+    finally { setMcpBusy(false); }
+  }
+  async function handleMcp(message: McpRequest): Promise<unknown> {
+    const a = message.arguments;
+    const initialRequest = request, initialPath = activePath();
+    const valid = async (navigation = false) => {
+      if (Date.now() >= message.deadline || !await invoke<boolean>("mcp_request_active", { id: message.id })) throw new Error("MCP request expired or was cancelled");
+      if (navigation && (request !== initialRequest || activePath() !== initialPath)) throw new Error("The user changed the view during this request; retry");
+      if (navigation && (actionBusy() || busy() || sideEditorDirty() || activeFileDraft()?.text !== activeFileDraft()?.original)) throw new Error("Finish the current operation or save/cancel the editor changes before AI navigation");
+    };
+    await valid();
+    if (message.tool === "get_view") return mcpView();
+    if (message.tool === "list_repositories") {
+      const open = await Promise.all(tabs().map(async tab => {
+        if (tab.loading || tab.loadError) return { tabId: tab.path, path: tab.path, name: tab.name, branch: null, head: null, active: tab.path === activePath(), loading: Boolean(tab.loading), error: tab.loadError ?? null };
+        try {
+          const current = await invoke<RepoState>("repo_state", { path: tab.path });
+          setTabs(tabs => tabs.map(item => item.path === tab.path ? { ...item, ...current } : item));
+          return { tabId: tab.path, path: tab.path, name: tab.name, branch: current.branch, head: current.head, active: tab.path === activePath(), selectedCommit: tab.path === activePath() ? selected() : tabViews.get(tab.path)?.selected ?? "working" };
+        } catch (cause) { return { tabId: tab.path, path: tab.path, name: tab.name, branch: null, head: null, active: tab.path === activePath(), error: String(cause) }; }
+      }));
+      return { repositories: open, recent: recent().map(path => ({ path, open: tabs().some(tab => repositoryKey(tab.path) === repositoryKey(path)) })) };
+    }
+    const repository = a.repository;
+    if (!repository) throw new Error("repository is required");
+    let tab = tabs().find(item => repositoryKey(item.path) === repositoryKey(repository));
+    if (message.tool === "open_repository") {
+      const current = await invoke<Repo>("repo_snapshot", { path: tab?.path ?? repository, offset: 0 });
+      if (a.branch && current.branch !== a.branch) throw new Error(`Repository is on ${current.branch}, expected ${a.branch}. Open the worktree path for that branch.`);
+      await valid(true);
+      setTabs(tabs => tabs.some(item => item.path === current.path) ? tabs.map(item => item.path === current.path ? current : item) : [...tabs, current]);
+      activateTab(current.path); saveRecent(current.path); saveTabs();
+      return mcpView();
+    }
+    if (!tab || tab.loading || tab.loadError) throw new Error("Repository is not open and ready. Call open_repository with its path first.");
+    const path = tab.path;
+    if (message.tool === "list_branches" || message.tool === "show_branch") {
+      const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
+      if (message.tool === "list_branches") {
+        if (a.branch && current.branch !== a.branch) throw new Error(`Repository is on ${current.branch}, expected ${a.branch}`);
+        return { repository: path, branch: current.branch, head: current.head, branches: current.refs.filter(ref => ref.kind === "branch" || ref.kind === "remote") };
+      }
+      const ref = current.refs.find(ref => (ref.kind === "branch" || ref.kind === "remote") && ref.name === a.branch);
+      if (!ref) throw new Error(`Branch ${a.branch} does not exist in this repository`);
+      a.commit = ref.target;
+    }
+    if (message.tool === "search_commits" || message.tool === "find_changes") return invoke<SearchResult>("repo_search", { path, query: a.query, codeSearch: message.tool === "find_changes", offset: a.offset ?? 0 });
+    if (message.tool === "get_commit") return invoke<Details>("repo_commit", { path, hash: a.commit });
+    if (message.tool === "file_history") return invoke<FileHistoryResult>("repo_file_history", { path, file: a.file, revision: a.revision ?? "HEAD", offset: a.offset ?? 0 });
+    if (message.tool === "blame") return invoke<BlameResult>("repo_blame", { path, file: a.file, revision: a.revision ?? "HEAD", startLine: a.startLine ?? 1 });
+    const commit = a.commit;
+    if (!commit) throw new Error("commit is required");
+    const working = ["working", "staged", "untracked"].includes(commit);
+    const detail = working ? null : await invoke<Details>("repo_commit", { path, hash: commit });
+    if (a.parent && !detail?.parents.includes(a.parent)) throw new Error("parent must be a parent of this commit");
+    const target = a.parent ? `${a.parent}..${detail!.hash}` : detail?.hash ?? commit;
+    const value = a.file ? await invoke<Diff>("repo_diff", { path, target, file: a.file, ignoreWhitespace: false, fullContext: false }) : null;
+    const rows = value ? mcpRows(value, target) : [];
+    if (message.tool === "get_diff") return { repository: path, commit, parent: a.parent ?? detail?.parents[0] ?? null, file: a.file, ...value, rows };
+    if (message.tool !== "reveal_change" && message.tool !== "show_branch") throw new Error("Unknown MCP tool");
+    const current = await invoke<RepoState>("repo_state", { path });
+    if (message.tool === "reveal_change" && a.branch && current.branch !== a.branch) throw new Error(`Repository is on ${current.branch}, expected ${a.branch}. Select the matching worktree tab.`);
+    if (value?.truncated && a.highlights?.length) throw new Error("Diff is truncated; exact highlighting cannot be confirmed");
+    const selectedRows = highlightRows(rows, a.highlights ?? []);
+    if (a.file && !value?.text.trim()) throw new Error("This file has no diff at the requested target");
+    await valid(true);
+    setTabs(tabs => tabs.map(item => item.path === path ? { ...item, ...current } : item));
+    activateTab(path);
+    setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
+    if (detail) {
+      detailsCache.set(`${path}\u0000${detail.hash}`, detail);
+      setRevealedCommit({ repo: path, commit: { ...detail, decorations: [] } });
+      void selectCommit(detail.hash);
+    } else selectWorking();
+    const navigationRequest = request;
+    if (a.file && value) {
+      setIgnoreWhitespace(false); setFullFile(false); setFileView("diff");
+      const item: Choice = working ? workingFiles().find(item => item.path === a.file && item.target === target) ?? { path: a.file, target, status: "M" }
+        : { path: a.file, target, status: detail?.files.find(file => file.path === a.file)?.status ?? "M" };
+      // The exact diff validated above is the diff rendered below; no second read can shift its lines.
+      setChoice(item); setParkedFile(null); setDiff(value); resetFileInfo(); setFileView("diff");
+      shownDiffRevision = item.revision ?? "";
+      setMcpHighlight({ repo: path, target, file: a.file, text: value.text, rows: selectedRows });
+    } else setMcpHighlight(null);
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    await valid();
+    if (request !== navigationRequest || activePath() !== path || selected() !== (detail?.hash ?? "working")) throw new Error("The view changed before navigation could be confirmed");
+    const commitIndex = displayedCommits().findIndex(item => item.hash === detail?.hash);
+    if (commitIndex >= 0) {
+      commitScroll.scrollTop = Math.max(0, listHeaderHeight() + commitIndex * rowHeight() - (commitScroll.clientHeight - rowHeight()) / 2);
+      setScrollTop(commitScroll.scrollTop);
+    }
+    const elements = detailsScroll?.querySelectorAll<HTMLElement>(".diff-line.ai-highlight");
+    if (selectedRows.size && elements?.length !== selectedRows.size) throw new Error("GitFerry could not confirm the rendered highlights");
+    (elements?.[0] ?? detailsScroll?.querySelector<HTMLElement>(".diff-heading"))?.scrollIntoView({ block: "center" });
+    return { ...mcpView(), confirmed: true };
+  }
   function closeFileFinder() {
     fileFinderRequest++;
     if (fileFinderTimer) clearTimeout(fileFinderTimer);
@@ -2022,7 +2177,16 @@ function App() {
     };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop);
   }
+  createEffect(on(() => [activePath(), selected(), choice()?.path, choice()?.target], () => setDiffSelection({ rows: [], hunkIndex: null })));
   onMount(() => {
+    let unlistenMcp: (() => void) | undefined;
+    if (isTauri()) void listen<McpRequest>("mcp-request", event => {
+      void handleMcp(event.payload).then(result => invoke("mcp_reply", { id: event.payload.id, result, error: null }),
+        cause => invoke("mcp_reply", { id: event.payload.id, result: null, error: String(cause) })).catch(cause => setMcpError(String(cause)));
+    }).then(unlisten => {
+      unlistenMcp = unlisten;
+      if (localStorage.getItem("gitferry.mcpEnabled") === "true") void setMcpEnabled(true);
+    }).catch(cause => setMcpError(String(cause)));
     let unlistenDrop: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
     if (isTauri()) void listen<{ path: string; message: string }>("git-progress", event => {
@@ -2100,7 +2264,7 @@ function App() {
     window.addEventListener("focus", focus); window.addEventListener("keydown", keys); document.addEventListener("visibilitychange", visibility);
     const resize = () => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); requestAnimationFrame(updateTabScroll); };
     window.addEventListener("resize", resize);
-    onCleanup(() => { unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize", resize); });
+    onCleanup(() => { unlistenMcp?.(); unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize", resize); });
   });
 
   return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); } }}>
@@ -2144,6 +2308,7 @@ function App() {
       <Show when={menu().ref.kind === "remote" && !menu().ref.name.endsWith("/HEAD")}><button class="danger" disabled={actionBusy()} onClick={() => { const target = remoteBranch(menu().ref); setRefMenu(null); if (target) void runAction({ kind: "delete_remote_branch", value: target }, `Delete branch ${target.branch} from ${target.remote}?`); }}>Delete remote branch</button></Show>
       <Show when={menu().ref.kind === "tag"}><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push tag to remote…</button><button disabled={actionBusy()} onClick={() => { const name = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_tag", value: { name } }, `Delete local tag ${name}?`); }}>Delete local tag</button><button class="danger" disabled={actionBusy()} onClick={() => deleteRemoteTag(menu().ref.name)}>Delete remote tag…</button></Show>
     </div>}</Show>
+    <main class={`workspace ${repoReady() && bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditor() ? "with-editor" : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
     <Show when={repo()} fallback={<main class="welcome">
       <div class="welcome-symbol">◇</div><div class="eyebrow">YOUR REPOSITORIES, ALL IN ONE PLACE</div>
       <h1>Git, wherever it lives.</h1><p>Open a local repository to browse its history, changes, and diffs.</p>
@@ -2151,7 +2316,6 @@ function App() {
       <Show when={recent().length}><div class="recent-list"><div class="eyebrow">RECENT</div><For each={recent()}>{path => <button onClick={() => void openRepo(path)}><Icon name="folder" /><span>{path}</span></button>}</For></div></Show>
     </main>}>
       <Show when={repoReady()} fallback={<main class="repo-startup" role="status"><div class="repo-startup-icon">◇</div><strong>{repo()?.loading ? `Opening ${repo()?.name}…` : `Could not open ${repo()?.name}`}</strong><span>{repo()?.loadError || "Your saved repositories are loading."}</span><Show when={repo()?.loadError}><button onClick={() => retryRestoredRepo(repo()!.path)}>Retry</button></Show></main>}>
-      <main class={`workspace ${bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditor() ? "with-editor" : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
         <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
           <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
             <div class="section-heading"><ChevronDown />{kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span><Show when={kind === "remote"}><button class="ref-section-action" title="Delete a remote branch by name" onClick={deleteRemoteBranchByName}>Delete…</button></Show><Show when={kind === "tag"}><button class="ref-section-action" title="Delete a remote tag by name" onClick={() => deleteRemoteTag()}>Remote…</button></Show></div>
@@ -2222,11 +2386,11 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
                   <Show when={group.title === "STAGED"} fallback={<button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_files", value: { paths: paths() } })}>Stage All</button>}><button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_files", value: { paths: paths() } })}>Unstage All</button></Show>
                 </>;
               })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onOpenEditorLine={(line, marks) => openSideEditor(item, line, marks)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
-            <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
+            <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><Show when={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target}><button title="Clear AI highlights" onClick={() => setMcpHighlight(null)}>Clear AI highlights</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
               <Show when={fileView() === "diff"}>
                 <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.target === "working" && choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
                 <Show when={choice()?.target === "working" && choice()?.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show>
-                <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it in the side editor.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} onOpenEditor={(line, marks) => openSideEditor(choice()!, line, marks)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
+                <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it in the side editor.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} aiRows={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target && mcpHighlight()?.text === current().text ? mcpHighlight()?.rows : undefined} onSelection={setDiffSelection} onOpenEditor={(line, marks) => openSideEditor(choice()!, line, marks)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
               </Show>
               <Show when={fileView() === "edit" && selected() === "working"}><div class="file-edit-view"><Show when={activeFileDraft()} fallback={<div class="empty-note">{fileEditError() || (fileEditLoading() ? "Loading file…" : "No editable file loaded")}</div>}>{draft => <><div class="file-edit-toolbar"><span>{draft().stageOnSave ? "Saving stages the whole file" : "Edits remain unstaged until you stage them"}</span><button disabled={fileEditSaving()} onClick={discardEditedFile}>Cancel</button><button class="file-edit-save" disabled={fileEditSaving() || draft().text === draft().original} onClick={() => void saveEditedFile()}>{fileEditSaving() ? "Saving…" : "Save · Ctrl+S"}</button></div><Show when={fileEditError()}>{message => <div class="file-edit-error">{message()}</div>}</Show><textarea class="file-edit-textarea" aria-label={`Edit ${draft().path}`} spellcheck={false} disabled={fileEditSaving()} value={draft().text} onInput={event => setFileDraft(current => current ? { ...current, text: event.currentTarget.value } : current)} onKeyDown={event => { if (event.key === "Tab") { event.preventDefault(); const input = event.currentTarget; const start = input.selectionStart; const end = input.selectionEnd; input.setRangeText("  ", start, end, "end"); setFileDraft(current => current ? { ...current, text: input.value } : current); } }} /></>}</Show></div></Show>
               <Show when={fileView() === "history"}><div class="file-inspection"><div class="file-inspection-heading">File history · {inspectRevision().slice(0, 8)}</div><Show when={fileInfoError()}>{message => <div class="empty-note">{message()}</div>}</Show><Show when={fileHistory()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading file history…" : "No file history loaded"}</div>}>{history => <><For each={history().commits}>{entry => <button class="file-history-row" title={`${entry.path} · ${entry.hash}`} onClick={() => void openHistoryCommit(entry)}><span class="file-history-subject">{entry.subject}</span><span class="file-history-meta">{entry.author} · {new Date(entry.timestamp * 1000).toLocaleDateString()} · {entry.hash.slice(0, 8)}</span></button>}</For><Show when={!history().commits.length && !fileInfoLoading()}><div class="empty-note">No committed history for this file.</div></Show><Show when={history().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileHistory(history().commits.length)}>{fileInfoLoading() ? "Loading…" : "Load more history"}</button></Show></>}</Show></div></Show>
@@ -2234,10 +2398,10 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
             </Show>
           </div>
         </section>
-        <Show when={sideEditor()}>{target => <FileEditor target={target()} active={target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onResize={event => startResize("editor", event)} />}</Show>
-      </main>
       </Show>
     </Show>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onResize={event => startResize("editor", event)} />}</Show>
+    </main>
     <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? "RUNNING GIT COMMAND" : repo()?.loading || busy() || searchBusy() ? "LOADING REPOSITORY" : repo()?.loadError ? "REPOSITORY UNAVAILABLE" : "READY"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
     <Show when={actionDialog()}>{current => <div class="modal-backdrop" onClick={() => setActionDialog(null)}><div class="action-dialog" role="dialog" aria-modal="true" aria-label={current().title} onClick={event => event.stopPropagation()}>
       <div class="modal-title"><span>{current().title}</span><button aria-label="Close action dialog" onClick={() => setActionDialog(null)}><Icon name="close" /></button></div>
@@ -2268,6 +2432,17 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
         <label class="settings-check"><input type="checkbox" checked={showTabBranch()} onChange={event => setShowTabBranch(event.currentTarget.checked)} /> Show branch name in repository tabs</label>
         <label class="settings-check" title="Files ending in .test.* / .spec.*, *_test.*, test_*, or inside test, tests, spec or __tests__ folders"><input type="checkbox" checked={keepTestsClosed()} onChange={event => setKeepTestsClosed(event.currentTarget.checked)} /> Keep test files collapsed when expanding all</label>
         <label class="settings-check"><input type="checkbox" checked={ignoreWhitespace()} onChange={event => changeIgnoreWhitespace(event.currentTarget.checked)} /> Ignore whitespace-only changes in diffs</label>
+        <Show when={isTauri()}><div class="mcp-settings">
+          <label class="settings-check"><input aria-label="Enable GitFerry MCP" type="checkbox" checked={Boolean(mcpConnection())} disabled={mcpBusy()} onChange={event => void setMcpEnabled(event.currentTarget.checked)} /> Enable MCP for AI navigation</label>
+          <label>MCP PORT<input aria-label="MCP port" type="number" min="1" max="65535" value={mcpPort()} disabled={mcpBusy() || Boolean(mcpConnection())} onInput={event => setMcpPort(Number(event.currentTarget.value))} /></label>
+          <p>AI clients can read open repositories and navigate this window. SSH sign-in prompts stay in GitFerry.</p>
+          <Show when={mcpConnection()}>{connection => <>
+            <label>ENDPOINT<input aria-label="MCP endpoint" readonly value={connection().url} /></label>
+            <label>BEARER TOKEN<input aria-label="MCP bearer token" readonly type="password" value={connection().token} /></label>
+            <button onClick={() => void navigator.clipboard.writeText(mcpConfiguration(connection())).then(() => setNotice("MCP configuration copied"), cause => setMcpError(String(cause)))}>Copy MCP configuration</button>
+          </>}</Show>
+          <Show when={mcpError()}><p class="modal-error">{mcpError()}</p></Show>
+        </div></Show>
         <label>INTERFACE FONT<input aria-label="Interface font" list="ui-font-options" value={uiFont()} onInput={event => setUiFont(event.currentTarget.value)} placeholder="Segoe UI" /></label>
         <div class="settings-row"><label>CODE FONT<input aria-label="Code font" list="code-font-options" value={codeFont()} onInput={event => setCodeFont(event.currentTarget.value)} placeholder="Consolas" /></label><label>SIZE<input aria-label="Code font size" type="number" min="9" max="24" value={codeSize()} onInput={event => { const size = Number(event.currentTarget.value); if (size >= 9 && size <= 24) setCodeSize(size); }} /></label></div>
         <datalist id="ui-font-options"><option value="Segoe UI" /><option value="Inter" /><option value="Arial" /><option value="Calibri" /><option value="Verdana" /></datalist>

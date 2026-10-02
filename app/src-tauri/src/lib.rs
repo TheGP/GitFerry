@@ -10,6 +10,7 @@ use tauri::{Emitter, Manager};
 
 mod askpass;
 mod editor;
+mod mcp;
 mod remote;
 
 pub use askpass::helper as askpass_helper;
@@ -242,27 +243,30 @@ async fn repo_search(
     path: String,
     query: String,
     offset: usize,
+    code_search: Option<bool>,
 ) -> Result<SearchResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if path.starts_with("ssh://") {
             let (_, remote_path) = remote::parse_uri(&path)?;
-            let response = app.state::<remote::RemoteManager>().call(
-                &path,
-                &agent_resources(&app),
+            let request = if code_search == Some(true) {
+                Request::FindChanges { path: remote_path.to_string(), query, offset, limit: 100 }
+            } else {
                 Request::Search {
                     path: remote_path.to_string(),
                     query,
                     offset,
                     limit: 100,
-                },
-            )?;
+                }
+            };
+            let response = app.state::<remote::RemoteManager>().call(&path, &agent_resources(&app), request)
+                .map_err(|error| if code_search == Some(true) && error == "Remote response ID mismatch" { "The bundled SSH agent does not support code search. Rebuild the SSH agent resources and reopen this repository.".to_string() } else { error })?;
             match response {
                 Response::Search(result) => Ok(result),
                 Response::Error(error) => Err(error),
                 _ => Err("Unexpected remote response".to_string()),
             }
         } else {
-            search(&path, &query, offset, 100)
+            search(&path, &if code_search == Some(true) { format!("code:{query}") } else { query }, offset, 100)
         }
     })
     .await
@@ -616,7 +620,9 @@ fn ssh_prompt_answer(
 }
 
 #[tauri::command]
-fn ssh_current_prompt(askpass: tauri::State<std::sync::Arc<askpass::Askpass>>) -> Option<askpass::Prompt> {
+fn ssh_current_prompt(
+    askpass: tauri::State<std::sync::Arc<askpass::Askpass>>,
+) -> Option<askpass::Prompt> {
     askpass.current()
 }
 
@@ -634,6 +640,7 @@ fn ssh_forget_credential(askpass: tauri::State<std::sync::Arc<askpass::Askpass>>
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            app.manage(mcp::McpState::default());
             let askpass = askpass::Askpass::start(app.handle().clone())?;
             app.manage(remote::RemoteManager::new(Some(askpass.clone())));
             app.manage(askpass);
@@ -643,6 +650,10 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             repo_snapshot,
+            mcp::mcp_start,
+            mcp::mcp_stop,
+            mcp::mcp_reply,
+            mcp::mcp_request_active,
             repo_state,
             repo_watch,
             repo_rebase_plan,

@@ -19,6 +19,7 @@ let nextId = 0;
 const pending = new Map();
 const progressEvents = [];
 let snapshotGate = null;
+let saveGate = null;
 let diffRequests = 0;
 
 function git(cwd, ...args) {
@@ -123,6 +124,126 @@ function makeRebaseRepo() {
   return folder;
 }
 
+function makeMcpRepo() {
+  const folder = path.join(sandbox, "mcp");
+  fs.mkdirSync(folder);
+  git(folder, "init", "-b", "main");
+  git(folder, "config", "user.name", "GitFerry Test");
+  git(folder, "config", "user.email", "gitferry@example.test");
+  fs.writeFileSync(path.join(folder, "code.txt"), "first\nold cause\nlast\n");
+  git(folder, "add", "."); git(folder, "commit", "-m", "Base");
+  fs.writeFileSync(path.join(folder, "code.txt"), "first\nnew cause\nlast\n");
+  git(folder, "commit", "-am", "Introduce cause");
+  const cause = git(folder, "rev-parse", "HEAD");
+  const tree = git(folder, "rev-parse", "HEAD^{tree}");
+  let head = cause;
+  for (let index = 0; index < 103; index++) head = git(folder, "commit-tree", tree, "-p", head, "-m", `Later ${index}`);
+  git(folder, "update-ref", "refs/heads/main", head);
+  const worktree = path.join(sandbox, "mcp-topic");
+  git(folder, "worktree", "add", "-b", "topic", worktree);
+  return { folder, worktree, cause };
+}
+
+async function mcp(page, tool, args = {}) {
+  return page.evaluate(({ tool, args }) => new Promise(resolve => {
+    const id = ++window.__mcpId;
+    window.__mcpWaiters.set(id, resolve);
+    window.__eventCallbacks["mcp-request"]({ event: "mcp-request", payload: { id, tool, arguments: args, deadline: Date.now() + 45000 } });
+  }), { tool, args });
+}
+async function exerciseMcp(page, repository, restore) {
+  let reply = await mcp(page, "open_repository", { repository: repository.folder, branch: "main" });
+  assert.equal(reply.error, null);
+  await mcp(page, "open_repository", { repository: repository.worktree, branch: "topic" });
+  reply = await mcp(page, "list_repositories");
+  assert.equal(reply.result.repositories.find(tab => tab.path === repository.folder).branch, "main");
+  assert.equal(reply.result.repositories.find(tab => tab.path === repository.worktree).branch, "topic");
+  const tabCount = reply.result.repositories.length;
+  const alias = process.platform === "win32" ? repository.folder.replaceAll("\\", "/").toUpperCase() : `${repository.folder}/`;
+  reply = await mcp(page, "open_repository", { repository: alias, branch: "main" });
+  assert.equal(reply.error, null);
+  assert.equal((await mcp(page, "list_repositories")).result.repositories.length, tabCount, "Reuse existing canonical tab");
+  reply = await mcp(page, "open_repository", { repository: repository.folder, branch: "topic" });
+  assert.match(reply.error, /expected topic/);
+  reply = await mcp(page, "find_changes", { repository: repository.folder, query: "new cause", offset: 0 });
+  assert.equal(reply.result.commits[0].hash, repository.cause);
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, branch: "main", commit: repository.cause, file: "code.txt", highlights: [
+    { kind: "lines", side: "old", startLine: 2, quote: "old cause" },
+    { kind: "lines", side: "new", startLine: 2, quote: "new cause" },
+  ] });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.confirmed, true);
+  assert.equal(reply.result.highlights.length, 2);
+  assert.equal(await page.$$eval(".diff-line.ai-highlight", rows => rows.length), 2);
+  assert.match(await page.$eval(".commit-row.selected", row => row.textContent), /Introduce cause/, "Reveal commits beyond the first history page");
+  assert.equal(git(repository.folder, "branch", "--show-current"), "main");
+  assert.equal(git(repository.folder, "diff"), "");
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: repository.cause, file: "code.txt", highlights: [{ kind: "hunk", hunkIndex: 0 }] });
+  assert.equal(reply.error, null);
+  assert.ok(reply.result.highlights.length > 2);
+  await page.click("button[title='Clear AI highlights']");
+  assert.equal(await page.$$eval(".diff-line.ai-highlight", rows => rows.length), 0);
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: repository.cause, file: "code.txt", highlights: [{ kind: "lines", side: "old", startLine: 2, quote: "wrong" }] });
+  assert.match(reply.error, /quote/);
+  reply = await mcp(page, "show_branch", { repository: repository.worktree, branch: "main" });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.branch, "topic", "Browsing preserves the checked-out branch");
+  assert.equal(git(repository.worktree, "branch", "--show-current"), "topic");
+  fs.writeFileSync(path.join(repository.worktree, "topic-only.txt"), "topic side\n");
+  git(repository.worktree, "add", "."); git(repository.worktree, "commit", "-m", "Topic side");
+  const secondParent = git(repository.worktree, "rev-parse", "HEAD");
+  fs.writeFileSync(path.join(repository.folder, "main-only.txt"), "main side\n");
+  git(repository.folder, "add", "."); git(repository.folder, "commit", "-m", "Main side");
+  git(repository.folder, "merge", "--no-ff", "topic", "-m", "Merge topic");
+  const merge = git(repository.folder, "rev-parse", "HEAD");
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: merge, parent: secondParent, file: "main-only.txt", highlights: [{ kind: "lines", side: "new", startLine: 1, quote: "main side" }] });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.target, `${secondParent}..${merge}`);
+  assert.equal(reply.result.highlights[0].newNumber, 1);
+  git(repository.folder, "mv", "code.txt", "renamed.txt"); git(repository.folder, "commit", "-m", "Rename code");
+  reply = await mcp(page, "file_history", { repository: repository.folder, file: "renamed.txt", revision: "HEAD", offset: 0 });
+  assert.ok(reply.result.commits.some(commit => commit.hash === repository.cause));
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: repository.cause, file: "code.txt", highlights: [{ kind: "lines", side: "new", startLine: 2 }] });
+  assert.equal(reply.error, null, "Historical navigation uses the file path at the selected commit");
+  git(repository.folder, "mv", "renamed.txt", "code.txt"); git(repository.folder, "commit", "-m", "Restore name");
+  fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\nworking cause\nlast\n");
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "working", file: "code.txt", highlights: [{ kind: "lines", side: "new", startLine: 2, quote: "working cause" }] });
+  assert.equal(reply.error, null);
+  assert.equal(await page.$$eval(".diff-line.ai-highlight.selected", rows => rows.length), 0, "AI highlights never select lines for staging");
+  await clickChangedLine(page, "+working cause");
+  reply = await mcp(page, "get_view");
+  assert.ok(reply.result.selection.lines.some(row => row.newNumber === 2));
+  await page.click(".details-tab:first-child");
+  await page.waitForSelector('.summary-diff-card[data-path="code.txt"] .diff-content');
+  await clickChangedLine(page, "+working cause");
+  reply = await mcp(page, "get_view");
+  assert.equal(reply.result.file, "code.txt", "Summary selections must identify their file");
+  assert.equal(reply.result.target, "working");
+  assert.ok(reply.result.selection.lines.some(row => row.newNumber === 2));
+  await page.evaluate(() => {
+    const text = document.querySelector('.summary-diff-card[data-path="code.txt"] .diff-line.added .line-text');
+    const range = document.createRange(); range.selectNodeContents(text);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  });
+  reply = await mcp(page, "get_view");
+  assert.equal(reply.result.selection.textSelection.text, "working cause");
+  assert.ok(reply.result.selection.textSelection.lines.some(row => row.file === "code.txt" && row.target === "working" && row.newNumber === 2));
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await page.click('.summary-diff-card[data-path="code.txt"] .summary-open-tab');
+  fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\ndifferent content\nlast\n");
+  await shortcut(page, "r");
+  try {
+    await page.waitForFunction(() => [...document.querySelectorAll(".line-text")].some(row => row.textContent === "different content"), { timeout: 5000 });
+  } catch (error) {
+    throw new Error(`${error.message}: view=${JSON.stringify((await mcp(page, "get_view")).result)} text=${await page.$eval(".details-pane", pane => pane.textContent)}`);
+  }
+  assert.equal(await page.$$eval(".diff-line.ai-highlight", rows => rows.length), 0, "Changed diffs clear stale emphasis");
+  await mcp(page, "open_repository", { repository: restore, branch: "main" });
+  await page.click("button[aria-label='Close mcp-topic']");
+  await page.click("button[aria-label='Close mcp']");
+  console.log("MCP navigation: branch identity, tab reuse, old/new lines, hunks, old history, code search, selection and stale highlights passed");
+}
+
 async function clickChangedLine(page, text, shift = false) {
   const label = await page.evaluate(value => [...document.querySelectorAll(".diff-line")].find(row => row.dataset.copyPrefix === value[0] && row.querySelector(".line-text")?.textContent === value.slice(1))?.querySelector("button.line-number")?.getAttribute("aria-label"), text);
   assert.ok(label, `Selectable line ${text} must exist`);
@@ -141,8 +262,14 @@ function rpc(method, params) {
 
 async function bridge(command, args) {
   if (command.startsWith("plugin:event|")) return 1;
+  if (command === "plugin:window|is_maximized") return true;
   if (command === "repo_diff") diffRequests++;
-  if (command === "repo_snapshot" && snapshotGate) {
+  if (command === "repo_save_file" && saveGate) {
+    const gate = saveGate;
+    gate.started = true;
+    await gate.promise;
+  }
+  if (command === "repo_snapshot" && snapshotGate && (!snapshotGate.holdPaths || snapshotGate.holdPaths.includes(args.path))) {
     const gate = snapshotGate;
     gate.paths.push(args.path);
     await gate.promise;
@@ -158,7 +285,7 @@ async function bridge(command, args) {
     repo_snapshot: ["snapshot", { path: args.path, offset: args.offset, limit: 100 }],
     repo_state: ["state", { path: args.path }],
     repo_rebase_plan: ["rebase_plan", { path: args.path, onto: args.onto }],
-    repo_search: ["search", { path: args.path, query: args.query, offset: args.offset, limit: 100 }],
+    repo_search: [args.codeSearch ? "find_changes" : "search", { path: args.path, query: args.query, offset: args.offset, limit: 100 }],
     repo_commit: ["commit_details", { path: args.path, hash: args.hash }],
     repo_compare: ["compare", { path: args.path, base: args.base, head: args.head }],
     repo_file_history: ["file_history", { path: args.path, file: args.file, revision: args.revision, offset: args.offset, limit: 100 }],
@@ -220,6 +347,91 @@ async function openRepo(page, folder) {
   await page.waitForFunction(value => document.querySelector(".statusbar")?.textContent.includes(value), {}, folder);
 }
 
+async function exerciseSideEditor(page, repository) {
+  const base = path.join(repository, "base.txt"), otherFile = path.join(repository, "new.txt");
+  const original = fs.readFileSync(base, "utf8"), otherOriginal = fs.readFileSync(otherFile, "utf8");
+  const baseLine = '.summary-diff-card[data-path="base.txt"] .diff-line.added .line-text';
+  await page.click(baseLine, { count: 2 });
+  await page.waitForSelector('.editor-input[aria-label="Edit base.txt"]', { timeout: 5000 }).catch(async error => {
+    throw new Error(`${error.message}: editor=${await page.$eval(".editor-pane", pane => pane.textContent).catch(() => "not mounted")} error=${await page.$eval(".error-bar", pane => pane.textContent).catch(() => "none")}`);
+  });
+  const loadingRepo = makeRepo("editor-loading");
+  const missingRepo = path.join(sandbox, "editor-missing");
+  let releaseSnapshot;
+  snapshotGate = { paths: [], holdPaths: [loadingRepo], promise: new Promise(resolve => { releaseSnapshot = resolve; }) };
+  await page.evaluate(({ repository, loadingRepo, missingRepo }) => {
+    localStorage.setItem("gitferry.openTabs", JSON.stringify([repository, loadingRepo, missingRepo]));
+    localStorage.setItem("gitferry.activeTab", repository);
+  }, { repository, loadingRepo, missingRepo });
+  await page.reload();
+  await page.waitForSelector('.summary-diff-card[data-path="base.txt"] .diff-content');
+  await page.waitForSelector('.editor-input[aria-label="Edit base.txt"]');
+  await page.locator(".editor-input").fill(original + "unsaved draft\n");
+  await waitUntil(() => snapshotGate.paths.includes(loadingRepo), "loading editor repository");
+  await page.click('.tab-main[title^="editor-loading"]');
+  await page.waitForSelector(".repo-startup");
+  assert.ok(await page.$(".editor-tab-close.dirty"), "Loading another repository must retain the editor draft");
+  await page.click('.tab-main[title^="small"]');
+  assert.equal(await page.$eval(".editor-input", input => input.value), original + "unsaved draft\n");
+  snapshotGate = null; releaseSnapshot();
+  await page.click('.tab-main[title^="editor-missing"]');
+  await page.waitForSelector(".repo-startup button");
+  assert.ok(await page.$(".editor-tab-close.dirty"), "An unavailable tab must retain the editor draft");
+  await page.click('.tab-main[title^="small"]');
+  assert.equal(await page.$eval(".editor-input", input => input.value), original + "unsaved draft\n");
+  await page.click('.repo-tab:has(.tab-main[title^="editor-loading"]) .tab-close');
+  await page.click('.repo-tab:has(.tab-main[title^="editor-missing"]) .tab-close');
+
+  let releaseSave;
+  saveGate = { started: false, promise: new Promise(resolve => { releaseSave = resolve; }) };
+  await page.click(".editor-save");
+  await waitUntil(() => saveGate.started, "delayed editor save");
+  await page.click('.summary-diff-card[data-path="new.txt"] .line-text', { count: 2 });
+  await page.waitForSelector(".action-dialog");
+  await submitActionDialog(page);
+  await page.waitForSelector('.editor-input[aria-label="Edit new.txt"]');
+  saveGate = null; releaseSave();
+  await page.waitForFunction(() => !document.querySelector(".editor-input")?.readOnly);
+  assert.equal(await page.$eval(".editor-input", input => input.value), otherOriginal.replace(/\r\n?/g, "\n"));
+  assert.equal(await page.$(".editor-tab-close.dirty"), null, "A previous file's save must not dirty the newly opened file");
+  await page.locator(".editor-input").fill(otherOriginal + "saved second file\n");
+  await page.click(".editor-save");
+  await waitUntil(() => fs.readFileSync(otherFile, "utf8").includes("saved second file"), "save newly opened file against its own source");
+  await page.waitForFunction(() => document.querySelector(".editor-save")?.disabled && !document.querySelector(".editor-tab-close.dirty"));
+  await page.click("button[aria-label='Close editor']");
+  fs.writeFileSync(base, original); fs.writeFileSync(otherFile, otherOriginal);
+  await shortcut(page, "r");
+  await page.waitForFunction(() => [...document.querySelectorAll('.summary-diff-card[data-path="base.txt"] .line-text')].some(row => row.textContent === "two changed"));
+  console.log("Side editor: drafts survive loading and unavailable repositories; delayed saves stay with their document");
+}
+
+async function exerciseComparisonBase(page) {
+  const folder = path.join(sandbox, "comparison-base");
+  fs.mkdirSync(folder);
+  git(folder, "init", "-b", "master");
+  git(folder, "config", "user.name", "GitFerry Test");
+  git(folder, "config", "user.email", "gitferry@example.test");
+  fs.writeFileSync(path.join(folder, "shared.txt"), "50Gi\n");
+  git(folder, "add", "."); git(folder, "commit", "-m", "Old local master");
+  git(folder, "switch", "-c", "feature/viewer");
+  fs.writeFileSync(path.join(folder, "shared.txt"), "100Gi\n");
+  git(folder, "commit", "-am", "Already merged remotely");
+  git(folder, "update-ref", "refs/remotes/origin/master", "HEAD");
+  fs.writeFileSync(path.join(folder, "viewer.txt"), "branch change\n");
+  git(folder, "add", "."); git(folder, "commit", "-m", "Viewer change");
+  await openRepo(page, folder);
+  await page.waitForFunction(() => document.querySelector(".compare-main strong")?.textContent === "feature/viewer vs origin/master" && document.querySelector(".compare-main small")?.textContent.includes("1 commit"));
+  await page.click(".compare-main");
+  await page.waitForSelector('.summary-diff-card[data-path="viewer.txt"] .diff-content');
+  assert.deepEqual(await page.$$eval(".summary-diff-card", cards => cards.map(card => card.dataset.path)), ["viewer.txt"], "Changes already on origin/master must not appear against a stale local master");
+  git(folder, "update-ref", "refs/heads/master", "HEAD");
+  await shortcut(page, "r");
+  await page.waitForFunction(() => document.querySelector(".compare-main small")?.textContent.includes("1 commit"));
+  assert.equal(await page.$eval(".compare-main strong", heading => heading.textContent), "feature/viewer vs origin/master", "A newer local master must not hide work that has not reached the remote");
+  await page.click('.repo-tab:has(.tab-main[title^="comparison-base"]) .tab-close');
+  console.log("Comparison base: remote master wins over both stale and newer local master");
+}
+
 async function openSummaryFile(page, file, target) {
   await page.click(".details-tab:first-child");
   await page.waitForFunction(({ file, target }) => [...document.querySelectorAll(".summary-diff-card")].some(card => card.querySelector(".file-path")?.textContent === file && Boolean(card.querySelector(".file-tag")) === (target === "STAGED")), {}, { file, target });
@@ -253,6 +465,7 @@ async function metrics(page) {
 async function main() {
   assert.ok(fs.existsSync(agentPath), `Build ${agentPath} first`);
   assert.ok(fs.existsSync(chromePath), `Chrome not found at ${chromePath}`);
+  const mcpRepo = makeMcpRepo();
   const small = makeRepo("small");
   fs.writeFileSync(path.join(small, "another-untracked.txt"), "second new file\n");
   const large = makeRepo("large", true);
@@ -288,11 +501,18 @@ async function main() {
     window.__longTasks = [];
     window.__snapshotResponses = 0;
     new PerformanceObserver(list => window.__longTasks.push(...list.getEntries().map(item => Math.round(item.duration)))).observe({ entryTypes: ["longtask"] });
+    window.__callbackId = 0;
+    window.__callbacks = new Map(); window.__eventCallbacks = {};
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+    window.__mcpId = 0; window.__mcpWaiters = new Map();
     window.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
-      transformCallback: () => 1,
+      transformCallback: callback => { const id = ++window.__callbackId; window.__callbacks.set(id, callback); return id; },
       unregisterCallback: () => {},
       invoke: async (command, args) => {
+        if (command === "plugin:event|listen") { window.__eventCallbacks[args.event] = window.__callbacks.get(args.handler); return args.handler; }
+        if (command === "mcp_request_active") return window.__mcpWaiters.has(args.id);
+        if (command === "mcp_reply") { window.__mcpWaiters.get(args.id)?.(args); window.__mcpWaiters.delete(args.id); return; }
         const result = await window.__gitferryInvoke(command, args);
         if (command === "repo_snapshot") window.__snapshotResponses++;
         return result;
@@ -326,7 +546,11 @@ async function main() {
   await page.waitForSelector(".open-modal");
   await page.keyboard.press("Escape");
   await openRepo(page, small);
+  await exerciseMcp(page, mcpRepo, small);
+  if (process.env.GITFERRY_MCP_ONLY) { console.log("MCP-only UI smoke passed"); return; }
   await page.waitForSelector(".summary-diff-card .diff-content");
+  await exerciseSideEditor(page, small);
+  await exerciseComparisonBase(page);
   const snapshotResponses = await page.evaluate(() => {
     window.__unchangedCard = [...document.querySelectorAll(".summary-diff-card")].find(card => card.querySelector(".file-path")?.textContent === "new.txt");
     return window.__snapshotResponses;
@@ -567,7 +791,7 @@ async function main() {
   await waitUntil(() => git(small, "branch", "--show-current") === "team/ui-track", "remote tracking checkout");
   await waitForAction(page);
   assert.equal(git(small, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"), "origin/team/ui-track");
-  await page.waitForFunction(() => document.querySelector(".compare-main strong")?.textContent === "team/ui-track vs main");
+  await page.waitForFunction(() => document.querySelector(".compare-main strong")?.textContent === "team/ui-track vs origin/main");
   assert.equal(await page.$(".compare-close"), null, "Automatic feature comparisons should stay available");
   assert.ok(await page.$(".working-row.selected"), "Automatic comparisons must preserve the selected view");
   await page.click(".compare-main");
@@ -586,7 +810,7 @@ async function main() {
   await waitUntil(() => git(small, "branch", "--show-current") === longBranch, "branch creation").catch(async error => { throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}`); });
   await page.waitForFunction(branch => document.querySelector(".branch-name")?.textContent === branch, {}, longBranch);
   assert.equal(git(small, "branch", "--show-current"), longBranch);
-  await page.waitForFunction(branch => document.querySelector(".compare-main strong")?.textContent === `${branch} vs main`, {}, longBranch);
+  await page.waitForFunction(branch => document.querySelector(".compare-main strong")?.textContent === `${branch} vs origin/main`, {}, longBranch);
   await waitForAction(page);
   await page.click("button[title='Push']");
   await waitUntil(() => git(remote, "branch", "--list", longBranch).includes(longBranch), "new branch push");
@@ -695,8 +919,8 @@ async function main() {
   await page.click("button[title='Merge topic into main']");
   await submitActionDialog(page);
   await page.waitForFunction(() => document.querySelector(".operation-panel")?.textContent.includes("merge"));
-  await page.waitForFunction(() => !document.querySelector(".conflict-row button:first-of-type")?.disabled);
-  await page.click(".conflict-row button:first-of-type");
+  await page.waitForFunction(() => [...document.querySelectorAll(".conflict-row button")].find(button => button.textContent === "Use ours")?.disabled === false);
+  await page.click(".conflict-row button::-p-text(Use ours)");
   await submitActionDialog(page);
   await page.waitForFunction(() => document.querySelector(".operation-panel") && !document.querySelector(".conflict-row"));
   await page.waitForFunction(() => !document.querySelector(".operation-buttons button:first-child")?.disabled);
@@ -875,7 +1099,7 @@ async function main() {
   await page.click(".summary-open-tab");
   await page.waitForSelector("button.line-number.selectable");
   assert.ok(await page.$eval(".details-tab:last-child", tab => tab.classList.contains("active")), "the open-tab button must show the dedicated file tab");
-  assert.ok(Number.parseFloat(await page.$eval(".diff-content", element => getComputedStyle(element).fontSize)) >= 14, "diff code must be readable");
+  assert.equal(await page.$eval(".diff-content", element => Number.parseFloat(getComputedStyle(element).fontSize)), await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--code-size"))), "diff code must use the configured font size");
   const gutterNumbers = await page.evaluate(() => {
     const values = ["diff --git a/lines.txt b/lines.txt", " line 1", "-line 3", "+NEW 3", " line 4", "-line 25", "+NEW 25"];
     return values.map(value => {
@@ -1003,7 +1227,7 @@ main().catch(error => { console.error(error); process.exitCode = 1; }).finally(a
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git"]) {
+  for (const name of ["mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

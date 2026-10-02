@@ -179,6 +179,9 @@ button { cursor: pointer; }
 .diff-line.added { background: var(--diff-added-bg); color: var(--diff-added-text); }
 .diff-line.deleted { background: var(--diff-deleted-bg); color: var(--diff-deleted-text); }
 .diff-line.hunk { background: #303d4b; color: #8cb8d8; }
+.diff-line.ai-highlight { box-shadow: inset 4px 0 #dcae55; background-image: linear-gradient(#dcae552b, #dcae552b); }
+.diff-content.has-hunks .diff-line.hunk.ai-highlight { background: #dcae55; }
+.mcp-settings { border-block: 1px solid var(--theme-border); padding-block: 12px; display: flex; flex-direction: column; gap: 8px; }
 .diff-content.has-hunks .diff-line.metadata { display: none; }
 .diff-content.has-hunks .diff-line.hunk { height: 8px; overflow: hidden; font-size: 0; background: var(--theme-heading); }
 .diff-content.has-hunks .diff-line.hunk .line-number, .diff-content.has-hunks .diff-line.hunk .line-text { visibility: hidden; }

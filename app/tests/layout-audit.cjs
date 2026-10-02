@@ -466,8 +466,10 @@ async function main() {
   await tabsPage.goto(`${url}&tabs=9&duplicateNames`);
   await tabsPage.waitForSelector(".repo-tab:nth-child(9)");
   const duplicateBranches = [null, ...Array.from({ length: 8 }, (_, index) => `feature/tab-overflow-${index + 2}`)];
+  const allBranches = ["feature/remote-git", ...duplicateBranches.slice(1)];
   const branches = () => tabsPage.$$eval(".repo-tab", items => items.map(item => item.querySelector(".tab-branch")?.textContent ?? null));
-  assert.deepEqual(await branches(), duplicateBranches, "Only later duplicate tabs should show their branch");
+  assert.deepEqual(await branches(), allBranches, "Enabled branch labels must include the first duplicate tab");
+  await tabsPage.screenshot({ path: path.join(output, "tabs-all-branches-960.png") });
   const stackedBranchLabels = await tabsPage.$$eval(".repo-tab", items => items.filter(item => item.querySelector(".tab-branch")).map(item => {
     const name = item.querySelector(".tab-name").getBoundingClientRect();
     const branch = item.querySelector(".tab-branch").getBoundingClientRect();
@@ -476,7 +478,12 @@ async function main() {
   }));
   assert.ok(stackedBranchLabels.every(Boolean), "Tab branches should fit on a second line under the repository name");
   assert.deepEqual(await tabsPage.$$eval(".tab-name", items => items.map(item => item.textContent)), Array(9).fill("atelier"), "Repository names should not have number suffixes");
-  await tabsPage.evaluate(() => localStorage.setItem("gitferry.showTabBranch", "false"));
+  for (const showBranches of [false, true, false]) {
+    await tabsPage.click("button[title='Settings']");
+    await tabsPage.click(".settings-body label::-p-text(Show branch name in repository tabs)");
+    await tabsPage.click(".settings-footer button");
+    assert.deepEqual(await branches(), showBranches ? allBranches : duplicateBranches, "Branch label settings must update every tab immediately");
+  }
   await tabsPage.reload();
   await tabsPage.waitForSelector(".repo-tab:nth-child(9)");
   assert.deepEqual(await branches(), duplicateBranches, "Duplicate branches should appear even when branch labels are disabled in settings");

@@ -82,6 +82,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   });
   const crumbs = () => props.target.path.split(/[\\/]/);
   let loadId = 0;
+  onCleanup(() => { loadId++; });
 
   async function load(keepView: boolean) {
     const { repo, path, commit } = props.target;
@@ -144,12 +145,14 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   async function save() {
     const current = doc();
     if (!current || !dirty() || saving() || readOnly()) return;
+    const id = loadId;
+    const { repo, path } = props.target;
     setSaving(true); setError("");
     const content = current.newline === "\n" ? current.text : current.text.replace(/\n/g, current.newline);
     try {
-      await props.save(props.target.repo, props.target.path, content, current.source);
-      setDoc(value => value && { ...value, source: content, original: current.text });
-    } catch (cause) { setError(String(cause)); }
+      await props.save(repo, path, content, current.source);
+      if (id === loadId) setDoc(value => value && { ...value, source: content, original: current.text });
+    } catch (cause) { if (id === loadId) setError(String(cause)); }
     finally { setSaving(false); }
   }
 
@@ -183,7 +186,9 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   }
   // Saves pending edits first; the caller stages the file (and asks first if conflict markers remain).
   async function markResolved() {
+    const id = loadId;
     if (dirty()) { await save(); if (dirty()) return; }
+    if (id !== loadId || !props.active) return;
     props.onMarkResolved(conflicts().length);
   }
 

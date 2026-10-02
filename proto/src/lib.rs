@@ -364,6 +364,12 @@ pub enum Request {
         offset: usize,
         limit: usize,
     },
+    FindChanges {
+        path: String,
+        query: String,
+        offset: usize,
+        limit: usize,
+    },
     CommitDetails {
         path: String,
         hash: String,

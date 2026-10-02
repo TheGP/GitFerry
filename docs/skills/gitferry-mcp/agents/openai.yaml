@@ -1,0 +1,5 @@
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "gitferry"
+      description: "Navigate and inspect the running GitFerry desktop app"

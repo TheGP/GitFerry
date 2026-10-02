@@ -24,6 +24,66 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn code_search_finds_literal_introductions_and_removals_with_pagination() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    let file = temp.path().join("code.txt");
+    for (content, message) in [
+        ("base\n", "Base"),
+        ("base\nneedle.*\n", "Introduce"),
+        ("changed\nneedle.*\n", "Unrelated"),
+        ("changed\n", "Remove"),
+    ] {
+        std::fs::write(&file, content).unwrap();
+        git(temp.path(), &["add", "code.txt"]);
+        git(temp.path(), &["commit", "-qm", message]);
+    }
+    let path = temp.path().to_str().unwrap();
+    let first = search(path, "code:needle.*", 0, 1).unwrap();
+    assert_eq!(first.commits[0].subject, "Remove");
+    assert!(first.has_more);
+    let second = search(path, "code:needle.*", 1, 1).unwrap();
+    assert_eq!(second.commits[0].subject, "Introduce");
+    assert!(!second.has_more);
+    assert!(search(path, "code:needleXYZ", 0, 100)
+        .unwrap()
+        .commits
+        .is_empty());
+}
+
+#[test]
+fn code_search_preserves_significant_whitespace() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    git(temp.path(), &["config", "user.name", "Test"]);
+    git(temp.path(), &["config", "user.email", "test@example.com"]);
+    let file = temp.path().join("code.txt");
+    std::fs::write(&file, "if (ready)\n").unwrap();
+    git(temp.path(), &["add", "."]);
+    git(temp.path(), &["commit", "-qm", "Base"]);
+    std::fs::write(&file, "    if (ready) \n").unwrap();
+    git(
+        temp.path(),
+        &["commit", "-qam", "Indent and trailing space"],
+    );
+    let path = temp.path().to_str().unwrap();
+    assert_eq!(
+        search(path, "code:    if", 0, 100).unwrap().commits[0].subject,
+        "Indent and trailing space"
+    );
+    assert_eq!(
+        search(path, "code:(ready) ", 0, 100).unwrap().commits[0].subject,
+        "Indent and trailing space"
+    );
+    assert!(search(path, "code:        if", 0, 100)
+        .unwrap()
+        .commits
+        .is_empty());
+}
+
+#[test]
 fn edits_working_files_and_stages_saved_staged_files() {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "-q"]);
