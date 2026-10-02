@@ -10,7 +10,7 @@ import { version } from "../package.json";
 import { createHunkNotes, HunkNotes } from "./HunkNote";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
-import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, type McpRequest, type McpConnection } from "./mcpNavigation";
+import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileHighlightRows, type McpRequest, type McpConnection } from "./mcpNavigation";
 import "./App.css";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
@@ -87,7 +87,7 @@ function savedSideEditor(): EditorTarget | null {
   try {
     const saved = JSON.parse(localStorage.getItem(sideEditorKey) ?? "null");
     if (!saved || typeof saved.repo !== "string" || typeof saved.path !== "string") return null;
-    return { repo: saved.repo, path: saved.path, commit: typeof saved.commit === "string" ? saved.commit : undefined, line: Number(saved.line) || 0, marks: null, nonce: 0 };
+    return { repo: saved.repo, path: saved.path, commit: typeof saved.commit === "string" ? saved.commit : undefined, line: Number(saved.line) || 0, marks: null, nonce: 0, readOnly: saved.readOnly === true, revisionLabel: typeof saved.revisionLabel === "string" ? saved.revisionLabel : undefined };
   } catch { return null; }
 }
 function savedSession(): { tabs: Repo[]; activePath: string | null } {
@@ -263,20 +263,6 @@ function ConfirmButton(props: { class: string; disabled?: boolean; resetKey?: un
 // Branch comparisons diff "<merge base>..<head>"; other targets are a commit hash or a working-tree area.
 const isComparisonTarget = (target: string) => target.includes("..");
 const isWorkingTarget = (target: string) => target === "working" || target === "staged" || target === "untracked";
-// A full-context diff lists every line of the file's new version, so it rebuilds the file as of a commit.
-function fileFromFullDiff(value: Diff): string {
-  if (value.truncated) throw new Error("This file is too large to show as of a commit.");
-  if (!value.text.includes("\n@@ ")) throw new Error("This file has no text content in this commit.");
-  const lines: string[] = [];
-  let noNewline = false;
-  for (const row of parseDiffLines(value)) {
-    if (row.hunkIndex < 0) continue;
-    if (row.newNumber !== null) { lines.push(row.line.slice(1)); noNewline = false; }
-    else if (row.line.startsWith("\\") && lines.length) noNewline = true;
-  }
-  return lines.join("\n") + (noNewline ? "" : "\n");
-}
-
 // Each mounted diff owns its selection, including expanded Summary cards. Weak keys disappear when a card closes.
 const diffViews = new WeakMap<HTMLElement, () => { value: Diff; item: Choice; selection: { rows: number[]; hunkIndex: number | null } }>();
 
@@ -354,11 +340,9 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     const marks = hunkMarks().get(row.hunkIndex);
     return marks?.added[0] ?? marks?.removed[0] ?? Number(/\+(\d+)/.exec(lines()[index].line)?.[1] ?? 1);
   }
-  function openEditorAt(index: number, event: MouseEvent) {
+  function openEditorAt(index: number) {
     const line = editorLine(index);
     if (line === null) return;
-    event.preventDefault();
-    window.getSelection()?.removeAllRanges();
     const row = rows[index];
     props.onOpenEditor?.(line, row.hunkIndex >= 0 ? hunkMarks().get(row.hunkIndex) ?? null : null);
   }
@@ -398,7 +382,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     <Show when={actionable() && hunkCount()}><div class="line-selection-toolbar" data-mode={selectedLines().length ? "lines" : "hunk"}><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : `Hunk ${selectedHunk() + 1} of ${hunkCount()}`)}</span><Show when={props.item.target === "working"}><ConfirmButton class="discard-selection" disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} resetKey={`${selectedHunk()}:${selectedLines().join()}`} onConfirm={() => applySelection(true)}>{selectedLines().length ? "Discard Lines" : "Discard Hunk"}</ConfirmButton></Show><button class={selectedLines().length ? "stage-lines" : "hunk-action"} disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(false)}>{props.item.target === "staged" ? "Unstage" : "Stage"} {selectedLines().length ? "Lines" : "Hunk"}</button></div></Show>
     <div ref={element => diffViews.set(element, () => ({ value: props.value, item: props.item, selection: { rows: selectedLines(), hunkIndex: hunkCount() ? selectedHunk() : null } }))} class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""} ${props.aiRows?.has(index()) ? "ai-highlight" : ""}`} data-row-index={index()} data-old-line={row.oldNumber ?? undefined} data-new-line={row.newNumber ?? undefined} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
       <Show when={changed(index())} fallback={<span class="line-number"><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select ${row.kind === "added" ? "new" : "old"} line ${row.kind === "added" ? row.newNumber : row.oldNumber}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></button></Show>
-      <span class="line-text" title={editorOpenable() && editorLine(index()) !== null ? (isWorkingTarget(props.item.target) ? "Double-click to edit in the side editor" : "Double-click to view the file as of this commit") : undefined} onDblClick={event => openEditorAt(index(), event)}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>
+      <span class="line-text" title={editorOpenable() && editorLine(index()) !== null ? (isWorkingTarget(props.item.target) ? "Double-click to edit in the side editor" : "Double-click to view the file as of this commit") : undefined} onDblClick={() => openEditorAt(index())}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>
     </div></>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
   </>;
 }
@@ -621,7 +605,7 @@ function App() {
   if (!sideEditor()) forgetWindowGrowth();
   createEffect(() => {
     const target = sideEditor();
-    if (target) localStorage.setItem(sideEditorKey, JSON.stringify({ repo: target.repo, path: target.path, commit: target.commit, line: target.line }));
+    if (target) localStorage.setItem(sideEditorKey, JSON.stringify({ repo: target.repo, path: target.path, commit: target.commit, line: target.line, readOnly: target.readOnly, revisionLabel: target.revisionLabel }));
     else localStorage.removeItem(sideEditorKey);
   });
   const [sideEditorDirty, setSideEditorDirty] = createSignal(false);
@@ -1548,12 +1532,12 @@ function App() {
       await invoke("open_in_editor", { repo: path, file: item.path, line, editor: editor(), executable: editorExecutable() });
     } catch (cause) { setError(String(cause)); }
   }
-  function openSideEditor(item: Choice, line: number, marks: HunkMarks | null) {
+  function openSideEditor(item: Choice, line: number, marks: HunkMarks | null, focus = true) {
     const path = activePath();
     if (!path) return;
     const current = sideEditor();
     const commit = isWorkingTarget(item.target) ? undefined : item.target;
-    const open = () => void showSideEditor({ repo: path, path: item.path, commit, line, marks, nonce: ++sideEditorNonce });
+    const open = () => void showSideEditor({ repo: path, path: item.path, commit, line, marks, nonce: ++sideEditorNonce, focus });
     if (current && sideEditorDirty() && (current.repo !== path || current.path !== item.path || current.commit !== commit)) {
       openActionDialog({ title: `Discard unsaved edits to ${current.path}?`, submitLabel: "Discard", danger: true, fields: [], onSubmit: open });
     } else open();
@@ -1564,7 +1548,8 @@ function App() {
     else void hideSideEditor();
   }
   async function readSideEditorFile(path: string, file: string, commit?: string) {
-    if (commit) return fileFromFullDiff(demoMode ? demoDiff({ path: file, status: "M", target: commit }) : await invoke<Diff>("repo_diff", { path, target: commit, file, ignoreWhitespace: false, fullContext: true }));
+    if (commit && !demoMode) return fileFromSnapshotDiff(await invoke<Diff>("repo_diff", { path, target: snapshotDiffTarget(commit.split("..").pop() ?? commit), file, ignoreWhitespace: false, fullContext: true }), file);
+    if (commit && demoMode) return parseDiffLines(demoDiff({ path: file, status: "M", target: commit })).filter(row => row.newNumber !== null).map(row => row.line.slice(1)).join("\n") + "\n";
     if (demoMode) return demoDiff({ path: file, status: "M", target: "working" }).text;
     return (await invoke<EditableFile>("repo_read_file", { path, file })).content;
   }
@@ -1831,6 +1816,7 @@ function App() {
   // Share the normal navigation and Git commands with MCP, rather than operating a second UI model.
   const mcpRows = (value: Diff, target: string) => numberedDiffRows(parseDiffLines(value), target);
   function mcpView() {
+    const editor = sideEditor();
     const nativeSelection = window.getSelection();
     const nativeRange = nativeSelection && !nativeSelection.isCollapsed && nativeSelection.rangeCount && detailsScroll?.contains(nativeSelection.anchorNode)
       ? nativeSelection.getRangeAt(0) : null;
@@ -1859,6 +1845,11 @@ function App() {
       commit: selected(), file: item?.path ?? null, target: item?.target ?? null, fileView: fileView(),
       selection: { hunkIndex: selection.hunkIndex, lines: selection.rows.map(index => rows[index]).filter(Boolean), textSelection },
       highlights: [...aiRows].map(index => ({ rowIndex: index, ...rows[index] })),
+      editor: editor && editor.repo === activePath() ? {
+        file: editor.path, revision: editor.commit ?? "working", revisionLabel: editor.revisionLabel ?? null,
+        readOnly: Boolean(editor.commit) || editor.readOnly === true, line: editor.line,
+        annotation: editor.annotation ?? null,
+      } : null,
     };
   }
   async function setMcpEnabled(enabled: boolean) {
@@ -1881,7 +1872,7 @@ function App() {
       if (navigation && (request !== initialRequest || activePath() !== initialPath)) throw new Error("The user changed the view during this request; retry");
       if (navigation && (actionDialog() || actionBusy() || busy() || sideEditorDirty() || activeFileDraft()?.text !== activeFileDraft()?.original)) throw new Error("Finish or cancel the open dialog or operation, or save/cancel the editor changes before AI navigation");
     };
-    await valid(["open_repository", "show_branch", "reveal_change"].includes(message.tool));
+    await valid(["open_repository", "show_branch", "reveal_change", "reveal_file"].includes(message.tool));
     if (message.tool === "get_view") return mcpView();
     if (message.tool === "list_repositories") {
       const open = await Promise.all(tabs().map(async tab => {
@@ -1906,6 +1897,39 @@ function App() {
     }
     if (!tab || tab.loading || tab.loadError) throw new Error("Repository is not open and ready. Call open_repository with its path first.");
     const path = tab.path;
+    if (message.tool === "reveal_file") {
+      if (!a.file) throw new Error("file is required");
+      if (a.branch && a.revision) throw new Error("Specify either branch or revision, not both");
+      const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
+      const ref = a.branch ? current.refs.find(ref => (ref.kind === "branch" || ref.kind === "remote") && ref.name === a.branch) : null;
+      if (a.branch && !ref) throw new Error(`Branch ${a.branch} does not exist in this repository`);
+      const revision = ref?.target ?? (a.revision === "working" ? null : !a.revision || a.revision === "HEAD" ? current.head : a.revision);
+      if (a.revision !== "working" && !revision) throw new Error("This repository has no commit to browse; specify revision: working");
+      const detail = revision ? await invoke<Details>("repo_commit", { path, hash: revision }) : null;
+      const content = await readSideEditorFile(path, a.file, detail?.hash);
+      const startLine = a.startLine ?? 1, endLine = a.endLine ?? startLine;
+      fileHighlightRows(content, startLine, endLine, a.quote);
+      await valid(true);
+      setTabs(tabs => tabs.map(item => item.path === path ? mergeRepo(item, current) : item));
+      activateTab(path);
+      setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
+      if (detail) {
+        detailsCache.set(`${path}\u0000${detail.hash}`, detail);
+        setRevealedCommit({ repo: path, commit: { ...detail, decorations: [] } });
+        void selectCommit(detail.hash);
+      } else selectWorking();
+      const navigationRequest = request;
+      const target: EditorTarget = { repo: path, path: a.file, commit: detail?.hash, line: startLine, marks: null, nonce: ++sideEditorNonce,
+        readOnly: true, revisionLabel: a.branch ? `${a.branch} · ${detail?.hash.slice(0, 8)}` : detail?.hash.slice(0, 8) ?? "Working tree",
+        content, annotation: { startLine, endLine, comment: a.comment } };
+      await showSideEditor(target);
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      await valid();
+      if (request !== navigationRequest || activePath() !== path || sideEditor()?.nonce !== target.nonce) throw new Error("The view changed before navigation could be confirmed");
+      const input = document.querySelector<HTMLTextAreaElement>(".editor-input");
+      if (!input?.readOnly || input.value !== content.replace(/\r\n?/g, "\n") || document.querySelectorAll(".editor-row.ai-highlight").length !== endLine - startLine + 1) throw new Error("GitFerry could not confirm the file and rendered highlights");
+      return { repository: path, branch: current.branch, file: a.file, revision: detail?.hash ?? "working", editor: mcpView().editor, confirmed: true };
+    }
     if (message.tool === "list_branches" || message.tool === "show_branch") {
       const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
       if (message.tool === "list_branches") {
@@ -2404,12 +2428,12 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
                   <Show when={group.title === "UNSTAGED" && discardable().length}><ConfirmButton class="row-action" disabled={actionBusy()} resetKey={discardable().join("\0")} onConfirm={() => void runAction({ kind: "discard_files", value: { paths: discardable() } })}>Discard All</ConfirmButton></Show>
                   <Show when={group.title === "STAGED"} fallback={<button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_files", value: { paths: paths() } })}>Stage All</button>}><button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_files", value: { paths: paths() } })}>Unstage All</button></Show>
                 </>;
-              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onOpenEditorLine={(line, marks) => openSideEditor(item, line, marks)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
+              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onOpenEditorLine={(line, marks) => openSideEditor(item, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
             <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><Show when={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target}><button title="Clear AI highlights" onClick={() => setMcpHighlight(null)}>Clear AI highlights</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
               <Show when={fileView() === "diff"}>
                 <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.target === "working" && choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
                 <Show when={choice()?.target === "working" && choice()?.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show>
-                <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it in the side editor.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} aiRows={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target && mcpHighlight()?.text === current().text ? mcpHighlight()?.rows : undefined} onSelection={setDiffSelection} onOpenEditor={(line, marks) => openSideEditor(choice()!, line, marks)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
+                <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it in the side editor.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} aiRows={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target && mcpHighlight()?.text === current().text ? mcpHighlight()?.rows : undefined} onSelection={setDiffSelection} onOpenEditor={(line, marks) => openSideEditor(choice()!, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
               </Show>
               <Show when={fileView() === "edit" && selected() === "working"}><div class="file-edit-view"><Show when={activeFileDraft()} fallback={<div class="empty-note">{fileEditError() || (fileEditLoading() ? "Loading file…" : "No editable file loaded")}</div>}>{draft => <><div class="file-edit-toolbar"><span>{draft().stageOnSave ? "Saving stages the whole file" : "Edits remain unstaged until you stage them"}</span><button disabled={fileEditSaving()} onClick={discardEditedFile}>Cancel</button><button class="file-edit-save" disabled={fileEditSaving() || draft().text === draft().original} onClick={() => void saveEditedFile()}>{fileEditSaving() ? "Saving…" : "Save · Ctrl+S"}</button></div><Show when={fileEditError()}>{message => <div class="file-edit-error">{message()}</div>}</Show><textarea class="file-edit-textarea" aria-label={`Edit ${draft().path}`} spellcheck={false} disabled={fileEditSaving()} value={draft().text} onInput={event => setFileDraft(current => current ? { ...current, text: event.currentTarget.value } : current)} onKeyDown={event => { if (event.key === "Tab") { event.preventDefault(); const input = event.currentTarget; const start = input.selectionStart; const end = input.selectionEnd; input.setRangeText("  ", start, end, "end"); setFileDraft(current => current ? { ...current, text: input.value } : current); } }} /></>}</Show></div></Show>
               <Show when={fileView() === "history"}><div class="file-inspection"><div class="file-inspection-heading">File history · {inspectRevision().slice(0, 8)}</div><Show when={fileInfoError()}>{message => <div class="empty-note">{message()}</div>}</Show><Show when={fileHistory()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading file history…" : "No file history loaded"}</div>}>{history => <><For each={history().commits}>{entry => <button class="file-history-row" title={`${entry.path} · ${entry.hash}`} onClick={() => void openHistoryCommit(entry)}><span class="file-history-subject">{entry.subject}</span><span class="file-history-meta">{entry.author} · {new Date(entry.timestamp * 1000).toLocaleDateString()} · {entry.hash.slice(0, 8)}</span></button>}</For><Show when={!history().commits.length && !fileInfoLoading()}><div class="empty-note">No committed history for this file.</div></Show><Show when={history().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileHistory(history().commits.length)}>{fileInfoLoading() ? "Loading…" : "Load more history"}</button></Show></>}</Show></div></Show>
@@ -2419,7 +2443,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
         </section>
       </Show>
     </Show>
-        <Show when={sideEditor()}>{target => <FileEditor target={target()} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onResize={event => startResize("editor", event)} />}</Show>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
     </main>
     <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? "RUNNING GIT COMMAND" : repo()?.loading || busy() || searchBusy() ? "LOADING REPOSITORY" : repo()?.loadError ? "REPOSITORY UNAVAILABLE" : "READY"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
     <Show when={actionDialog()}>{current => <div class="modal-backdrop" onClick={() => setActionDialog(null)}><div class="action-dialog" role="dialog" aria-modal="true" aria-label={current().title} onClick={event => event.stopPropagation()}>

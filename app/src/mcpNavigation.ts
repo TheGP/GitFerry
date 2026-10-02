@@ -5,9 +5,58 @@ export type DiffRow = { line: string; kind: string; hunkIndex: number; oldNumber
 export type McpRequest = { id: number; tool: string; deadline: number; arguments: {
   repository?: string; branch?: string | null; commit?: string; file?: string | null;
   parent?: string | null; query?: string; offset?: number; revision?: string | null;
-  startLine?: number; highlights?: Highlight[];
+  startLine?: number; endLine?: number | null; quote?: string | null; comment?: string | null; highlights?: Highlight[];
 } };
 export type McpConnection = { url: string; token: string };
+
+// Reading against Git's empty tree includes every file line even when the commit did not change it.
+// This uses the existing diff RPC, including already-installed SSH agents.
+export function snapshotDiffTarget(commit: string): string {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(commit)) throw new Error("Invalid file revision");
+  const emptyTree = commit.length === 64 ? "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321" : "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  return `${emptyTree}..${commit}`;
+}
+
+function snapshotPath(header: string): string {
+  const path = header.slice(4).replace(/\t$/, "");
+  if (!path.startsWith('"')) return path;
+  if (!path.endsWith('"')) throw new Error("Invalid snapshot path");
+  const escapes: Record<string, string> = { a: "\x07", b: "\b", t: "\t", n: "\n", v: "\x0b", f: "\f", r: "\r", '"': '"', "\\": "\\" };
+  const bytes: number[] = [];
+  for (const token of path.slice(1, -1).match(/\\(?:[0-7]{3}|.)|[^\\]/gu) ?? []) {
+    if (/^\\[0-7]{3}$/.test(token)) bytes.push(parseInt(token.slice(1), 8));
+    else {
+      const text = token.startsWith("\\") ? escapes[token.slice(1)] : token;
+      if (text === undefined) throw new Error("Invalid snapshot path");
+      bytes.push(...new TextEncoder().encode(text));
+    }
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+}
+
+export function fileFromSnapshotDiff(value: { text: string; truncated: boolean }, file?: string): string {
+  if (value.truncated) throw new Error("This file is too large to show as of a commit.");
+  const rows = value.text.split("\n");
+  if (rows.filter(line => line.startsWith("diff --git ")).length !== 1 || !rows.some(line => /^new file mode 100(644|755)$/.test(line))) throw new Error("The requested path is not a regular file at this revision.");
+  if (rows.some(line => line.startsWith("Binary files "))) throw new Error("Binary files cannot be shown in the editor.");
+  const start = rows.findIndex(line => line.startsWith("@@ "));
+  if (start < 0) return ""; // An empty tracked file has a header but no hunk.
+  const header = rows.find(line => line.startsWith("+++ "));
+  if (file && (!header || snapshotPath(header) !== `b/${file}`)) throw new Error("The requested path is not this snapshot's file.");
+  const lines: string[] = [];
+  let noNewline = false;
+  for (const row of rows.slice(start + 1)) {
+    if (row.startsWith("+")) lines.push(row.slice(1));
+    else if (row.startsWith("\\ No newline at end of file")) noNewline = true;
+    else if (row) throw new Error("Git returned an incomplete file snapshot.");
+  }
+  return lines.join("\n") + (noNewline ? "" : "\n");
+}
+
+export function fileHighlightRows(content: string, startLine: number, endLine?: number | null, quote?: string | null): Set<number> {
+  const rows = numberedDiffRows(content.replace(/\r\n?/g, "\n").split("\n").map(line => ({ line, kind: "", hunkIndex: -1, oldNumber: null, newNumber: null })), "untracked");
+  return highlightRows(rows, [{ kind: "lines", side: "new", startLine, endLine, quote }]);
+}
 
 export function numberedDiffRows(rows: DiffRow[], target: string): DiffRow[] {
   if (target !== "untracked" || rows.some(row => row.kind === "hunk")) return rows;

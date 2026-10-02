@@ -86,6 +86,11 @@ arguments!(Reveal {
     repository: String, branch: Option<String>, commit: String, file: Option<String>,
     parent: Option<String>, #[serde(default)] highlights: Vec<Highlight>,
 });
+arguments!(RevealFile {
+    repository: String, file: String, branch: Option<String>, revision: Option<String>,
+    #[serde(default = "first_line")] start_line: usize,
+    end_line: Option<usize>, quote: Option<String>, comment: Option<String>,
+});
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -139,6 +144,7 @@ fn tools() -> Vec<Tool> {
         tool::<History>("file_history", "Read paged file history, following renames, at revision (defaults to HEAD).", true),
         tool::<Blame>("blame", "Read up to 300 line attributions at revision (defaults to HEAD), starting at 1-based startLine.", true),
         tool::<Reveal>("reveal_change", "Activate an OPEN tab, select commit SHA or working/staged/untracked, optionally open file and highlight line ranges (old/new, 1-based) or hunks (0-based). Optional quote validates the selected code. Optional branch verifies checked-out branch, parent selects a merge parent. Success confirms rendered highlights. No staging or checkout.", false),
+        tool::<RevealFile>("reveal_file", "Open any text file, including unchanged files, in the side editor of an OPEN repository. branch browses a local/remote branch without checkout; alternatively revision accepts a full commit SHA, HEAD (default), or working. Highlight 1-based startLine..endLine; optional quote verifies the code and comment displays an AI explanation. Success confirms the rendered file and highlights. Read-only; no checkout or edits.", false),
     ]
 }
 
@@ -157,6 +163,7 @@ fn validate(name: &str, value: Value) -> Result<Value, ErrorData> {
         "file_history" => parse::<History>(value),
         "blame" => parse::<Blame>(value),
         "reveal_change" => parse::<Reveal>(value),
+        "reveal_file" => parse::<RevealFile>(value),
         _ => return Err(ErrorData::invalid_params("Unknown GitFerry tool", None)),
     }?;
     for key in ["repository", "file", "branch", "query", "revision"] {
@@ -168,6 +175,24 @@ fn validate(name: &str, value: Value) -> Result<Value, ErrorData> {
     }
     if name == "show_branch" && !value["branch"].is_string() {
         return Err(ErrorData::invalid_params("branch is required", None));
+    }
+    if name == "reveal_file" {
+        if value["branch"].is_string() && value["revision"].is_string() {
+            return Err(ErrorData::invalid_params("Specify either branch or revision, not both", None));
+        }
+        if let Some(revision) = value["revision"].as_str() {
+            if revision != "HEAD" && revision != "working" && !is_hash(revision) {
+                return Err(ErrorData::invalid_params("revision must be HEAD, working, or a full commit SHA; use branch for branch names", None));
+            }
+        }
+        let start = value["startLine"].as_u64().unwrap_or(1);
+        let end = value["endLine"].as_u64().unwrap_or(start);
+        if start == 0 || end < start || end - start > 10000 {
+            return Err(ErrorData::invalid_params("Invalid line range", None));
+        }
+        if value["comment"].as_str().is_some_and(|text| text.len() > 16000 || text.contains('\0')) {
+            return Err(ErrorData::invalid_params("Invalid comment; maximum 16000 bytes", None));
+        }
     }
     for key in ["commit", "parent"] {
         if let Some(hash) = value[key].as_str() {
@@ -612,7 +637,7 @@ mod tests {
             .unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let data = rpc_body(&body);
-        assert_eq!(data["result"]["tools"].as_array().unwrap().len(), 12);
+        assert_eq!(data["result"]["tools"].as_array().unwrap().len(), 13);
         assert!(data["result"]["tools"]
             .as_array()
             .unwrap()
@@ -650,6 +675,11 @@ mod tests {
         .is_err());
         assert!(validate("repo_action", json!({})).is_err());
         assert!(validate("show_branch", json!({"repository":"C:/repo"})).is_err());
+        assert!(validate("reveal_file", json!({"repository":"C:/repo", "file":"src/a.ts", "branch":"topic", "startLine":2, "endLine":3, "comment":"Retry happens here"})).is_ok());
+        assert!(validate("reveal_file", json!({"repository":"C:/repo", "file":"a", "startLine":0})).is_err());
+        assert!(validate("reveal_file", json!({"repository":"C:/repo", "file":"a", "endLine":0})).is_err());
+        assert!(validate("reveal_file", json!({"repository":"C:/repo", "file":"a", "branch":"topic", "revision":"HEAD"})).is_err());
+        assert!(validate("reveal_file", json!({"repository":"C:/repo", "file":"a", "revision":"--all"})).is_err());
         assert!(validate(
             "get_commit",
             json!({"repository":"C:/repo","commit":"--all"})

@@ -36,6 +36,37 @@ async function click(page, selector, options) {
   await page.locator(selector).click(options);
 }
 
+async function doubleClickDiffWord(page, lineText, word) {
+  await page.waitForFunction(text => [...document.querySelectorAll(".diff-line .line-text")].some(line => line.textContent === text), {}, lineText);
+  const point = await page.evaluate(({ lineText, word }) => {
+    const line = [...document.querySelectorAll(".diff-line .line-text")].find(item => item.textContent === lineText);
+    if (!line) throw new Error(`Missing diff line: ${lineText}`);
+    line.scrollIntoView({ block: "nearest" });
+    const nodes = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    for (let node = nodes.nextNode(); node; node = nodes.nextNode()) {
+      const start = node.textContent.indexOf(word);
+      if (start < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, start); range.setEnd(node, start + 1);
+      const rect = range.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    }
+    throw new Error(`Missing diff word: ${word}`);
+  }, { lineText, word });
+  // Let Chromium select the word itself; an artificial Range would miss the double-click bug.
+  await page.mouse.click(point.x, point.y, { count: 2 });
+  await page.waitForFunction(text => document.querySelector(".editor-input")?.value.includes(text), {}, lineText);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const selection = await page.evaluate(() => {
+    const selected = window.getSelection();
+    const anchor = selected?.anchorNode?.parentElement;
+    const clipboard = new DataTransfer();
+    anchor?.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: clipboard }));
+    return { text: selected?.toString(), inDiff: Boolean(anchor?.closest(".diff-content")), editorFocused: document.activeElement?.classList.contains("editor-input"), copied: clipboard.getData("text/plain") };
+  });
+  assert.deepEqual(selection, { text: word, inDiff: true, editorFocused: false, copied: word }, "Opening the side editor must preserve the native diff selection and copying");
+}
+
 async function selectTheme(page, theme) {
   await click(page, "button[title='Settings']");
   await page.select('select[aria-label="Color theme"]', theme);
@@ -185,7 +216,7 @@ async function exerciseMcp(page, repository, restore) {
   await click(page, ".commit-actions button::-p-text(Reset hard)");
   await page.waitForSelector(".action-dialog");
   const heads = [repository.folder, repository.worktree].map(folder => git(folder, "rev-parse", "HEAD"));
-  for (const tool of ["open_repository", "show_branch", "reveal_change"]) {
+  for (const tool of ["open_repository", "show_branch", "reveal_change", "reveal_file"]) {
     reply = await mcp(page, tool, { repository: repository.worktree, branch: "topic", commit: repository.cause });
     assert.match(reply.error, /dialog/, `${tool} must not navigate while a confirmation is open`);
   }
@@ -266,7 +297,48 @@ async function exerciseMcp(page, repository, restore) {
   assert.equal(reply.result.selection.textSelection.text, "working cause");
   assert.ok(reply.result.selection.textSelection.lines.some(row => row.file === "code.txt" && row.target === "working" && row.newNumber === 2));
   await page.evaluate(() => window.getSelection().removeAllRanges());
+  await doubleClickDiffWord(page, "working cause", "cause");
+  await doubleClickDiffWord(page, "working cause", "cause");
+  await page.screenshot({ path: path.join(screenshots, "diff-word-selection.png") });
+  await click(page, ".editor-tab-close");
   await click(page, '.summary-diff-card[data-path="code.txt"] .summary-open-tab');
+  await doubleClickDiffWord(page, "working cause", "cause");
+  await click(page, ".editor-input");
+  assert.equal(await page.$eval(".editor-input", input => document.activeElement === input), true, "The editor still accepts focus when clicked");
+  await click(page, ".editor-tab-close");
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: repository.cause, file: "code.txt" });
+  assert.equal(reply.error, null);
+  await doubleClickDiffWord(page, "new cause", "cause");
+  assert.equal(await page.$eval(".editor-input", input => input.readOnly), true, "Historical files remain read-only");
+  await click(page, ".editor-tab-close");
+  const beforeFileReveal = { head: git(repository.folder, "rev-parse", "HEAD"), status: git(repository.folder, "status", "--porcelain"), file: fs.readFileSync(path.join(repository.folder, "code.txt"), "utf8") };
+  const comment = "This file is unchanged at the tip of topic.\nThe explanation stays beside the highlighted code.";
+  reply = await mcp(page, "reveal_file", { repository: repository.folder, branch: "topic", file: "code.txt", startLine: 2, endLine: 3, quote: "new cause", comment });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.confirmed, true);
+  assert.equal(reply.result.revision, secondParent);
+  assert.equal(reply.result.branch, "main", "Browsing an unchanged file never checks out its branch");
+  assert.equal(await page.$eval(".editor-input", input => input.value), "first\nnew cause\nlast\n");
+  assert.equal(await page.$$eval(".editor-row.ai-highlight", rows => rows.length), 2);
+  assert.equal(await page.$eval(".editor-annotation p", note => note.textContent), comment);
+  assert.equal((await mcp(page, "get_view")).result.editor.annotation.startLine, 2);
+  await page.screenshot({ path: path.join(screenshots, "mcp-unchanged-file.png") });
+  for (const args of [{ quote: "wrong code" }, { startLine: 4, endLine: 4 }, { file: "missing.txt" }, { branch: "missing-branch" }]) {
+    reply = await mcp(page, "reveal_file", { repository: repository.folder, branch: "topic", file: "code.txt", startLine: 2, ...args });
+    assert.ok(reply.error, "Invalid file evidence must fail");
+    assert.equal((await mcp(page, "get_view")).result.editor.revision, secondParent, "Failed requests must preserve the previous editor");
+  }
+  await click(page, ".editor-annotation button[title='Clear AI highlights']");
+  assert.equal((await mcp(page, "get_view")).result.editor.annotation, null);
+  assert.equal(await page.$$eval(".editor-row.ai-highlight", rows => rows.length), 0);
+  reply = await mcp(page, "reveal_file", { repository: repository.folder, revision: "working", file: "code.txt", startLine: 2, quote: "working cause" });
+  assert.equal(reply.error, null);
+  assert.equal(await page.$eval(".editor-input", input => input.value), "first\nworking cause\nlast\n");
+  assert.equal(await page.$eval(".editor-input", input => input.readOnly), true);
+  assert.deepEqual({ head: git(repository.folder, "rev-parse", "HEAD"), status: git(repository.folder, "status", "--porcelain"), file: fs.readFileSync(path.join(repository.folder, "code.txt"), "utf8") }, beforeFileReveal);
+  await click(page, ".editor-tab-close");
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "working", file: "code.txt", highlights: [{ kind: "lines", side: "new", startLine: 2, quote: "working cause" }] });
+  assert.equal(reply.error, null);
   fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\ndifferent content\nlast\n");
   await shortcut(page, "r");
   try {
@@ -365,7 +437,7 @@ async function bridge(command, args) {
     repo_file_history: ["file_history", { path: args.path, file: args.file, revision: args.revision, offset: args.offset, limit: 100 }],
     repo_blame: ["blame", { path: args.path, file: args.file, revision: args.revision, start_line: args.startLine, limit: 300 }],
     repo_tracked_files: ["tracked_files", { path: args.path, query: args.query, limit: 100 }],
-    repo_diff: ["diff", { path: args.path, target: args.target, file: args.file, ignore_whitespace: args.ignoreWhitespace ?? false }],
+    repo_diff: ["diff", { path: args.path, target: args.target, file: args.file, ignore_whitespace: args.ignoreWhitespace ?? false, full_context: args.fullContext ?? false }],
     repo_read_file: ["read_file", { path: args.path, file: args.file }],
     repo_save_file: ["save_file", { path: args.path, file: args.file, content: args.content, expected_content: args.expectedContent, stage: args.stage }],
     repo_action: ["action", { path: args.path, action: args.operation, cancel_token: args.cancelToken }],
@@ -603,6 +675,12 @@ async function main() {
   await page.goto("http://127.0.0.1:1420/");
   // The app renders only after restoring saved settings, so shortcuts pressed earlier are lost.
   await page.waitForSelector(".statusbar");
+  if (process.env.GITFERRY_README_SHOWCASE) {
+    await require("./readme-showcase.cjs")({ page, sandbox, screenshots, git, click, openRepo, mcp, selectTheme });
+    assert.deepEqual(pageErrors, [], "showcase must have no uncaught browser errors");
+    console.log(`README screenshots: ${screenshots}`);
+    return;
+  }
   await shortcut(page, "p");
   await page.waitForSelector(".palette input");
   await page.locator(".palette input").fill("Open repository");
@@ -625,7 +703,11 @@ async function main() {
   await page.keyboard.press("Escape");
   await openRepo(page, small);
   await exerciseMcp(page, mcpRepo, small);
-  if (process.env.GITFERRY_MCP_ONLY) { console.log("MCP-only UI smoke passed"); return; }
+  if (process.env.GITFERRY_MCP_ONLY) {
+    assert.deepEqual(pageErrors, [], "browser must have no uncaught errors");
+    console.log(`MCP-only UI smoke passed; diff selection screenshot: ${path.join(screenshots, "diff-word-selection.png")}`);
+    return;
+  }
   await page.waitForSelector(".summary-diff-card .diff-content");
   await exerciseSideEditor(page, small);
   await exerciseComparisonBase(page);
@@ -1332,7 +1414,7 @@ main().catch(async error => {
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
+  for (const name of ["harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

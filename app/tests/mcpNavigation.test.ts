@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, type DiffRow } from "../src/mcpNavigation.ts";
+import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileHighlightRows, type DiffRow } from "../src/mcpNavigation.ts";
 
 const rows: DiffRow[] = [
   { line: "@@ -10,2 +10,2 @@", kind: "hunk", hunkIndex: 0, oldNumber: null, newNumber: null },
@@ -41,4 +41,32 @@ test("untracked raw rows do not number the empty tail after a final newline", ()
   assert.equal(numbered[1].newNumber, null);
   assert.throws(() => highlightRows(numbered, [{ kind: "lines", side: "new", startLine: 2 }]), /fully present/);
   assert.equal(numberedDiffRows([raw[0]], "untracked")[0].newNumber, 1);
+});
+
+test("file snapshots include unchanged files and preserve file endings", () => {
+  const header = "diff --git a/code.ts b/code.ts\nnew file mode 100644\nindex 0000000..1234567\n--- /dev/null\n+++ b/code.ts\n";
+  const snapshot = (text: string) => fileFromSnapshotDiff({ text: header + text, truncated: false });
+  assert.equal(snapshot("@@ -0,0 +1,2 @@\n+first\n+last\n"), "first\nlast\n");
+  assert.equal(snapshot("@@ -0,0 +1,2 @@\n+first\n+last\n\\ No newline at end of file\n"), "first\nlast");
+  assert.equal(snapshot("@@ -0,0 +1,2 @@\n+first\r\n+last\r\n"), "first\r\nlast\r\n");
+  assert.equal(snapshot(""), "");
+  assert.throws(() => snapshot("Binary files /dev/null and b/code.ts differ\n"), /Binary/);
+  assert.throws(() => fileFromSnapshotDiff({ text: header, truncated: true }), /large/);
+  assert.throws(() => fileFromSnapshotDiff({ text: header + header, truncated: false }), /regular file/);
+  assert.throws(() => fileFromSnapshotDiff({ text: header.replace("100644", "120000"), truncated: false }), /regular file/);
+  const text = header + "@@ -0,0 +1 @@\n+code\n";
+  assert.equal(fileFromSnapshotDiff({ text, truncated: false }, "code.ts"), "code\n");
+  assert.throws(() => fileFromSnapshotDiff({ text, truncated: false }, "other.ts"), /snapshot's file/);
+  assert.equal(fileFromSnapshotDiff({ text: text.replace("+++ b/code.ts", '+++ "b/\\320\\277.ts"'), truncated: false }, "п.ts"), "code\n");
+  assert.equal(fileFromSnapshotDiff({ text: text.replace("+++ b/code.ts", "+++ b/file name.ts\t"), truncated: false }, "file name.ts"), "code\n");
+  assert.equal(snapshotDiffTarget("a".repeat(40)), `4b825dc642cb6eb9a060e54bf8d69288fbee4904..${"a".repeat(40)}`);
+  assert.equal(snapshotDiffTarget("b".repeat(64)), `6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321..${"b".repeat(64)}`);
+  assert.throws(() => snapshotDiffTarget("HEAD"), /revision/);
+});
+
+test("file highlights validate quotes and exclude the trailing display row", () => {
+  assert.deepEqual([...fileHighlightRows("first\r\nretry\r\nlast\r\n", 2, 3, "retry")], [1, 2]);
+  assert.throws(() => fileHighlightRows("first\n", 2), /fully present/);
+  assert.throws(() => fileHighlightRows("", 1), /fully present/);
+  assert.throws(() => fileHighlightRows("retry\n", 1, 1, "wrong"), /quote/);
 });

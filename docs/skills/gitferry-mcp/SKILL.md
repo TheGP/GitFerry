@@ -1,6 +1,6 @@
 ---
 name: gitferry-mcp
-description: Use GitFerry MCP to inspect open repository tabs and branches, investigate Git changes, and reveal commits with exact line or hunk highlights in the desktop app. Use when the user asks to show changes in GitFerry or explain the selected changes.
+description: Use GitFerry MCP to inspect repository tabs and branches, investigate Git changes, and show changed or unchanged code with exact line highlights and explanations in the desktop app.
 ---
 
 # GitFerry MCP
@@ -33,6 +33,14 @@ Use returned full commit SHAs and file paths. For paged search/history results, 
 For a merge, inspect `get_commit`'s parents and pass the appropriate parent SHA to both `get_diff` and `reveal_change`. The default is the first parent. For uncommitted changes, `get_diff` and `reveal_change` accept `working`, `staged`, or `untracked` as `commit`.
 
 ## Show the evidence in GitFerry
+
+For explanations of existing code, use `reveal_file`; the file does not need to have a diff. Open the repository first, read its refs with `list_branches`, and use `blame` at the resolved full commit SHA to verify the requested code and line numbers. Then call:
+
+```json
+{"repository":"C:/work/my-repo","branch":"topic","file":"src/example.ts","startLine":42,"endLine":44,"quote":"retry","comment":"These checks can finish before the post has loaded."}
+```
+
+Unlike `reveal_change`'s checked-out branch check, `reveal_file.branch` selects a local or remote branch to browse without checkout. Alternatively, pass `revision` as a full commit SHA, `HEAD` (default), or `working`; do not combine it with `branch`. Prefer the verified full SHA when refs could move during the investigation. The file opens read-only in the side editor, including unchanged code. Lines are 1-based; `quote` must occur in the highlighted range. `comment` is a plain-text, temporary explanation beside the code, not a repository edit. Require `confirmed: true`, and report the returned resolved `revision`, file, and line range. `get_view.editor` reads back the displayed revision and annotation. **Clear AI highlights** removes the annotation.
 
 When the user asks to show the culprit changes, complete the investigation with `reveal_change`:
 
