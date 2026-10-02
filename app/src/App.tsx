@@ -26,7 +26,7 @@ type EditableFile = { content: string };
 type SshPrompt = { id: number; kind: "password" | "passphrase" | "confirm" | "other"; target: string; text: string; error?: string | null };
 type SavedFile = { staged: boolean; warning: string | null };
 type CompareResult = { mergeBase: string; commits: number; files: { path: string; status: string; additions?: number | null; deletions?: number | null }[]; additions: number; deletions: number };
-type Comparison = { base: string; head: string; baseHash: string; headHash: string; result: CompareResult | null; error: string };
+type Comparison = { base: string; head: string; baseHash: string; headHash: string; result: CompareResult | null; error: string; automatic?: boolean };
 type FileDraft = { repo: string; path: string; source: string; original: string; text: string; newline: "\n" | "\r\n" | "\r"; stageOnSave: boolean };
 type FileHistoryEntry = { hash: string; subject: string; author: string; timestamp: number; path: string };
 type FileHistoryResult = { commits: FileHistoryEntry[]; hasMore: boolean };
@@ -665,14 +665,14 @@ function App() {
   });
   const tabViews = new Map<string, { selected: string; scrollTop: number }>();
   // Saved per-tab state from the previous run: comparisons are recomputed and selections restored after each repo loads.
-  const pendingComparisons = new Map<string, { base: string; head: string }>();
+  const pendingComparisons = new Map<string, { base: string; head: string; automatic?: boolean }>();
   const initialSelection = new Map<string, string>();
   try {
-    const saved = JSON.parse(localStorage.getItem(tabStateKey) ?? "{}") as Record<string, { selected?: string; compare?: { base: string; head: string } }>;
+    const saved = JSON.parse(localStorage.getItem(tabStateKey) ?? "{}") as Record<string, { selected?: string; compare?: { base: string; head: string; automatic?: boolean } }>;
     for (const [path, view] of Object.entries(saved)) {
       if (view.compare?.base && view.compare.head) {
         pendingComparisons.set(path, view.compare);
-        setComparisons(previous => ({ ...previous, [path]: { base: view.compare!.base, head: view.compare!.head, baseHash: "", headHash: "", result: null, error: "" } }));
+        setComparisons(previous => ({ ...previous, [path]: { base: view.compare!.base, head: view.compare!.head, baseHash: "", headHash: "", result: null, error: "", automatic: view.compare!.automatic } }));
       }
       if (view.selected && view.selected !== "working") { initialSelection.set(path, view.selected); tabViews.set(path, { selected: view.selected, scrollTop: 0 }); }
     }
@@ -1207,8 +1207,7 @@ function App() {
     finally { setSearchBusy(false); }
   }
   // The branch a feature is compared against: a local main line first, then its remote-tracking copy.
-  const baseBranch = createMemo(() => {
-    const refs = repo()?.refs ?? [];
+  function findBaseBranch(refs: Ref[]) {
     for (const name of ["main", "master", "develop", "trunk"]) {
       const local = refs.find(item => item.kind === "branch" && item.name === name);
       if (local) return local;
@@ -1218,7 +1217,8 @@ function App() {
       if (remote) return remote;
     }
     return null;
-  });
+  }
+  const baseBranch = createMemo(() => findBaseBranch(repo()?.refs ?? []));
   async function compareWithBase(ref: Ref) {
     const path = activePath(), base = baseBranch();
     if (!path || !base) return;
@@ -1232,13 +1232,13 @@ function App() {
   const comparisonRequests = new Map<string, string>();
   // Branches are resolved by name each time, so a comparison follows commits made since it was opened.
   // A refresh keeps the previous result on screen until the new one arrives.
-  async function runComparison(path: string, baseName: string, headName: string, refresh = false) {
+  async function runComparison(path: string, baseName: string, headName: string, refresh = false, automatic = false) {
     const refs = tabs().find(item => item.path === path)?.refs ?? [];
     const baseHash = branchTarget(refs, baseName), headHash = branchTarget(refs, headName);
     const request = `${baseName}:${headName}:${baseHash}:${headHash}`;
     comparisonRequests.set(path, request);
     const missing = !baseHash ? baseName : !headHash ? headName : "";
-    if (!refresh || missing) updateComparison(path, () => ({ base: baseName, head: headName, baseHash, headHash, result: null, error: missing ? `Branch ${missing} no longer exists` : "" }));
+    if (!refresh || missing) updateComparison(path, current => ({ base: baseName, head: headName, baseHash, headHash, result: null, error: missing ? `Branch ${missing} no longer exists` : "", automatic: refresh ? current?.automatic : automatic }));
     if (missing) return;
     const settle = (change: Partial<Comparison>) => {
       if (comparisonRequests.get(path) === request) updateComparison(path, current => current?.head === headName ? { ...current, baseHash, headHash, ...change } : current);
@@ -1269,7 +1269,7 @@ function App() {
     if (!path || !repoReady()) return;
     untrack(() => {
       const pending = pendingComparisons.get(path);
-      if (pending) { pendingComparisons.delete(path); void runComparison(path, pending.base, pending.head); }
+      if (pending) { pendingComparisons.delete(path); void runComparison(path, pending.base, pending.head, false, pending.automatic); }
       if (initialSelection.has(path)) {
         const saved = initialSelection.get(path)!;
         initialSelection.delete(path);
@@ -1279,12 +1279,35 @@ function App() {
       }
     });
   });
+  // Keep the checked-out feature branch's comparison available without changing the selected view.
+  createEffect(() => {
+    if (demoMode) return;
+    const open = comparisons();
+    for (const tab of tabs()) {
+      if (tab.loading || tab.loadError || pendingComparisons.has(tab.path)) continue;
+      const current = open[tab.path], base = findBaseBranch(tab.refs);
+      const feature = base && !["main", "master", base.name].includes(tab.branch) && tab.refs.some(ref => ref.kind === "branch" && ref.name === tab.branch);
+      untrack(() => {
+        if (!feature) {
+          if (current?.automatic) {
+            comparisonRequests.delete(tab.path);
+            updateComparison(tab.path, () => null);
+            if (activePath() === tab.path && selected() === "compare") selectWorking();
+          }
+          return;
+        }
+        if (current?.base === base.name && current.head === tab.branch) {
+          if (!current.automatic) updateComparison(tab.path, value => value ? { ...value, automatic: true } : null);
+        } else if (!current || current.automatic) void runComparison(tab.path, base.name, tab.branch, false, true);
+      });
+    }
+  });
   createEffect(() => {
     const active = activePath(), current = selected(), open = comparisons();
-    const state: Record<string, { selected: string; compare?: { base: string; head: string } }> = {};
+    const state: Record<string, { selected: string; compare?: { base: string; head: string; automatic?: boolean } }> = {};
     for (const tab of tabs()) {
       const compare = open[tab.path] ?? (pendingComparisons.has(tab.path) ? pendingComparisons.get(tab.path) : undefined);
-      state[tab.path] = { selected: tab.path === active ? initialSelection.get(active) ?? current : tabViews.get(tab.path)?.selected ?? "working", ...(compare ? { compare: { base: compare.base, head: compare.head } } : {}) };
+      state[tab.path] = { selected: tab.path === active ? initialSelection.get(active) ?? current : tabViews.get(tab.path)?.selected ?? "working", ...(compare ? { compare: { base: compare.base, head: compare.head, automatic: compare.automatic } } : {}) };
     }
     localStorage.setItem(tabStateKey, JSON.stringify(state));
   });
@@ -2143,7 +2166,7 @@ function App() {
           }}>
             <Show when={!searchQuery() && comparison()}>{current => <div class={`compare-row ${selected() === "compare" ? "selected" : ""}`} style={{ height: `${compareRowHeight}px` }}>
               <button class="compare-main" onClick={showComparison}><span class="branch-dot" style={{ background: branchColor(branchKey(current().head, repo()?.remotes ?? [])) }} /><span class="commit-main"><strong>{current().head} <span class="compare-vs">vs</span> {current().base}</strong><small>{current().error || (current().result ? `${current().result!.commits} commit${current().result!.commits === 1 ? "" : "s"} · ${current().result!.files.length} file${current().result!.files.length === 1 ? "" : "s"}` : "Comparing…")}</small></span></button>
-              <button class="compare-close" title="Close comparison" aria-label="Close comparison" onClick={closeComparison}><Icon name="close" /></button>
+              <Show when={!current().automatic}><button class="compare-close" title="Close comparison" aria-label="Close comparison" onClick={closeComparison}><Icon name="close" /></button></Show>
             </div>}</Show>
             <Show when={!searchQuery()}><button class={`working-row ${selected() === "working" ? "selected" : ""}`} onClick={selectWorking}><span class="working-node">●</span><span class="commit-main"><strong title={workingSummary()}>{workingSummary() || "Working Directory"}</strong><small>{workingSummary() ? "Commit Changes" : "No changes"}</small></span></button></Show>
             <div class="virtual-commits" style={{ height: `${displayedCommits().length * rowHeight()}px` }}>

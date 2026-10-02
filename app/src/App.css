@@ -14,9 +14,9 @@ button { cursor: pointer; }
 .tabbar { height: 43px; flex: none; display: flex; align-items: stretch; background: #1b2026; border-bottom: 1px solid #0e1217; }
 .repo-tab { display: flex; align-items: stretch; max-width: 250px; border-right: 1px solid #14191e; color: #9aa6b2; }
 .repo-tab.active { background: #292f37; color: #edf3f7; border-top: 2px solid #5dc6ca; }
-.tab-main { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; padding: 0 8px 0 15px; border: 0; background: none; color: inherit; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; font-weight: 600; }
-.tab-main .tab-name { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
-.tab-main .tab-branch { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; color: #748391; font-size: 13px; font-weight: 400; }
+.tab-main { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; min-width: 0; flex: 1; padding: 0 8px 0 15px; border: 0; background: none; color: inherit; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; line-height: 1.2; font-weight: 600; }
+.tab-main .tab-name { min-width: 0; max-width: 100%; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.tab-main .tab-branch { min-width: 0; max-width: 100%; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; color: #748391; font-size: 13px; font-weight: 400; }
 .tab-close, .tab-add { border: 0; background: none; color: #7e8995; }
 .tab-close { width: 28px; flex: none; font-size: 16px; }
 .tab-close:hover, .tab-add:hover { color: white; background: #353d46; }

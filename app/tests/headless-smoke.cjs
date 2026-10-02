@@ -567,11 +567,18 @@ async function main() {
   await waitUntil(() => git(small, "branch", "--show-current") === "team/ui-track", "remote tracking checkout");
   await waitForAction(page);
   assert.equal(git(small, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"), "origin/team/ui-track");
+  await page.waitForFunction(() => document.querySelector(".compare-main strong")?.textContent === "team/ui-track vs main");
+  assert.equal(await page.$(".compare-close"), null, "Automatic feature comparisons should stay available");
+  assert.ok(await page.$(".working-row.selected"), "Automatic comparisons must preserve the selected view");
+  await page.click(".compare-main");
+  await page.waitForSelector(".compare-row.selected");
   await page.click(".branch-chip");
   await page.locator(".branch-menu-filter").fill("main");
   await page.click(".branch-menu-row:not(.branch-menu-remote) button:first-child");
   await waitUntil(() => git(small, "branch", "--show-current") === "main", "switch back to main");
   await waitForAction(page);
+  await page.waitForFunction(() => !document.querySelector(".compare-row"));
+  assert.ok(await page.$(".working-row.selected"), "Returning to main should exit the automatic comparison");
   const longBranch = "feat/x-mac-warmup-gologin-driver-visibility-check";
   await page.click(".branch-chip");
   await page.locator(".branch-menu form input").fill(longBranch);
@@ -579,6 +586,7 @@ async function main() {
   await waitUntil(() => git(small, "branch", "--show-current") === longBranch, "branch creation").catch(async error => { throw new Error(`${error.message}: ${await page.$eval(".error-bar", item => item.textContent).catch(() => "no UI error")}`); });
   await page.waitForFunction(branch => document.querySelector(".branch-name")?.textContent === branch, {}, longBranch);
   assert.equal(git(small, "branch", "--show-current"), longBranch);
+  await page.waitForFunction(branch => document.querySelector(".compare-main strong")?.textContent === `${branch} vs main`, {}, longBranch);
   await waitForAction(page);
   await page.click("button[title='Push']");
   await waitUntil(() => git(remote, "branch", "--list", longBranch).includes(longBranch), "new branch push");
@@ -715,6 +723,11 @@ async function main() {
   await page.click(".repo-tab:nth-child(2) .tab-close");
 
   await openRepo(page, rebaseRepo);
+  await page.waitForFunction(() => document.querySelector(".compare-main strong")?.textContent === "topic vs main");
+  await page.click(".compare-main");
+  await page.waitForSelector('.summary-diff-card[data-path="a.txt"] .diff-content');
+  await page.screenshot({ path: path.join(screenshots, "automatic-feature-comparison.png") });
+  await page.click(".working-row");
   await page.click(".branch-chip");
   await page.click("button[title='Plan an interactive rebase onto main']");
   await page.waitForSelector(".rebase-modal .rebase-step:nth-child(3)");

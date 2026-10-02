@@ -468,6 +468,13 @@ async function main() {
   const duplicateBranches = [null, ...Array.from({ length: 8 }, (_, index) => `feature/tab-overflow-${index + 2}`)];
   const branches = () => tabsPage.$$eval(".repo-tab", items => items.map(item => item.querySelector(".tab-branch")?.textContent ?? null));
   assert.deepEqual(await branches(), duplicateBranches, "Only later duplicate tabs should show their branch");
+  const stackedBranchLabels = await tabsPage.$$eval(".repo-tab", items => items.filter(item => item.querySelector(".tab-branch")).map(item => {
+    const name = item.querySelector(".tab-name").getBoundingClientRect();
+    const branch = item.querySelector(".tab-branch").getBoundingClientRect();
+    const tab = item.getBoundingClientRect();
+    return branch.top >= name.bottom && Math.abs(branch.left - name.left) <= 1 && branch.bottom <= tab.bottom;
+  }));
+  assert.ok(stackedBranchLabels.every(Boolean), "Tab branches should fit on a second line under the repository name");
   assert.deepEqual(await tabsPage.$$eval(".tab-name", items => items.map(item => item.textContent)), Array(9).fill("atelier"), "Repository names should not have number suffixes");
   await tabsPage.evaluate(() => localStorage.setItem("gitferry.showTabBranch", "false"));
   await tabsPage.reload();
