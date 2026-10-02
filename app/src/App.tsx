@@ -779,6 +779,21 @@ function App() {
   let commitScroll!: HTMLDivElement;
   let detailsScroll!: HTMLDivElement;
   const repo = createMemo(() => tabs().find(item => item.path === activePath()) ?? null);
+  const tabBranchVisibility = createMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of tabs()) {
+      const name = item.name.toLocaleLowerCase();
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    const seen = new Set<string>();
+    return new Map(tabs().map(item => {
+      const name = item.name.toLocaleLowerCase();
+      const visible = (counts.get(name) ?? 0) > 1 ? seen.has(name) : showTabBranch();
+      seen.add(name);
+      return [item.path, visible] as const;
+    }));
+  });
+  const tabDisplayName = (item: Repo) => tabBranchVisibility().get(item.path) ? `${item.name} · ${item.branch}` : item.name;
   const matchingLocalBranches = createMemo(() => repo()?.refs.filter(item => item.kind === "branch" && item.name.toLocaleLowerCase().includes(branchFilter().trim().toLocaleLowerCase())) ?? []);
   const matchingRemoteBranches = createMemo(() => repo()?.refs.filter(item => item.kind === "remote" && !item.name.endsWith("/HEAD") && item.name.toLocaleLowerCase().includes(branchFilter().trim().toLocaleLowerCase())) ?? []);
   function openActionDialog(dialog: ActionDialog) {
@@ -2015,7 +2030,8 @@ function App() {
       };
       const requestedTabs = Number(new URLSearchParams(location.search).get("tabs")) || 1;
       const count = Math.min(12, Math.max(1, Math.floor(requestedTabs)));
-      setTabs(Array.from({ length: count }, (_, index) => index === 0 ? sample : { ...sample, path: `${sample.path}-${index + 1}`, name: `repository-${index + 1}`, branch: `feature/tab-overflow-${index + 1}` }));
+      const duplicateNames = new URLSearchParams(location.search).has("duplicateNames");
+      setTabs(Array.from({ length: count }, (_, index) => index === 0 ? sample : { ...sample, path: `${sample.path}-${index + 1}`, name: duplicateNames ? sample.name : `repository-${index + 1}`, branch: `feature/tab-overflow-${index + 1}` }));
       setActivePath(sample.path);
     }
     try {
@@ -2069,8 +2085,8 @@ function App() {
     <header class="tabbar">
       <div class={`tab-strip ${tabDrag() ? "reordering" : ""}`} ref={tabStrip} onScroll={updateTabScroll} onWheel={event => { if (tabOverflow() && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.preventDefault(); tabStrip.scrollLeft += event.deltaY; } }}>
       <For each={tabs()}>{(item, index) => <div style={{ transform: tabShift(item.path, index()) }} class={`repo-tab ${activePath() === item.path ? "active" : ""} ${item.loading ? "loading" : ""} ${item.loadError ? "unavailable" : ""} ${tabDrag()?.path === item.path ? `dragging ${tabDrag()!.settling ? "settling" : ""}` : ""}`} onPointerDown={event => startTabDrag(item.path, event)}>
-        <button class="tab-main" title={`${item.name} · ${item.branch}`} onClick={() => { if (!suppressTabClick) activateTab(item.path); }}><span class="tab-name">{item.name}</span><Show when={showTabBranch()}><span class="tab-branch">{item.branch}</span></Show></button>
-        <button class="tab-close" aria-label={`Close ${item.name}`} onClick={() => closeTab(item.path)}><Icon name="close" /></button>
+        <button class="tab-main" title={`${item.name} · ${item.branch}`} onClick={() => { if (!suppressTabClick) activateTab(item.path); }}><span class="tab-name">{item.name}</span><Show when={tabBranchVisibility().get(item.path)}><span class="tab-branch">{item.branch}</span></Show></button>
+        <button class="tab-close" aria-label={`Close ${tabDisplayName(item)}`} onClick={() => closeTab(item.path)}><Icon name="close" /></button>
       </div>}</For>
       </div><div class="tab-navigation"><Show when={tabOverflow()}><button class="tab-scroll-button" title="Scroll tabs left" aria-label="Scroll tabs left" disabled={!canScrollTabsLeft()} onClick={() => tabStrip.scrollBy({ left: -Math.max(180, tabStrip.clientWidth * .7), behavior: "smooth" })}><Icon name="left" /></button><button class="tab-scroll-button" title="Scroll tabs right" aria-label="Scroll tabs right" disabled={!canScrollTabsRight()} onClick={() => tabStrip.scrollBy({ left: Math.max(180, tabStrip.clientWidth * .7), behavior: "smooth" })}><Icon name="right" /></button><button class="tab-list-button" title="List open repositories" aria-label="List open repositories" aria-expanded={tabListOpen()} onClick={() => setTabListOpen(!tabListOpen())}><Icon name="down" /></button></Show><button class="tab-add" title="Open repository" aria-label="Open repository" onClick={() => setShowOpen(true)}><Icon name="plus" /></button><Show when={tabListOpen()}><div class="tab-list-menu"><For each={tabs()}>{item => <button class={activePath() === item.path ? "active" : ""} title={item.path} onClick={() => activateTab(item.path)}><strong>{item.name}</strong><span>{item.branch}</span></button>}</For></div></Show></div>
       <button class="settings-button" title="Settings" aria-label="Settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button>

@@ -410,6 +410,9 @@ async function main() {
   await page.keyboard.press("Escape");
   const tabsPage = await browser.newPage();
   tabsPage.on("pageerror", error => errors.push(error.message));
+  await tabsPage.evaluateOnNewDocument(() => {
+    if (localStorage.getItem("gitferry.showTabBranch") === null) localStorage.setItem("gitferry.showTabBranch", "true");
+  });
   await tabsPage.setViewport({ width: 1429, height: 918, deviceScaleFactor: 1 });
   await tabsPage.goto(`${url}&tabs=9`);
   await tabsPage.waitForSelector(".repo-tab:nth-child(9)");
@@ -460,6 +463,30 @@ async function main() {
   await tabsPage.waitForSelector(".open-modal");
   await tabsPage.keyboard.press("Escape");
   assert.equal(await tabsPage.$(".open-modal"), null, "Open repository dialog did not close");
+  await tabsPage.goto(`${url}&tabs=9&duplicateNames`);
+  await tabsPage.waitForSelector(".repo-tab:nth-child(9)");
+  const duplicateBranches = [null, ...Array.from({ length: 8 }, (_, index) => `feature/tab-overflow-${index + 2}`)];
+  const branches = () => tabsPage.$$eval(".repo-tab", items => items.map(item => item.querySelector(".tab-branch")?.textContent ?? null));
+  assert.deepEqual(await branches(), duplicateBranches, "Only later duplicate tabs should show their branch");
+  assert.deepEqual(await tabsPage.$$eval(".tab-name", items => items.map(item => item.textContent)), Array(9).fill("atelier"), "Repository names should not have number suffixes");
+  await tabsPage.evaluate(() => localStorage.setItem("gitferry.showTabBranch", "false"));
+  await tabsPage.reload();
+  await tabsPage.waitForSelector(".repo-tab:nth-child(9)");
+  assert.deepEqual(await branches(), duplicateBranches, "Duplicate branches should appear even when branch labels are disabled in settings");
+  await tabsPage.click(".tab-list-button");
+  assert.deepEqual(await tabsPage.$$eval(".tab-list-menu strong", items => items.map(item => item.textContent)), Array(9).fill("atelier"), "Tab list should preserve repository names");
+  assert.equal(await tabsPage.$eval(".tab-list-menu button:last-child span", item => item.textContent), "feature/tab-overflow-9", "Tab list is missing the duplicate's branch");
+  await tabsPage.locator(".tab-list-menu button:last-child").click();
+  await tabsPage.waitForSelector('.repo-tab.active [aria-label="Close atelier · feature/tab-overflow-9"]');
+  await tabsPage.waitForFunction(() => {
+    const strip = document.querySelector(".tab-strip").getBoundingClientRect();
+    const active = document.querySelector(".repo-tab.active").getBoundingClientRect();
+    return active.left >= strip.left - 1 && active.right <= strip.right + 1;
+  });
+  await tabsPage.screenshot({ path: path.join(output, "tabs-duplicates-960.png") });
+  await tabsPage.click('[aria-label="Close atelier · feature/tab-overflow-9"]');
+  await tabsPage.waitForFunction(() => document.querySelectorAll(".repo-tab").length === 8);
+  assert.deepEqual(await branches(), duplicateBranches.slice(0, -1), "Closing a duplicate tab changes the wrong labels");
   await tabsPage.goto(`${url}&tabs=2`);
   await tabsPage.waitForSelector(".repo-tab:nth-child(2)");
   await tabsPage.waitForFunction(() => !document.querySelector(".tab-list-button"));
