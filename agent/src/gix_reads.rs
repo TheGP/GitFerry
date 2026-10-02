@@ -488,6 +488,10 @@ fn subject(message: &[u8]) -> String {
     String::from_utf8_lossy(&subject).into_owned()
 }
 
+fn is_utf8_encoding(encoding: &[u8]) -> bool {
+    encoding.eq_ignore_ascii_case(b"UTF-8") || encoding.eq_ignore_ascii_case(b"UTF8")
+}
+
 /// Stash helper commits (index and untracked files) that no branch, remote branch or tag reaches.
 /// The history hides them so a stash shows as one commit.
 fn hidden_stash_helpers(
@@ -497,17 +501,9 @@ fn hidden_stash_helpers(
     head: Option<ObjectId>,
 ) -> Result<HashSet<ObjectId>> {
     let mut hidden = HashSet::new();
-    let mut oldest = i64::MAX;
     for helper in repo.find_commit(stash).map_err(fail)?.parent_ids().skip(1) {
         let helper = helper.detach();
         if Some(helper) != head {
-            oldest = oldest.min(
-                repo.find_commit(helper)
-                    .map_err(fail)?
-                    .time()
-                    .map_err(fail)?
-                    .seconds,
-            );
             hidden.insert(helper);
         }
     }
@@ -524,17 +520,8 @@ fn hidden_stash_helpers(
         })
         .filter_map(|reference| reference.commit)
         .collect();
-    // Commits that contain a helper were made after it, so only history newer than the oldest helper is
-    // searched, allowing a day of clock skew; the untracked-files helper has no parents, so searching all
-    // history for it would visit every commit.
-    let walk = repo
-        .rev_walk(tips)
-        .sorting(gix::revision::walk::Sorting::ByCommitTimeCutoff {
-            order: gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-            seconds: oldest - 24 * 60 * 60,
-        })
-        .all()
-        .map_err(fail)?;
+    // Commit dates need not increase along ancestry. Only an exact walk can establish reachability.
+    let walk = repo.rev_walk(tips).all().map_err(fail)?;
     for commit in walk {
         hidden.remove(&commit.map_err(fail)?.id);
         if hidden.is_empty() {
@@ -567,6 +554,14 @@ pub fn log(
     offset: usize,
     limit: usize,
 ) -> Result<(Vec<CommitSummary>, bool)> {
+    let config = repo.config_snapshot();
+    let output_encoding = config
+        .plumbing()
+        .string("i18n.logOutputEncoding")
+        .or_else(|| config.plumbing().string("i18n.commitEncoding"));
+    if output_encoding.is_some_and(|encoding| !is_utf8_encoding(&encoding)) {
+        return Err("Git must handle the configured log output encoding".to_string());
+    }
     let limit = limit.clamp(1, 200);
     let stash = find(references, "refs/stash".into()).and_then(|reference| reference.commit);
     let hidden = match stash {
@@ -602,6 +597,13 @@ pub fn log(
             None => repo.find_object(commit.id).map_err(fail)?.detach().data,
         };
         let parsed = gix::objs::CommitRef::from_bytes(&data, repo.object_hash()).map_err(fail)?;
+        if parsed
+            .encoding
+            .is_some_and(|encoding| !is_utf8_encoding(encoding))
+        {
+            // Auto retries with Git, which handles the commit's encoding and configured log output.
+            return Err("Git must decode this commit's message encoding".to_string());
+        }
         let author = parsed.author().ok();
         let mut parents: Vec<String> = commit.parents.iter().map(ObjectId::to_string).collect();
         if stash == Some(commit.id) {

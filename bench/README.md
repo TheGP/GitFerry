@@ -48,8 +48,8 @@ Per-read medians for `rapidcode/scheduler`:
 
 - On a working tree with very many small directories (the 24k-directory case), Git's Windows file-system cache still
   beats gitoxide's status, which enumerates directories once for tracked and once for untracked files.
-- Stash helper commits count as reachable from a branch only if the branch history newer than the helper (minus a
-  day of clock skew) contains them; the CLI searched all history.
+- Stash helper reachability walks the complete graph, including backdated descendants.
+- Non-UTF-8 commit or log output encodings use the Git CLI so its encoding conversion is preserved.
 - The agent binary grows from 1.5 MB to 5.8 MB (Windows release), which is the one-time upload size for SSH hosts.
 - Each request opens the repository again (about 1 ms, plus about 9 ms to read a 50k-entry index). Keeping a handle
   open would keep pack files and `packed-refs` memory-mapped, which on Windows stops Git from replacing them.

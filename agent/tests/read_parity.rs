@@ -1,6 +1,7 @@
 use gitferry_agent::{snapshot_with, state_with, ReadBackend};
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Runs Git with every commit at the same instant, so history order depends only on Git's tie-breaking.
 fn git(dir: &Path, args: &[&str]) -> String {
@@ -251,4 +252,105 @@ fn gix_refs_hash_changes_only_when_refs_move() {
     assert_ne!(second, first);
     commit(dir, "file.txt", "two\n", "Two");
     assert_ne!(hash(), second);
+}
+
+#[test]
+fn stash_helpers_reached_by_backdated_refs_stay_visible() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    commit(dir, "file.txt", "base\n", "Base");
+    write(dir, "file.txt", "staged\n");
+    git(dir, &["add", "file.txt"]);
+    write(dir, "untracked.txt", "new\n");
+    git(dir, &["stash", "push", "-q", "-u", "-m", "Stash"]);
+    for (parent, reference) in [
+        ("refs/stash^2", "refs/heads/retained-index"),
+        ("refs/stash^3", "refs/remotes/origin/retained-untracked"),
+    ] {
+        let helper = git(dir, &["rev-parse", parent]);
+        let tree = git(dir, &["rev-parse", &format!("{helper}^{{tree}}")]);
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "commit-tree",
+                &tree,
+                "-p",
+                &helper,
+                "-m",
+                "Backdated descendant",
+            ])
+            .env("GIT_AUTHOR_DATE", "1766534400 +0000")
+            .env("GIT_COMMITTER_DATE", "1766534400 +0000")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let descendant = String::from_utf8(output.stdout).unwrap();
+        git(dir, &["update-ref", reference, descendant.trim()]);
+    }
+    assert_same_reads(dir, "backdated branch and remote retain stash helpers");
+    let snapshot = snapshot_with(dir.to_str().unwrap(), 0, 200, ReadBackend::Gix).unwrap();
+    for parent in ["refs/stash^2", "refs/stash^3"] {
+        let helper = git(dir, &["rev-parse", parent]);
+        assert!(snapshot.commits.iter().any(|commit| commit.hash == helper));
+    }
+}
+
+#[test]
+fn auto_uses_git_for_non_utf8_commit_and_output_encodings() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    commit(dir, "file.txt", "base\n", "Base");
+    git(dir, &["config", "i18n.commitEncoding", "ISO-8859-1"]);
+    git(dir, &["config", "i18n.logOutputEncoding", "UTF-8"]);
+    let tree = git(dir, &["rev-parse", "HEAD^{tree}"]);
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["commit-tree", &tree, "-p", "HEAD"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"caf\xe9\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let encoded = String::from_utf8(output.stdout).unwrap();
+    git(dir, &["update-ref", "refs/heads/main", encoded.trim()]);
+    let path = dir.to_str().unwrap();
+    let cli = snapshot_with(path, 0, 200, ReadBackend::Git).unwrap();
+    assert_eq!(cli.commits[0].subject, "café");
+    let auto = snapshot_with(path, 0, 200, ReadBackend::Auto).unwrap();
+    assert_eq!(
+        serde_json::to_value(auto).unwrap(),
+        serde_json::to_value(cli).unwrap()
+    );
+    assert!(snapshot_with(path, 0, 200, ReadBackend::Gix)
+        .unwrap_err()
+        .contains("message encoding"));
+    git(dir, &["config", "i18n.logOutputEncoding", "ISO-8859-1"]);
+    let cli = snapshot_with(path, 0, 200, ReadBackend::Git).unwrap();
+    let auto = snapshot_with(path, 0, 200, ReadBackend::Auto).unwrap();
+    assert_eq!(
+        serde_json::to_value(auto).unwrap(),
+        serde_json::to_value(cli).unwrap()
+    );
+    assert!(snapshot_with(path, 0, 200, ReadBackend::Gix)
+        .unwrap_err()
+        .contains("log output encoding"));
 }
