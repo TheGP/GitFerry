@@ -1926,6 +1926,9 @@ pub fn action_with_progress(
             cancel_token,
             &mut progress,
         )?,
+        RepoAction::PullBranch { branch } => {
+            pull_branch(&root, &branch, cancel_token, &mut progress)?
+        }
         RepoAction::PullMerge => git_with_progress(
             &root,
             &["pull", "--no-rebase", "--no-edit", "--progress"],
@@ -2325,6 +2328,63 @@ fn apply_lines(
         LineAction::Discard => &["apply", "--reverse", "--recount", "--unidiff-zero", "-"],
     };
     git_with_input(repo, apply_args, patch.as_bytes())
+}
+
+fn pull_branch(
+    repo: &Path,
+    branch_name: &str,
+    cancel_token: Option<&str>,
+    progress: &mut impl FnMut(&str),
+) -> Result<Output, String> {
+    validate_branch(repo, branch_name)?;
+    let reference = format!("refs/heads/{branch_name}");
+    git(repo, &["show-ref", "--verify", "--quiet", &reference])
+        .map_err(|_| format!("Local branch {branch_name} no longer exists"))?;
+    if branch(repo) == branch_name {
+        return git_with_progress(
+            repo,
+            &["pull", "--ff-only", "--progress"],
+            cancel_token,
+            progress,
+        );
+    }
+    let upstream_error = || format!("Set an upstream for {branch_name} before pulling it");
+    let remote = git(
+        repo,
+        &["config", "--get", &format!("branch.{branch_name}.remote")],
+    )
+    .map(|output| text(&output.stdout).trim().to_string())
+    .map_err(|_| upstream_error())?;
+    if remote != "." {
+        validate_remote(repo, &remote)?;
+    }
+    let upstream = git(
+        repo,
+        &[
+            "config",
+            "--get-all",
+            &format!("branch.{branch_name}.merge"),
+        ],
+    )
+    .map(|output| text(&output.stdout).trim().to_string())
+    .map_err(|_| upstream_error())?;
+    if upstream.lines().count() != 1 || !upstream.starts_with("refs/heads/") {
+        return Err(format!("Choose one upstream branch for {branch_name}"));
+    }
+    git(repo, &["check-ref-format", &upstream])?;
+    // No '+' or --update-head-ok: Git rejects divergence and branches checked out in any worktree.
+    git_with_progress(
+        repo,
+        &[
+            "fetch",
+            "--progress",
+            "--no-tags",
+            &remote,
+            &format!("{upstream}:{reference}"),
+        ],
+        cancel_token,
+        progress,
+    )
 }
 
 fn force_push_with_lease(

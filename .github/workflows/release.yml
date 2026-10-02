@@ -35,6 +35,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Test repository reads and actions
+        run: cargo test --locked -p gitferry-agent --test repository --test read_parity
       - name: Configure static linker
         if: runner.os == 'Linux'
         run: |
@@ -98,6 +103,7 @@ jobs:
         with:
           version: 8
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Verify tag matches app version
         shell: bash
         run: |
@@ -112,7 +118,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck
         working-directory: app
-        run: pnpm exec tsc --noEmit
+        run: |
+          pnpm exec tsc --noEmit
+          pnpm test:unit
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

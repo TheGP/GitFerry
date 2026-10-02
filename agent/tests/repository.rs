@@ -24,6 +24,108 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn pulls_another_branch_safely_without_switching_or_changing_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("work");
+    let seed = temp.path().join("seed");
+    git(
+        temp.path(),
+        &["init", "-q", "--bare", "-b", "main", "origin.git"],
+    );
+    git(temp.path(), &["clone", "-q", "origin.git", "seed"]);
+    git(&seed, &["config", "user.name", "Test"]);
+    git(&seed, &["config", "user.email", "test@example.com"]);
+    std::fs::write(seed.join("file.txt"), "base\n").unwrap();
+    git(&seed, &["add", "file.txt"]);
+    git(&seed, &["commit", "-qm", "Base"]);
+    git(&seed, &["push", "-q", "origin", "main"]);
+    git(temp.path(), &["clone", "-q", "origin.git", "work"]);
+    git(&dir, &["config", "user.name", "Test"]);
+    git(&dir, &["config", "user.email", "test@example.com"]);
+    // The local and upstream names need not match.
+    git(&dir, &["branch", "-m", "main", "master"]);
+    git(&dir, &["switch", "-qc", "feature"]);
+    let feature_head = git(&dir, &["rev-parse", "HEAD"]);
+    std::fs::write(dir.join("file.txt"), "staged\n").unwrap();
+    git(&dir, &["add", "file.txt"]);
+    std::fs::write(dir.join("file.txt"), "working\n").unwrap();
+    std::fs::write(dir.join("untracked.txt"), "untracked\n").unwrap();
+    let index = git(&dir, &["write-tree"]);
+    let path = dir.to_str().unwrap();
+    let pull = || {
+        action(
+            path,
+            RepoAction::PullBranch {
+                branch: "master".into(),
+            },
+        )
+    };
+    std::fs::write(seed.join("remote.txt"), "remote\n").unwrap();
+    git(&seed, &["add", "remote.txt"]);
+    git(&seed, &["commit", "-qm", "Remote update"]);
+    git(&seed, &["push", "-q"]);
+    pull().unwrap();
+    assert_eq!(
+        git(&dir, &["rev-parse", "master"]),
+        git(&seed, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        git(&dir, &["rev-parse", "origin/main"]),
+        git(&seed, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(git(&dir, &["branch", "--show-current"]), "feature");
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), feature_head);
+    assert_eq!(git(&dir, &["write-tree"]), index);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+        "working\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("untracked.txt")).unwrap(),
+        "untracked\n"
+    );
+    assert!(!dir.join("remote.txt").exists());
+    let master_head = git(&dir, &["rev-parse", "master"]);
+    let linked = temp.path().join("linked");
+    git(
+        &dir,
+        &["worktree", "add", "-q", linked.to_str().unwrap(), "master"],
+    );
+    assert!(pull().unwrap_err().contains("checked out"));
+    assert_eq!(git(&dir, &["rev-parse", "master"]), master_head);
+    git(&dir, &["worktree", "remove", linked.to_str().unwrap()]);
+    let tree = git(&dir, &["rev-parse", "master^{tree}"]);
+    let local = git(
+        &dir,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &master_head,
+            "-m",
+            "Local divergence",
+        ],
+    );
+    git(&dir, &["update-ref", "refs/heads/master", &local]);
+    std::fs::write(seed.join("remote.txt"), "later\n").unwrap();
+    git(&seed, &["commit", "-qam", "Later remote update"]);
+    git(&seed, &["push", "-q"]);
+    assert!(pull().unwrap_err().contains("non-fast-forward"));
+    assert_eq!(git(&dir, &["rev-parse", "master"]), local);
+    assert_eq!(git(&dir, &["write-tree"]), index);
+    git(&dir, &["branch", "no-upstream"]);
+    assert!(action(
+        path,
+        RepoAction::PullBranch {
+            branch: "no-upstream".into()
+        }
+    )
+    .unwrap_err()
+    .contains("Set an upstream"));
+    assert_eq!(git(&dir, &["rev-parse", "HEAD"]), feature_head);
+}
+
+#[test]
 fn code_search_finds_literal_introductions_and_removals_with_pagination() {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "-q"]);
@@ -1597,6 +1699,8 @@ fn watcher_notices_nested_worktree_changes() {
     std::fs::write(dir.join("nested").join("file.txt"), "before\n").unwrap();
     git(dir, &["add", "."]);
     git(dir, &["commit", "-qm", "Initial"]);
+    // Start the watcher before editing; parallel test load can delay its registration.
+    assert!(!watch(dir.to_str().unwrap(), 1_000).unwrap());
     let file = dir.join("nested").join("file.txt");
     let edit = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(500));

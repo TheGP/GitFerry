@@ -25,6 +25,7 @@ Open a local folder, or enter an SSH host and absolute repository path in the Op
 - Repository tabs with overflow scrolling and an open-tab list, recent repositories, branch and remote folders, tags/stashes/submodules sidebar, paged commit history and graph, commit details, working-tree status, and diffs.
 - Summary shows every changed file's diff in one scrollable view, expanded by default with per-file, per-group, and global expand/collapse controls. File tabs give diffs the full details pane, with syntax colors, changed-word highlights, and wrapped long lines.
 - File, hunk, and line staging/unstaging; commit/amend; fetch, pull with fast-forward/merge/rebase, push with automatic upstream setup, branch switching/creation/safe deletion, and stash.
+- Pull any local branch from its context menu without switching to it. It fast-forwards from that branch's configured upstream and refuses divergence or a branch checked out in another worktree.
 - Branch merge and rebase, interactive rebase planning for linear history (reorder, pick, reword, edit, squash, fixup, drop), conflict selection (ours/theirs or manual edit), continue/abort, and commit cherry-pick, revert, reset, detached checkout, and tag creation/deletion.
 - Rename and force-delete local branches; push or delete remote branches and tags. Browse tracked files, file history, and line blame from the details pane.
 - Ignore-whitespace diff view. Line and hunk actions are disabled while this filter is active so they always use the exact patch shown.

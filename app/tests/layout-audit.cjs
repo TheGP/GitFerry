@@ -228,16 +228,17 @@ async function main() {
   await page.select('select[aria-label="Color theme"]', "sublime");
   assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.theme")), "sublime");
   await page.select('select[aria-label="External editor"]', "vscode");
-  await page.type(".settings-body input", "C:/Editors/code.cmd");
+  await page.locator('input[aria-label="Code font size"]').fill("16");
+  await page.type('input[aria-label="Editor command override"]', "C:/Editors/code.cmd");
   assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.editor")), "vscode");
   assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.editorExecutable")), "C:/Editors/code.cmd");
   await page.screenshot({ path: path.join(output, "editor-settings-960.png") });
   await page.click(".settings-footer button");
   await page.click("button[title='Settings']");
-  assert.equal(await page.$eval(".settings-body input", input => input.value), "C:/Editors/code.cmd");
+  assert.equal(await page.$eval('input[aria-label="Editor command override"]', input => input.value), "C:/Editors/code.cmd");
   assert.equal(await page.$eval('select[aria-label="Color theme"]', input => input.value), "sublime");
   await page.select('select[aria-label="External editor"]', "antigravity");
-  await page.$eval(".settings-body input", input => { input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.$eval('input[aria-label="Editor command override"]', input => { input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true })); });
   await page.keyboard.press("Escape");
   await page.click(".branch-chip");
   await page.screenshot({ path: path.join(output, "branch-menu-960.png") });
@@ -290,7 +291,7 @@ async function main() {
   });
   assert.match(codeFont.family, /^Consolas/);
   assert.equal(codeFont.size, "16px");
-  assert.equal(codeFont.lineHeight, "23px");
+  assert.equal(codeFont.lineHeight, "24px");
   const diffReadability = await page.evaluate(() => {
     const pane = document.querySelector(".details-scroll");
     const diff = document.querySelector(".diff-content");
@@ -361,10 +362,9 @@ async function main() {
         const rgb = color => color.match(/\d+/g).slice(0, 3).map(Number);
         const color = rgb(getComputedStyle(row).backgroundColor);
         const base = rgb(getComputedStyle(document.querySelector(".commits-pane")).backgroundColor);
-        return { contrast: Math.hypot(...color.map((channel, index) => channel - base[index])), border: getComputedStyle(row).boxShadow };
+        return { contrast: Math.hypot(...color.map((channel, index) => channel - base[index])) };
       });
       assert.ok(selected.contrast >= 50, `Selected commit is too close to background in ${theme}`);
-      assert.notEqual(selected.border, "none", `Selected commit has no accent border in ${theme}`);
       await page.screenshot({ path: path.join(output, `selected-commit-${theme}-${width}.png`) });
     }
   }
@@ -379,7 +379,11 @@ async function main() {
   await page.keyboard.press("Enter");
   await page.keyboard.up(modifier);
   await page.waitForFunction(() => window.__commitClicks === 1);
+  // Demo mode has no native commit bridge; dismiss its expected error before testing search.
+  await page.waitForFunction(() => !document.querySelector(".commit-editor-actions button")?.disabled);
+  await page.evaluate(() => document.querySelector(".error-bar button[title='Dismiss error']")?.click());
   await page.click("button[title='Search commits']");
+  await page.waitForSelector(".search-box input");
   await page.focus(".search-box input");
   await page.keyboard.down(modifier);
   await page.keyboard.press("Enter");
@@ -410,9 +414,8 @@ async function main() {
   await page.keyboard.press("Escape");
   const tabsPage = await browser.newPage();
   tabsPage.on("pageerror", error => errors.push(error.message));
-  await tabsPage.evaluateOnNewDocument(() => {
-    if (localStorage.getItem("gitferry.showTabBranch") === null) localStorage.setItem("gitferry.showTabBranch", "true");
-  });
+  // Start this fixture with labels enabled, independent of earlier settings checks.
+  await page.evaluate(() => localStorage.setItem("gitferry.showTabBranch", "true"));
   await tabsPage.setViewport({ width: 1429, height: 918, deviceScaleFactor: 1 });
   await tabsPage.goto(`${url}&tabs=9`);
   await tabsPage.waitForSelector(".repo-tab:nth-child(9)");

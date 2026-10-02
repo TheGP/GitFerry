@@ -36,7 +36,7 @@ type BlameResult = { lines: BlameLine[]; hasMore: boolean };
 type RebaseCommit = { hash: string; subject: string; message: string };
 type RebaseStep = RebaseCommit & { action: "pick" | "reword" | "edit" | "squash" | "fixup" | "drop"; editedMessage?: string };
 type RefNode = { label: string; path: string; ref?: Ref; children: RefNode[]; count: number; containsHead: boolean };
-type Operation = { kind: "stage_all" | "fetch" | "pull" | "pull_merge" | "pull_rebase" | "push" | "force_push_with_lease" | "abort_operation" | "continue_operation" | "amend_no_edit" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_files" | "unstage_files" | "discard_files" | "delete_untracked"; value: { paths: string[] } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "discard_hunk"; value: { path: string; index: number; diff: string } } | { kind: "stage_lines" | "unstage_lines" | "discard_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "checkout" | "create_branch" | "delete_branch" | "force_delete_branch" | "merge" | "rebase"; value: { branch: string } } | { kind: "track_remote_branch" | "push_branch" | "delete_remote_branch"; value: { remote: string; branch: string } } | { kind: "rename_branch"; value: { branch: string; new_name: string } } | { kind: "interactive_rebase"; value: { branch: string; onto: string; steps: { hash: string; action: RebaseStep["action"]; message?: string }[] } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash" | "cherry_pick" | "revert" | "detach"; value: { hash: string } } | { kind: "reset"; value: { hash: string; mode: "soft" | "mixed" | "hard" } } | { kind: "create_tag"; value: { name: string; hash: string } } | { kind: "delete_tag"; value: { name: string } } | { kind: "push_tag" | "delete_remote_tag"; value: { remote: string; name: string } } | { kind: "resolve_file"; value: { path: string; side: "ours" | "theirs" } };
+type Operation = { kind: "stage_all" | "fetch" | "pull" | "pull_merge" | "pull_rebase" | "push" | "force_push_with_lease" | "abort_operation" | "continue_operation" | "amend_no_edit" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_files" | "unstage_files" | "discard_files" | "delete_untracked"; value: { paths: string[] } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean } } | { kind: "discard_hunk"; value: { path: string; index: number; diff: string } } | { kind: "stage_lines" | "unstage_lines" | "discard_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "pull_branch" | "checkout" | "create_branch" | "delete_branch" | "force_delete_branch" | "merge" | "rebase"; value: { branch: string } } | { kind: "track_remote_branch" | "push_branch" | "delete_remote_branch"; value: { remote: string; branch: string } } | { kind: "rename_branch"; value: { branch: string; new_name: string } } | { kind: "interactive_rebase"; value: { branch: string; onto: string; steps: { hash: string; action: RebaseStep["action"]; message?: string }[] } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash" | "cherry_pick" | "revert" | "detach"; value: { hash: string } } | { kind: "reset"; value: { hash: string; mode: "soft" | "mixed" | "hard" } } | { kind: "create_tag"; value: { name: string; hash: string } } | { kind: "delete_tag"; value: { name: string } } | { kind: "push_tag" | "delete_remote_tag"; value: { remote: string; name: string } } | { kind: "resolve_file"; value: { path: string; side: "ours" | "theirs" } };
 type ActionDialogField = { key: string; label: string; value: string; options?: string[]; placeholder?: string; required?: boolean };
 type ActionDialog = { title: string; description?: string; submitLabel: string; danger?: boolean; fields: ActionDialogField[]; onSubmit: (values: Record<string, string>) => void };
 const recentKey = "gitferry.recent";
@@ -161,7 +161,7 @@ function groupRefs(refs: Ref[], folders: boolean): RefNode[] {
 
 function RefTree(props: { nodes: RefNode[]; kind: string; depth: number; overrides: Record<string, boolean>; onToggle: (key: string, open: boolean) => void; onSelect: (hash: string) => void; onMenu: (ref: Ref, anchor: HTMLElement, point?: { x: number; y: number }) => void; onCheckout: (ref: Ref) => void; colorFor: (ref: Ref) => string | undefined }) {
   const hasMenu = (ref: Ref) => ["branch", "remote", "tag"].includes(props.kind) && !(props.kind === "remote" && ref.name.endsWith("/HEAD"));
-  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<div class="ref-entry"><button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${(props.kind === "branch" ? 22 : 25) + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)} onDblClick={() => { if (props.kind === "branch" || props.kind === "remote") props.onCheckout(node.ref!); }} onContextMenu={event => { if (!hasMenu(node.ref!)) return; event.preventDefault(); props.onMenu(node.ref!, event.currentTarget, { x: event.clientX, y: event.clientY }); }}>
+  return <For each={props.nodes}>{node => <Show when={!node.ref} fallback={<div class="ref-entry"><button class={`ref-item ${node.ref?.isHead ? "current" : ""}`} style={{ "padding-left": `${(props.kind === "branch" ? 18 : 25) + props.depth * 14}px` }} title={node.path} disabled={props.kind === "submodule"} onClick={() => props.onSelect(node.ref!.target)} onDblClick={() => { if (props.kind === "branch" || props.kind === "remote") props.onCheckout(node.ref!); }} onContextMenu={event => { if (!hasMenu(node.ref!)) return; event.preventDefault(); props.onMenu(node.ref!, event.currentTarget, { x: event.clientX, y: event.clientY }); }}>
     <Show when={props.colorFor(node.ref!)}>{color => <span class="branch-dot" style={{ background: color() }} />}</Show><Show when={props.kind !== "branch" && !props.colorFor(node.ref!)}><span class="ref-icon">{props.kind === "remote" ? "☁" : props.kind === "stash" ? "◷" : props.kind === "submodule" ? "▣" : "◇"}</span></Show><span class="ref-name">{node.label}</span><Show when={node.ref?.isHead}><span class="ref-head">HEAD</span></Show><Show when={node.ref?.ahead}><span class="ref-tracking" title={`${node.ref!.ahead} commits to push`}>{node.ref!.ahead}↑</span></Show><Show when={node.ref?.behind}><span class="ref-tracking" title={`${node.ref!.behind} commits to pull`}>{node.ref!.behind}↓</span></Show>
   </button><Show when={hasMenu(node.ref!)}><button class="ref-action-trigger" title={`Actions for ${node.path}`} aria-label={`Actions for ${node.path}`} onClick={event => props.onMenu(node.ref!, event.currentTarget)}><Icon name="more" /></button></Show></div>}>
     {(() => {
@@ -415,6 +415,7 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
   const [loadedKey, setLoadedKey] = createSignal("");
   let loadId = 0;
   let fileKey = "";
+  onCleanup(() => { loadId++; });
   // A comparison's target moves with its branches; like a new revision, that is a new version of the same file,
   // so the card keeps its diff until the new one arrives.
   const fileIdentity = () => `${props.ignoreWhitespace}:${props.repoPath}:${isComparisonTarget(props.item.target) ? "compare" : props.item.target}:${props.item.path}`;
@@ -837,13 +838,15 @@ function App() {
     const previous = activePath();
     if (previous === path) return;
     if (previous) tabViews.set(previous, { selected: selected(), scrollTop: commitScroll?.scrollTop ?? 0 });
-    setActivePath(path); setNotice(""); setStashMenu(false); setTabListOpen(false);
-    setScrollTop(0); setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
-    if (commitScroll) commitScroll.scrollTop = 0;
     const view = tabViews.get(path);
-    if (view?.selected === "compare" && comparisons()[path]) showComparison();
-    else if (view && view.selected !== "working" && view.selected !== "compare") void selectCommit(view.selected);
-    else selectWorking();
+    batch(() => {
+      setActivePath(path); setNotice(""); setError(""); setStashMenu(false); setTabListOpen(false);
+      setScrollTop(0); setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
+      if (view?.selected === "compare" && comparisons()[path]) showComparison();
+      else if (view && view.selected !== "working" && view.selected !== "compare") void selectCommit(view.selected);
+      else selectWorking();
+    });
+    if (commitScroll) commitScroll.scrollTop = 0;
     if (view?.scrollTop) requestAnimationFrame(() => { if (activePath() === path && commitScroll) { commitScroll.scrollTop = view.scrollTop; setScrollTop(commitScroll.scrollTop); } });
     saveTabs();
   }
@@ -1098,9 +1101,13 @@ function App() {
     setBusy(true); setError(""); setNotice("");
     try {
       const result = await invoke<Repo>("repo_snapshot", { path: path.trim(), offset: 0 });
-      setTabs(current => current.some(item => item.path === result.path) ? current.map(item => item.path === result.path ? result : item) : [...current, result]);
-      setActivePath(result.path); setScrollTop(0); setSearchQuery(""); setSearchInput(""); setSearchOpen(false); if (commitScroll) commitScroll.scrollTop = 0;
-      selectWorking(); setShowOpen(false); saveRecent(result.path); saveTabs();
+      batch(() => {
+        setTabs(current => current.some(item => item.path === result.path) ? current.map(item => item.path === result.path ? result : item) : [...current, result]);
+        setActivePath(result.path); setScrollTop(0); setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
+        selectWorking(); setShowOpen(false);
+      });
+      if (commitScroll) commitScroll.scrollTop = 0;
+      saveRecent(result.path); saveTabs();
     } catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }
@@ -1419,7 +1426,7 @@ function App() {
     // Commits never change, so a cached copy renders instantly when returning to a tab or commit.
     const cacheKey = `${path}\u0000${hash}`;
     const cached = detailsCache.get(cacheKey);
-    setSelected(hash); setDetails(cached ?? null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null);
+    batch(() => { setSelected(hash); setDetails(cached ?? null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null); });
     if (detailsScroll) detailsScroll.scrollTop = 0;
     const id = ++request;
     if (cached) return;
@@ -1641,7 +1648,7 @@ function App() {
     const fileAction = scopedAction || ["stage_all", "stage_file", "unstage_file", "discard_file", "stage_files", "unstage_files", "discard_files", "delete_untracked"].includes(operation.kind);
     applyOptimisticAction(path, operation);
     const previousFile = scopedAction ? choice() : null;
-    const token = ["fetch", "pull", "pull_merge", "pull_rebase", "push", "force_push_with_lease", "push_branch", "delete_remote_branch", "push_tag", "delete_remote_tag"].includes(operation.kind) ? crypto.randomUUID() : null;
+    const token = ["fetch", "pull", "pull_branch", "pull_merge", "pull_rebase", "push", "force_push_with_lease", "push_branch", "delete_remote_branch", "push_tag", "delete_remote_tag"].includes(operation.kind) ? crypto.randomUUID() : null;
     setActionBusy(true); setError(""); setNotice(""); setProgress(""); setCancelToken(token); setCancelRequested(false);
     try {
       const output = await invoke<string>("repo_action", { path, operation, cancelToken: token });
@@ -2096,9 +2103,11 @@ function App() {
     // The editor stays open for the other tabs, empty.
     if (editing?.repo === path) setSideEditor({ ...editing, repo: "", path: "", commit: undefined, marks: null });
     const next = tabs().filter(item => item.path !== path);
-    setTabs(next);
-    tabViews.delete(path); pendingComparisons.delete(path); initialSelection.delete(path); updateComparison(path, () => null);
-    if (activePath() === path) { setActivePath(next.length ? next[next.length - 1].path : null); setScrollTop(0); selectWorking(); }
+    batch(() => {
+      setTabs(next);
+      tabViews.delete(path); pendingComparisons.delete(path); initialSelection.delete(path); updateComparison(path, () => null);
+      if (activePath() === path) { setActivePath(next.length ? next[next.length - 1].path : null); setScrollTop(0); selectWorking(); }
+    });
     saveTabs();
   }
   // Pointer-based dragging: native HTML drag events are swallowed by the webview folder-drop handler.
@@ -2314,7 +2323,7 @@ function App() {
       <button onClick={() => { const name = menu().ref.name; setRefMenu(null); copyText(name); }}>Copy {menu().ref.kind === "tag" ? "tag" : "branch"} name</button>
       <Show when={(menu().ref.kind === "branch" || menu().ref.kind === "remote") && baseBranch() && baseBranch()!.name !== menu().ref.name && !menu().ref.name.endsWith("/HEAD")}><button onClick={() => { const ref = menu().ref; setRefMenu(null); void compareWithBase(ref); }}>Compare with {baseBranch()!.name}</button></Show>
       <Show when={(menu().ref.kind === "branch" && !menu().ref.isHead) || menu().ref.kind === "remote"}><button disabled={actionBusy()} onClick={() => checkoutRef(menu().ref)}>{menu().ref.kind === "remote" ? "Check out as local branch" : "Check out"}</button></Show>
-      <Show when={menu().ref.kind === "branch"}><button disabled={actionBusy()} onClick={() => renameBranch(menu().ref.name)}>Rename branch…</button><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push to remote…</button><Show when={!menu().ref.isHead}><button disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_branch", value: { branch } }, `Delete merged branch ${branch}?`); }}>Delete branch</button><button class="danger" disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "force_delete_branch", value: { branch } }, `Force delete branch ${branch}? Unmerged commits may become unreachable.`); }}>Force delete branch</button></Show></Show>
+      <Show when={menu().ref.kind === "branch"}><button title={`Fast-forward ${menu().ref.name} from its upstream`} disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "pull_branch", value: { branch } }); }}>Pull {menu().ref.name}</button><button disabled={actionBusy()} onClick={() => renameBranch(menu().ref.name)}>Rename branch…</button><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push to remote…</button><Show when={!menu().ref.isHead}><button disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_branch", value: { branch } }, `Delete merged branch ${branch}?`); }}>Delete branch</button><button class="danger" disabled={actionBusy()} onClick={() => { const branch = menu().ref.name; setRefMenu(null); void runAction({ kind: "force_delete_branch", value: { branch } }, `Force delete branch ${branch}? Unmerged commits may become unreachable.`); }}>Force delete branch</button></Show></Show>
       <Show when={menu().ref.kind === "remote" && !menu().ref.name.endsWith("/HEAD")}><button class="danger" disabled={actionBusy()} onClick={() => { const target = remoteBranch(menu().ref); setRefMenu(null); if (target) void runAction({ kind: "delete_remote_branch", value: target }, `Delete branch ${target.branch} from ${target.remote}?`); }}>Delete remote branch</button></Show>
       <Show when={menu().ref.kind === "tag"}><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push tag to remote…</button><button disabled={actionBusy()} onClick={() => { const name = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_tag", value: { name } }, `Delete local tag ${name}?`); }}>Delete local tag</button><button class="danger" disabled={actionBusy()} onClick={() => deleteRemoteTag(menu().ref.name)}>Delete remote tag…</button></Show>
     </div>}</Show>

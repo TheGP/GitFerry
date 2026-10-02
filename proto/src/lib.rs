@@ -250,6 +250,10 @@ pub enum RepoAction {
     },
     Fetch,
     Pull,
+    /// Fast-forward a local branch from its configured upstream without checking it out.
+    PullBranch {
+        branch: String,
+    },
     PullMerge,
     PullRebase,
     Push,
