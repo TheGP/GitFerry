@@ -1291,8 +1291,17 @@ fn editable_path(root: &Path, file: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn read_limited(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    Ok(bytes)
+}
+
 fn editable_content(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let bytes = read_limited(path, MAX_EDIT_BYTES)?;
     if bytes.len() > MAX_EDIT_BYTES {
         return Err("File is too large for the in-app editor (1 MiB limit)".to_string());
     }
@@ -1401,7 +1410,7 @@ pub fn diff_with_context(
             if !canonical.starts_with(&root) {
                 return Err("File is outside the repository".to_string());
             }
-            let bytes = std::fs::read(&canonical).map_err(|error| error.to_string())?;
+            let bytes = read_limited(&canonical, MAX_DIFF_BYTES)?;
             let truncated = bytes.len() > MAX_DIFF_BYTES;
             let preview = &bytes[..bytes.len().min(MAX_DIFF_BYTES)];
             return Ok(DiffResult {
@@ -2045,7 +2054,7 @@ fn apply_hunk(
         .get(index)
         .ok_or("Hunk no longer exists; refresh the diff")?;
     let end = starts.get(index + 1).copied().unwrap_or(patch.len());
-    let selected = format!("{}{}", &patch[..start], &patch[start..end]);
+    let selected = format!("{}{}", &patch[..starts[0]], &patch[start..end]);
     let args: &[&str] = match action {
         HunkAction::Stage => &["apply", "--cached", "--unidiff-zero", "-"],
         HunkAction::Unstage => &["apply", "--cached", "--reverse", "--unidiff-zero", "-"],

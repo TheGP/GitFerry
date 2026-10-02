@@ -14,5 +14,12 @@ fn main() {
         }
         return;
     }
+    if args.first().is_some_and(|arg| arg == "--amend-message") {
+        if let Err(error) = gitferry_agent::amend_rebase_message(&args[1..]) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     gitferry_lib::run()
 }

@@ -728,6 +728,8 @@ function App() {
   const [searchQuery, setSearchQuery] = createSignal("");
   const [searchResult, setSearchResult] = createSignal<SearchResult>({ commits: [], hasMore: false });
   const [searchBusy, setSearchBusy] = createSignal(false);
+  let searchGeneration = 0;
+  createEffect(on(activePath, () => { searchGeneration++; setSearchBusy(false); }, { defer: true }));
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [draggingFolder, setDraggingFolder] = createSignal(false);
   const [paletteInput, setPaletteInput] = createSignal("");
@@ -800,8 +802,12 @@ function App() {
   const matchingLocalBranches = createMemo(() => repo()?.refs.filter(item => item.kind === "branch" && item.name.toLocaleLowerCase().includes(branchFilter().trim().toLocaleLowerCase())) ?? []);
   const matchingRemoteBranches = createMemo(() => repo()?.refs.filter(item => item.kind === "remote" && !item.name.endsWith("/HEAD") && item.name.toLocaleLowerCase().includes(branchFilter().trim().toLocaleLowerCase())) ?? []);
   function openActionDialog(dialog: ActionDialog) {
+    const path = activePath();
     setActionDialogValues(Object.fromEntries(dialog.fields.map(field => [field.key, field.value])));
-    setActionDialog(dialog);
+    setActionDialog({ ...dialog, onSubmit: values => {
+      if (activePath() !== path) { setError("Repository changed. Reopen the action in the intended repository."); return; }
+      dialog.onSubmit(values);
+    } });
   }
   function submitActionDialog() {
     const dialog = actionDialog();
@@ -1167,12 +1173,14 @@ function App() {
     const current = repo();
     if (!current || busy() || searchBusy() || !hasMore()) return;
     if (searchQuery()) {
+      const query = searchQuery(), generation = searchGeneration;
+      const matches = () => activePath() === current.path && searchQuery() === query && searchGeneration === generation;
       setSearchBusy(true);
       try {
-        const result = await invoke<SearchResult>("repo_search", { path: current.path, query: searchQuery(), offset: searchResult().commits.length });
-        setSearchResult(previous => ({ commits: [...previous.commits, ...result.commits], hasMore: result.hasMore }));
-      } catch (cause) { setError(String(cause)); }
-      finally { setSearchBusy(false); }
+        const result = await invoke<SearchResult>("repo_search", { path: current.path, query, offset: searchResult().commits.length });
+        if (matches()) setSearchResult(previous => ({ commits: [...previous.commits, ...result.commits], hasMore: result.hasMore }));
+      } catch (cause) { if (matches()) setError(String(cause)); }
+      finally { if (matches()) setSearchBusy(false); }
       return;
     }
     setBusy(true);
@@ -1195,6 +1203,9 @@ function App() {
   async function performSearch(query = searchInput()) {
     const path = activePath();
     const term = query.trim();
+    const generation = ++searchGeneration;
+    const matches = () => activePath() === path && searchQuery() === term && searchGeneration === generation;
+    setSearchBusy(false);
     setSearchInput(query); setSearchQuery(term); setSearchResult({ commits: [], hasMore: false });
     setScrollTop(0); if (commitScroll) commitScroll.scrollTop = 0;
     if (!term || !path) return;
@@ -1206,9 +1217,9 @@ function App() {
     setSearchBusy(true);
     try {
       const result = await invoke<SearchResult>("repo_search", { path, query: term, offset: 0 });
-      if (activePath() === path && searchQuery() === term) setSearchResult(result);
-    } catch (cause) { setError(String(cause)); }
-    finally { setSearchBusy(false); }
+      if (matches()) setSearchResult(result);
+    } catch (cause) { if (matches()) setError(String(cause)); }
+    finally { if (matches()) setSearchBusy(false); }
   }
   // Compare against the remote merge destination; a local main line may be stale or have unpushed commits.
   function findBaseBranch(refs: Ref[]) {
@@ -1861,16 +1872,15 @@ function App() {
     const valid = async (navigation = false) => {
       if (Date.now() >= message.deadline || !await invoke<boolean>("mcp_request_active", { id: message.id })) throw new Error("MCP request expired or was cancelled");
       if (navigation && (request !== initialRequest || activePath() !== initialPath)) throw new Error("The user changed the view during this request; retry");
-      if (navigation && (actionBusy() || busy() || sideEditorDirty() || activeFileDraft()?.text !== activeFileDraft()?.original)) throw new Error("Finish the current operation or save/cancel the editor changes before AI navigation");
+      if (navigation && (actionDialog() || actionBusy() || busy() || sideEditorDirty() || activeFileDraft()?.text !== activeFileDraft()?.original)) throw new Error("Finish or cancel the open dialog or operation, or save/cancel the editor changes before AI navigation");
     };
-    await valid();
+    await valid(["open_repository", "show_branch", "reveal_change"].includes(message.tool));
     if (message.tool === "get_view") return mcpView();
     if (message.tool === "list_repositories") {
       const open = await Promise.all(tabs().map(async tab => {
         if (tab.loading || tab.loadError) return { tabId: tab.path, path: tab.path, name: tab.name, branch: null, head: null, active: tab.path === activePath(), loading: Boolean(tab.loading), error: tab.loadError ?? null };
         try {
           const current = await invoke<RepoState>("repo_state", { path: tab.path });
-          setTabs(tabs => tabs.map(item => item.path === tab.path ? { ...item, ...current } : item));
           return { tabId: tab.path, path: tab.path, name: tab.name, branch: current.branch, head: current.head, active: tab.path === activePath(), selectedCommit: tab.path === activePath() ? selected() : tabViews.get(tab.path)?.selected ?? "working" };
         } catch (cause) { return { tabId: tab.path, path: tab.path, name: tab.name, branch: null, head: null, active: tab.path === activePath(), error: String(cause) }; }
       }));
@@ -1913,13 +1923,13 @@ function App() {
     const rows = value ? mcpRows(value, target) : [];
     if (message.tool === "get_diff") return { repository: path, commit, parent: a.parent ?? detail?.parents[0] ?? null, file: a.file, ...value, rows };
     if (message.tool !== "reveal_change" && message.tool !== "show_branch") throw new Error("Unknown MCP tool");
-    const current = await invoke<RepoState>("repo_state", { path });
+    const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
     if (message.tool === "reveal_change" && a.branch && current.branch !== a.branch) throw new Error(`Repository is on ${current.branch}, expected ${a.branch}. Select the matching worktree tab.`);
     if (value?.truncated && a.highlights?.length) throw new Error("Diff is truncated; exact highlighting cannot be confirmed");
     const selectedRows = highlightRows(rows, a.highlights ?? []);
     if (a.file && !value?.text.trim()) throw new Error("This file has no diff at the requested target");
     await valid(true);
-    setTabs(tabs => tabs.map(item => item.path === path ? { ...item, ...current } : item));
+    setTabs(tabs => tabs.map(item => item.path === path ? mergeRepo(item, current) : item));
     activateTab(path);
     setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
     if (detail) {

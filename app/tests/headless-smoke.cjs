@@ -20,6 +20,7 @@ const pending = new Map();
 const progressEvents = [];
 let snapshotGate = null;
 let saveGate = null;
+let searchGate = null;
 let diffRequests = 0;
 
 function git(cwd, ...args) {
@@ -159,6 +160,34 @@ async function exerciseMcp(page, repository, restore) {
   assert.equal(reply.result.repositories.find(tab => tab.path === repository.folder).branch, "main");
   assert.equal(reply.result.repositories.find(tab => tab.path === repository.worktree).branch, "topic");
   const tabCount = reply.result.repositories.length;
+  // Enumeration must not mark an inactive tab refreshed without updating its history and refs.
+  fs.writeFileSync(path.join(repository.folder, "external.txt"), "external commit\n");
+  git(repository.folder, "add", "."); git(repository.folder, "commit", "-m", "External enumeration change");
+  reply = await mcp(page, "list_repositories");
+  assert.equal(reply.result.repositories.find(tab => tab.path === repository.folder).head, git(repository.folder, "rev-parse", "HEAD"));
+  await page.click('.tab-main[title^="mcp ·"]');
+  await page.waitForFunction(() => document.querySelector(".commit-scroll")?.textContent.includes("External enumeration change"));
+  await mcp(page, "open_repository", { repository: repository.worktree });
+  fs.writeFileSync(path.join(repository.folder, "external.txt"), "external reveal\n");
+  git(repository.folder, "commit", "-am", "External reveal change");
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: repository.cause });
+  assert.equal(reply.error, null);
+  await page.waitForFunction(() => document.querySelector(".commit-scroll")?.textContent.includes("External reveal change"));
+  await page.waitForSelector(".commit-actions summary");
+  await page.click(".commit-actions summary");
+  await page.click(".commit-actions button::-p-text(Reset hard)");
+  await page.waitForSelector(".action-dialog");
+  const heads = [repository.folder, repository.worktree].map(folder => git(folder, "rev-parse", "HEAD"));
+  for (const tool of ["open_repository", "show_branch", "reveal_change"]) {
+    reply = await mcp(page, tool, { repository: repository.worktree, branch: "topic", commit: repository.cause });
+    assert.match(reply.error, /dialog/, `${tool} must not navigate while a confirmation is open`);
+  }
+  // Simulate asynchronous navigation already started before the dialog appeared.
+  await page.evaluate(() => document.querySelector('.tab-main[title^="mcp-topic"]')?.click());
+  await submitActionDialog(page);
+  await page.waitForFunction(() => document.querySelector(".error-bar")?.textContent.includes("Repository changed"));
+  assert.deepEqual([repository.folder, repository.worktree].map(folder => git(folder, "rev-parse", "HEAD")), heads, "A confirmation from another tab must not execute");
+  await page.click("button[title='Dismiss error']");
   const alias = process.platform === "win32" ? repository.folder.replaceAll("\\", "/").toUpperCase() : `${repository.folder}/`;
   reply = await mcp(page, "open_repository", { repository: alias, branch: "main" });
   assert.equal(reply.error, null);
@@ -178,6 +207,7 @@ async function exerciseMcp(page, repository, restore) {
   assert.match(await page.$eval(".commit-row.selected", row => row.textContent), /Introduce cause/, "Reveal commits beyond the first history page");
   assert.equal(git(repository.folder, "branch", "--show-current"), "main");
   assert.equal(git(repository.folder, "diff"), "");
+  await exerciseSearchPaging(page);
   reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: repository.cause, file: "code.txt", highlights: [{ kind: "hunk", hunkIndex: 0 }] });
   assert.equal(reply.error, null);
   assert.ok(reply.result.highlights.length > 2);
@@ -244,6 +274,38 @@ async function exerciseMcp(page, repository, restore) {
   console.log("MCP navigation: branch identity, tab reuse, old/new lines, hunks, old history, code search, selection and stale highlights passed");
 }
 
+async function exerciseSearchPaging(page) {
+  await page.click(".working-row");
+  await page.click("button[title='Search commits']");
+  const search = async query => {
+    await page.locator(".search-box input").fill(query);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => document.querySelector(".commits-pane .pane-heading")?.textContent.includes("SEARCH RESULTS"));
+  };
+  for (const next of ["Base", "Later"]) {
+    let releaseSearch;
+    searchGate = { query: "Later", started: false, finished: false, promise: new Promise(resolve => { releaseSearch = resolve; }) };
+    await search("Later");
+    await page.waitForSelector(".commits-pane .load-more");
+    await page.click(".commits-pane .load-more");
+    await waitUntil(() => searchGate.started, "delayed search pagination");
+    await search("Base");
+    await page.waitForFunction(() => document.querySelector(".heading-count")?.textContent === "1");
+    if (next === "Later") {
+      await search("Later");
+      await page.waitForFunction(() => document.querySelector(".heading-count")?.textContent === "100+");
+    }
+    const gate = searchGate;
+    searchGate = null; releaseSearch();
+    await waitUntil(() => gate.finished, "old search page response");
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    assert.equal(await page.$eval(".heading-count", count => count.textContent), next === "Base" ? "1" : "100+", "Old search pages must not overwrite a new query, including the same query restarted");
+    await page.evaluate(() => { document.querySelector(".commit-scroll").scrollTop = 0; });
+  }
+  await page.click(".search-box button[title='Clear search']");
+  console.log("Search pagination: changed and restarted queries reject delayed pages");
+}
+
 async function clickChangedLine(page, text, shift = false) {
   const label = await page.evaluate(value => [...document.querySelectorAll(".diff-line")].find(row => row.dataset.copyPrefix === value[0] && row.querySelector(".line-text")?.textContent === value.slice(1))?.querySelector("button.line-number")?.getAttribute("aria-label"), text);
   assert.ok(label, `Selectable line ${text} must exist`);
@@ -264,6 +326,8 @@ async function bridge(command, args) {
   if (command.startsWith("plugin:event|")) return 1;
   if (command === "plugin:window|is_maximized") return true;
   if (command === "repo_diff") diffRequests++;
+  const heldSearch = command === "repo_search" && args.offset > 0 && searchGate && args.query === searchGate.query ? searchGate : null;
+  if (heldSearch) { heldSearch.started = true; await heldSearch.promise; }
   if (command === "repo_save_file" && saveGate) {
     const gate = saveGate;
     gate.started = true;
@@ -300,6 +364,7 @@ async function bridge(command, args) {
   const entry = commands[command];
   if (!entry) throw new Error(`Unknown command ${command}`);
   const response = await rpc(...entry);
+  if (heldSearch) heldSearch.finished = true;
   if (response.kind === "error") throw new Error(response.value);
   if (command === "repo_snapshot") return response.value;
   return response.value;

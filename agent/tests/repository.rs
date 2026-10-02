@@ -120,6 +120,39 @@ fn edits_working_files_and_stages_saved_staged_files() {
 }
 
 #[test]
+fn file_preview_and_editor_enforce_their_read_limits() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    let path = temp.path().to_str().unwrap();
+    let file = temp.path().join("large.txt");
+    let preview_limit = 512 * 1024;
+    let editor_limit = 1024 * 1024;
+    std::fs::write(&file, vec![b'x'; preview_limit]).unwrap();
+    let preview = diff(path, "untracked", "large.txt").unwrap();
+    assert_eq!(preview.text.len(), preview_limit);
+    assert!(!preview.truncated);
+    std::fs::write(&file, vec![b'x'; editor_limit]).unwrap();
+    assert_eq!(
+        read_file(path, "large.txt").unwrap().content.len(),
+        editor_limit
+    );
+    let preview = diff(path, "untracked", "large.txt").unwrap();
+    assert_eq!(preview.text.len(), preview_limit);
+    assert!(preview.truncated);
+    std::fs::write(&file, vec![b'x'; 8 * editor_limit]).unwrap();
+    assert!(read_file(path, "large.txt")
+        .unwrap_err()
+        .contains("too large"));
+    assert!(save_file(path, "large.txt", "replacement", "", false)
+        .unwrap_err()
+        .contains("too large"));
+    assert_eq!(
+        std::fs::metadata(file).unwrap().len(),
+        (8 * editor_limit) as u64
+    );
+}
+
+#[test]
 fn status_revisions_change_only_for_the_modified_file() {
     let temp = tempfile::tempdir().unwrap();
     git(temp.path(), &["init", "-q"]);
@@ -883,6 +916,76 @@ fn stages_one_hunk_without_staging_another() {
     )
     .unwrap_err()
     .contains("Diff changed"));
+}
+
+#[test]
+fn later_hunk_actions_leave_earlier_hunks_untouched() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    let path = dir.to_str().unwrap();
+    let original = (1..=30).map(|n| format!("line {n}\n")).collect::<String>();
+    let changed = original
+        .replace("line 1\n", "FIRST\n")
+        .replace("line 30\n", "LAST\n");
+    let file = dir.join("lines.txt");
+    std::fs::write(&file, &original).unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "Base"]);
+    std::fs::write(&file, &changed).unwrap();
+    action(
+        path,
+        RepoAction::StageHunk {
+            path: "lines.txt".into(),
+            index: 1,
+            reverse: false,
+        },
+    )
+    .unwrap();
+    let staged = diff(path, "staged", "lines.txt").unwrap().text;
+    assert!(staged.contains("+LAST"));
+    assert!(!staged.contains("+FIRST"));
+    assert!(diff(path, "working", "lines.txt")
+        .unwrap()
+        .text
+        .contains("+FIRST"));
+
+    git(dir, &["add", "."]);
+    action(
+        path,
+        RepoAction::StageHunk {
+            path: "lines.txt".into(),
+            index: 1,
+            reverse: true,
+        },
+    )
+    .unwrap();
+    let staged = diff(path, "staged", "lines.txt").unwrap().text;
+    assert!(staged.contains("+FIRST"));
+    assert!(!staged.contains("+LAST"));
+    assert!(diff(path, "working", "lines.txt")
+        .unwrap()
+        .text
+        .contains("+LAST"));
+
+    git(dir, &["reset", "-q"]);
+    let current = diff(path, "working", "lines.txt").unwrap().text;
+    action(
+        path,
+        RepoAction::DiscardHunk {
+            path: "lines.txt".into(),
+            index: 1,
+            diff: current,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(file).unwrap(),
+        original.replace("line 1\n", "FIRST\n")
+    );
+    assert!(diff(path, "staged", "lines.txt").unwrap().text.is_empty());
 }
 
 #[test]
