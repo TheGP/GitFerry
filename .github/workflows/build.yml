@@ -39,7 +39,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test repository operations
-        run: cargo test --locked -p gitferry-agent --test repository
+        run: cargo test --locked -p gitferry-agent --test repository --test read_parity
 
   agents:
     if: github.event_name == 'workflow_dispatch'

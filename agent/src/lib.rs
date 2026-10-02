@@ -13,6 +13,9 @@ use std::sync::{
     Arc, Mutex,
 };
 
+#[doc(hidden)]
+pub mod gix_reads;
+
 const MAX_DIFF_BYTES: usize = 512 * 1024;
 const MAX_EDIT_BYTES: usize = 1024 * 1024;
 
@@ -340,9 +343,14 @@ fn git_dir(repo: &Path) -> Option<PathBuf> {
 
 /// In-progress operation and rebase Edit pause, from one git-dir lookup.
 fn operation_state(repo: &Path) -> (Option<String>, bool) {
-    let Some(dir) = git_dir(repo) else {
-        return (None, false);
-    };
+    match git_dir(repo) {
+        Some(dir) => operation_in(&dir),
+        None => (None, false),
+    }
+}
+
+/// In-progress operation and rebase Edit pause for the repository whose git dir is `dir`.
+fn operation_in(dir: &Path) -> (Option<String>, bool) {
     let operation = if dir.join("rebase-merge").exists() || dir.join("rebase-apply").exists() {
         Some("rebase".to_string())
     } else if dir.join("MERGE_HEAD").exists() {
@@ -551,6 +559,21 @@ fn rebase_edit_pause(repo: &Path) -> bool {
         .is_file()
 }
 
+/// "<mtime ns>:<size>" of a working-tree file, which changes whenever the file does; empty if it is missing.
+fn worktree_revision(repo: &Path, path: &str) -> String {
+    std::fs::symlink_metadata(repo.join(path))
+        .ok()
+        .and_then(|metadata| {
+            let modified = metadata
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?;
+            Some(format!("{}:{}", modified.as_nanos(), metadata.len()))
+        })
+        .unwrap_or_default()
+}
+
 fn status(repo: &Path) -> Result<Vec<StatusEntry>, String> {
     let output = git(
         repo,
@@ -578,17 +601,7 @@ fn status(repo: &Path) -> Result<Vec<StatusEntry>, String> {
                 None
             };
         let path = text(&field[3..]);
-        let worktree_revision = std::fs::symlink_metadata(repo.join(&path))
-            .ok()
-            .and_then(|metadata| {
-                let modified = metadata
-                    .modified()
-                    .ok()?
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .ok()?;
-                Some(format!("{}:{}", modified.as_nanos(), metadata.len()))
-            })
-            .unwrap_or_default();
+        let worktree_revision = worktree_revision(repo, &path);
         entries.push(StatusEntry {
             path,
             index: index_state.to_string(),
@@ -692,6 +705,12 @@ fn refs(repo: &Path, current_branch: &str) -> Result<Vec<RefEntry>, String> {
             });
         }
     }
+    entries.extend(submodule_entries(repo));
+    Ok(entries)
+}
+
+fn submodule_entries(repo: &Path) -> Vec<RefEntry> {
+    let mut entries = Vec::new();
     // `git submodule status` starts several processes of its own; skip it when there are no submodules.
     let has_submodules = repo.join(".gitmodules").is_file();
     if let Some(output) = has_submodules
@@ -712,7 +731,7 @@ fn refs(repo: &Path, current_branch: &str) -> Result<Vec<RefEntry>, String> {
             });
         }
     }
-    Ok(entries)
+    entries
 }
 
 fn stash_history_helpers(repo: &Path) -> Result<(Option<String>, HashSet<String>), String> {
@@ -840,28 +859,122 @@ fn log(
     Ok((commits, has_more))
 }
 
+/// Which implementation answers snapshot and state reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadBackend {
+    /// gitoxide in-process, falling back to the Git CLI when gitoxide cannot read the repository.
+    Auto,
+    /// The Git CLI only.
+    Git,
+    /// gitoxide only, returning its errors instead of falling back.
+    Gix,
+}
+
+/// `GITFERRY_READS=git` or `GITFERRY_READS=gix` pins a backend; anything else means `Auto`.
+fn read_backend() -> ReadBackend {
+    static BACKEND: std::sync::OnceLock<ReadBackend> = std::sync::OnceLock::new();
+    *BACKEND.get_or_init(|| match std::env::var("GITFERRY_READS").as_deref() {
+        Ok("git") => ReadBackend::Git,
+        Ok("gix") => ReadBackend::Gix,
+        _ => ReadBackend::Auto,
+    })
+}
+
+fn with_backend<T>(
+    backend: ReadBackend,
+    gix: impl FnOnce() -> Result<T, String>,
+    git: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    match backend {
+        ReadBackend::Git => git(),
+        ReadBackend::Gix => gix(),
+        ReadBackend::Auto => gix().or_else(|_| git()),
+    }
+}
+
+fn repo_name(root: &Path) -> String {
+    root.file_name()
+        .unwrap_or(root.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
 pub fn snapshot(path: &str, offset: usize, limit: usize) -> Result<RepoSnapshot, String> {
+    snapshot_with(path, offset, limit, read_backend())
+}
+
+pub fn snapshot_with(
+    path: &str,
+    offset: usize,
+    limit: usize,
+    backend: ReadBackend,
+) -> Result<RepoSnapshot, String> {
     let root = repo_root(path)?;
+    with_backend(
+        backend,
+        || gix_snapshot(&root, offset, limit),
+        || git_snapshot(&root, offset, limit),
+    )
+}
+
+fn gix_snapshot(root: &Path, offset: usize, limit: usize) -> Result<RepoSnapshot, String> {
+    let repo = gix_reads::open(root)?;
+    let head = gix_reads::head(&repo)?;
+    let references = gix_reads::raw_references(&repo)?;
+    let refs_hash = gix_reads::refs_hash(&references);
+    let references = gix_reads::resolve(&repo, references);
+    // Status is the slowest part and submodule status runs Git, so both overlap the history walk.
+    let shared = repo.clone().into_sync();
+    let (status, submodules, mut refs, (commits, has_more)) = std::thread::scope(|scope| {
+        let status = scope.spawn(|| gix_reads::status(&shared.to_thread_local(), root));
+        let submodules = scope.spawn(|| submodule_entries(root));
+        let refs = gix_reads::ref_entries(&repo, &references, &head);
+        let log = if head.id.is_some() {
+            gix_reads::log(&repo, &references, &head, offset, limit)
+        } else {
+            Ok((Vec::new(), false))
+        };
+        Ok::<_, String>((joined(status)??, joined(submodules)?, refs, log?))
+    })?;
+    refs.extend(submodules);
+    let (operation, rebase_edit_pause) = operation_in(repo.git_dir());
+    Ok(RepoSnapshot {
+        name: repo_name(root),
+        path: display_path(root),
+        branch: head.branch,
+        head: head.id.map(|id| id.to_string()),
+        status,
+        refs,
+        remotes: gix_reads::remote_names(&repo),
+        commits,
+        has_more,
+        operation,
+        rebase_edit_pause,
+        refs_hash,
+    })
+}
+
+fn git_snapshot(root: &Path, offset: usize, limit: usize) -> Result<RepoSnapshot, String> {
     // The parts are independent git reads; running them side by side hides most process start-up time.
     let (branch_and_refs, head_and_log, status, remotes, operation, refs_hash) =
         std::thread::scope(|scope| {
             let branch_and_refs = scope.spawn(|| {
-                let current = branch(&root);
-                refs(&root, &current).map(|refs| (current, refs))
+                let current = branch(root);
+                refs(root, &current).map(|refs| (current, refs))
             });
             let head_and_log = scope.spawn(|| {
-                let head = head(&root);
+                let head = head(root);
                 let log = if head.is_some() {
-                    log(&root, offset, limit, None)
+                    log(root, offset, limit, None)
                 } else {
                     Ok((Vec::new(), false))
                 };
                 log.map(|log| (head, log))
             });
-            let status = scope.spawn(|| status(&root));
-            let remotes = scope.spawn(|| remote_names(&root));
-            let operation = scope.spawn(|| operation_state(&root));
-            let refs_hash = scope.spawn(|| refs_hash(&root));
+            let status = scope.spawn(|| status(root));
+            let remotes = scope.spawn(|| remote_names(root));
+            let operation = scope.spawn(|| operation_state(root));
+            let refs_hash = scope.spawn(|| refs_hash(root));
             Ok::<_, String>((
                 joined(branch_and_refs)??,
                 joined(head_and_log)??,
@@ -875,12 +988,8 @@ pub fn snapshot(path: &str, offset: usize, limit: usize) -> Result<RepoSnapshot,
     let (head, (commits, has_more)) = head_and_log;
     let (operation, rebase_edit_pause) = operation;
     Ok(RepoSnapshot {
-        name: root
-            .file_name()
-            .unwrap_or(root.as_os_str())
-            .to_string_lossy()
-            .into_owned(),
-        path: display_path(&root),
+        name: repo_name(root),
+        path: display_path(root),
         branch: current_branch,
         head,
         status,
@@ -895,13 +1004,35 @@ pub fn snapshot(path: &str, offset: usize, limit: usize) -> Result<RepoSnapshot,
 }
 
 pub fn state(path: &str) -> Result<RepoState, String> {
+    state_with(path, read_backend())
+}
+
+pub fn state_with(path: &str, backend: ReadBackend) -> Result<RepoState, String> {
     let root = repo_root(path)?;
+    with_backend(backend, || gix_state(&root), || git_state(&root))
+}
+
+fn gix_state(root: &Path) -> Result<RepoState, String> {
+    let repo = gix_reads::open(root)?;
+    let head = gix_reads::head(&repo)?;
+    let (operation, rebase_edit_pause) = operation_in(repo.git_dir());
+    Ok(RepoState {
+        branch: head.branch,
+        head: head.id.map(|id| id.to_string()),
+        status: gix_reads::status(&repo, root)?,
+        operation,
+        rebase_edit_pause,
+        refs_hash: gix_reads::refs_hash(&gix_reads::raw_references(&repo)?),
+    })
+}
+
+fn git_state(root: &Path) -> Result<RepoState, String> {
     let (branch, head, status, operation, refs_hash) = std::thread::scope(|scope| {
-        let branch = scope.spawn(|| branch(&root));
-        let head = scope.spawn(|| head(&root));
-        let status = scope.spawn(|| status(&root));
-        let operation = scope.spawn(|| operation_state(&root));
-        let refs_hash = scope.spawn(|| refs_hash(&root));
+        let branch = scope.spawn(|| branch(root));
+        let head = scope.spawn(|| head(root));
+        let status = scope.spawn(|| status(root));
+        let operation = scope.spawn(|| operation_state(root));
+        let refs_hash = scope.spawn(|| refs_hash(root));
         Ok::<_, String>((
             joined(branch)?,
             joined(head)?,
