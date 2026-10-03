@@ -21,12 +21,13 @@ const progressEvents = [];
 const actionRequests = [];
 const invalidRevisionDiffs = [];
 let snapshotGate = null;
+let actionGate = null;
 let saveGate = null;
 let searchGate = null;
 let diffRequests = 0;
 
 function git(cwd, ...args) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
+  const result = spawnSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", windowsHide: true });
   if (result.status !== 0) throw new Error(`git ${args[0]}: ${result.stderr}`);
   return result.stdout.trim();
 }
@@ -353,6 +354,102 @@ async function exerciseMcp(page, repository, restore) {
   console.log("MCP navigation: branch identity, tab reuse, old/new lines, hunks, old history, code search, selection and stale highlights passed");
 }
 
+async function exerciseStatusMessages(page, repository) {
+  const other = makeRepo("status-other");
+  await openRepo(page, other);
+  await click(page, '.tab-main[title^="small ·"]');
+  let finishAction;
+  actionGate = { kind: "pull", started: false, promise: new Promise(resolve => { finishAction = resolve; }) };
+  await click(page, 'button[title="Pull"]');
+  await waitUntil(() => actionGate.started, "pending pull");
+  assert.equal(await page.$eval(".progress-bar > span", element => element.textContent), "Pulling…");
+  assert.match(await page.$eval(".statusbar-right", element => element.textContent), /Pulling…/);
+  await page.evaluate(path => window.__eventCallbacks["git-progress"]({ event: "git-progress", payload: { path, message: "Receiving objects: 50%" } }), repository);
+  assert.equal(await page.$eval(".progress-bar > span", element => element.textContent), "Pulling… · Receiving objects: 50%");
+  actionGate = null; finishAction();
+  await waitForAction(page);
+  assert.equal(await page.$eval(".notice-bar", element => element.textContent), "Pull complete");
+  assert.match(await page.$eval(".notice-bar", element => element.title), /Already up to date/);
+  // Hold the RPC response to inspect cancellation UI without starting a slow transfer.
+  actionGate = { kind: "pull", started: false, cancel: true, error: "Operation cancelled", promise: new Promise(resolve => { finishAction = resolve; }) };
+  await click(page, 'button[title="Pull"]');
+  await waitUntil(() => actionGate.started, "cancellable pull");
+  await click(page, ".progress-bar button");
+  await page.waitForFunction(() => document.querySelector(".progress-bar > span")?.textContent === "Cancelling pull…");
+  await page.evaluate(path => window.__eventCallbacks["git-progress"]({ event: "git-progress", payload: { path, message: "Receiving objects: 100%" } }), repository);
+  assert.equal(await page.$eval(".progress-bar > span", element => element.textContent), "Cancelling pull…", "Late transfer progress must not overwrite cancellation");
+  actionGate = null; finishAction();
+  await waitForAction(page);
+  assert.equal(await page.$eval(".notice-bar", element => element.textContent), "Pull cancelled");
+  assert.equal(await page.$(".error-bar"), null);
+  actionGate = { kind: "pull", started: false, promise: new Promise(resolve => { finishAction = resolve; }) };
+  await click(page, 'button[title="Pull"]');
+  await waitUntil(() => actionGate.started, "background pull");
+  await click(page, '.tab-main[title^="status-other ·"]');
+  await page.evaluate(() => document.querySelector(".commit-row")?.click());
+  await page.waitForFunction(() => document.querySelector(".commit-message")?.textContent.includes("Initial commit"));
+  assert.equal(await page.$eval(".progress-bar > span", element => element.textContent), "Pulling… (small)");
+  actionGate = null; finishAction();
+  await waitForAction(page);
+  assert.match(await page.$eval(".commit-message", element => element.textContent), /Initial commit/, "Finishing a pull in another repository must not change this tab's selection");
+  assert.equal(await page.$eval(".notice-bar", element => element.textContent), "small: Pull complete");
+  await click(page, '.tab-main[title^="small ·"]');
+
+  const raw = "fatal: bad object deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+  const holdRefresh = () => {
+    let release;
+    snapshotGate = { paths: [], holdPaths: [repository], error: raw, promise: new Promise(resolve => { release = resolve; }) };
+    return release;
+  };
+  const refresh = async () => {
+    await click(page, 'button[title="More actions"]');
+    await click(page, '.push-menu button[title="Refresh"]');
+    await waitUntil(() => snapshotGate.paths.includes(repository), "pending repository refresh");
+  };
+  let release = holdRefresh();
+  await refresh();
+  await click(page, '.tab-main[title^="status-other ·"]');
+  const gate = snapshotGate;
+  snapshotGate = null; release();
+  await gate.promise;
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.$(".error-bar"), null, "A late error from another repository must not appear in this tab");
+
+  await click(page, '.tab-main[title^="small ·"]');
+  release = holdRefresh();
+  await refresh();
+  snapshotGate = null; release();
+  await page.waitForSelector(".error-bar");
+  assert.equal(await page.$eval(".status-chip-text", element => element.textContent), "Refreshing repository: This revision is unavailable");
+  await click(page, ".status-chip-text");
+  assert.equal(await page.$eval(".error-details pre", element => element.textContent), `Error: ${raw}`);
+  assert.match(await page.$eval(".error-details p", element => element.textContent), /Refresh the repository/);
+  await page.screenshot({ path: path.join(screenshots, "readable-revision-error.png") });
+  await click(page, '.error-details button::-p-text(Refresh repository)');
+  await page.waitForFunction(() => !document.querySelector(".error-bar"));
+  actionGate = { kind: "pull", started: false, error: raw, promise: new Promise(resolve => { finishAction = resolve; }) };
+  await click(page, 'button[title="Pull"]');
+  await waitUntil(() => actionGate.started, "failing background pull");
+  await click(page, '.tab-main[title^="status-other ·"]');
+  await page.evaluate(() => document.querySelector(".commit-row")?.click());
+  await page.waitForFunction(() => document.querySelector(".commit-message")?.textContent.includes("Initial commit"));
+  actionGate = null; finishAction();
+  await waitForAction(page);
+  assert.equal(await page.$eval(".status-chip-text", element => element.textContent), "Pull (small): This revision is unavailable");
+  await click(page, ".status-chip-text");
+  let finishRecovery;
+  snapshotGate = { paths: [], holdPaths: [repository], promise: new Promise(resolve => { finishRecovery = resolve; }) };
+  await click(page, '.error-details button::-p-text(Refresh repository)');
+  await waitUntil(() => snapshotGate.paths.includes(repository), "refreshing the failed repository rather than the active one");
+  assert.deepEqual(snapshotGate.paths, [repository]);
+  snapshotGate = null; finishRecovery();
+  await page.waitForFunction(() => !document.querySelector(".error-bar"));
+  assert.match(await page.$eval(".commit-message", element => element.textContent), /Initial commit/, "Recovering another repository must preserve this tab's selection");
+  await click(page, '.tab-main[title^="small ·"]');
+  await click(page, 'button[aria-label="Close status-other"]');
+  console.log("Status messages: named progress, streaming context, completion details, stale errors and revision recovery passed");
+}
+
 async function exerciseSearchPaging(page) {
   await click(page, ".working-row");
   await click(page, "button[title='Search commits']");
@@ -406,6 +503,13 @@ async function bridge(command, args) {
   if (command === "ssh_current_prompt") return null;
   if (command === "ssh_saved_credentials") return [];
   if (command === "repo_action") actionRequests.push({ path: args.path, kind: args.operation.kind });
+  if (command === "repo_action" && actionGate?.kind === args.operation.kind) {
+    const gate = actionGate;
+    gate.started = true;
+    await gate.promise;
+    if (gate.error) throw new Error(gate.error);
+  }
+  if (command === "repo_cancel" && actionGate?.cancel) return "Cancellation requested";
   if (command === "plugin:window|is_maximized") return true;
   if (command === "repo_diff") diffRequests++;
   const heldSearch = command === "repo_search" && args.offset > 0 && searchGate && args.query === searchGate.query ? searchGate : null;
@@ -419,6 +523,7 @@ async function bridge(command, args) {
     const gate = snapshotGate;
     gate.paths.push(args.path);
     await gate.promise;
+    if (gate.error) throw new Error(gate.error);
   }
   if (command === "repo_watch") return new Promise((resolve, reject) => {
     let watcher, timer;
@@ -702,6 +807,11 @@ async function main() {
   await page.waitForSelector(".open-modal");
   await page.keyboard.press("Escape");
   await openRepo(page, small);
+  await exerciseStatusMessages(page, small);
+  if (process.env.GITFERRY_STATUS_ONLY) {
+    assert.deepEqual(pageErrors, [], "status UI must have no uncaught errors");
+    return;
+  }
   await exerciseMcp(page, mcpRepo, small);
   if (process.env.GITFERRY_MCP_ONLY) {
     assert.deepEqual(pageErrors, [], "browser must have no uncaught errors");
@@ -1086,7 +1196,7 @@ async function main() {
   await click(page, ".branch-chip");
   await click(page, "button[title='Rebase main onto topic']");
   await submitActionDialog(page);
-  await page.waitForFunction(() => document.querySelector(".operation-panel")?.textContent.includes("rebase"));
+  await page.waitForFunction(() => document.querySelector(".operation-panel strong")?.textContent === "Rebase in progress");
   await page.waitForFunction(() => !document.querySelector(".operation-buttons button:last-child")?.disabled);
   assert.equal(git(conflictRepo, "status", "--porcelain").includes("UU shared.txt"), true);
   await page.screenshot({ path: path.join(screenshots, "rebase-conflict.png") });
@@ -1098,7 +1208,7 @@ async function main() {
   await click(page, ".branch-chip");
   await click(page, "button[title='Merge topic into main']");
   await submitActionDialog(page);
-  await page.waitForFunction(() => document.querySelector(".operation-panel")?.textContent.includes("merge"));
+  await page.waitForFunction(() => document.querySelector(".operation-panel strong")?.textContent === "Merge in progress");
   await page.waitForFunction(() => [...document.querySelectorAll(".conflict-row button")].find(button => button.textContent === "Use ours")?.disabled === false);
   await click(page, ".conflict-row button::-p-text(Use ours)");
   await submitActionDialog(page);
@@ -1414,7 +1524,7 @@ main().catch(async error => {
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
+  for (const name of ["status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

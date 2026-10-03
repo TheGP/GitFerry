@@ -1,5 +1,6 @@
 import { createEffect, createMemo, createSignal, Index, on, onCleanup, Show } from "solid-js";
 import { highlightFileLines } from "./diffHighlight";
+import { describeError } from "./statusMessages";
 import "./fileEditor.css";
 
 /** A hunk's changes in the new file, as 1-based lines: added lines, and lines that removed lines sat directly above. */
@@ -233,7 +234,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       <Show when={!shown()}><div class="editor-empty">Double-click a line in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
       <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
       <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · Lines {annotation().startLine}{annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show></section>}</Show>
-      <Show when={shown() && error()}>{message => <div class="editor-error">{message()}</div>}</Show>
+      <Show when={shown() && error()}>{message => <div class="editor-error" title={message()}>{describeError(message()).summary}<Show when={describeError(message()).help}>{help => <p>{help()}</p>}</Show></div>}</Show>
       <div class="editor-scroll" ref={scroller} style={{ display: shown() ? undefined : "none" }}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>
           <div class="editor-body" style={{ "--editor-gutter": gutter() }}>

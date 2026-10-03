@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { highlightDiff } from "./diffHighlight";
 import { formatCommitDate } from "./commitDate";
+import { actionStatus, describeError, operationName } from "./statusMessages";
 import { version } from "../package.json";
 import { createHunkNotes, HunkNotes } from "./HunkNote";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
@@ -448,7 +449,7 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
       <Show when={props.item.target === "working" && props.item.status !== "U"}><ConfirmButton class="row-action" disabled={props.actionBusy} onConfirm={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } })}>Discard</ConfirmButton></Show>
       <Show when={props.item.target === "staged"} fallback={<button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_file", value: { path: props.item.path } })}>{props.item.target === "working" && props.item.status === "U" ? "Mark resolved" : "Stage"}</button>}><button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "unstage_file", value: { path: props.item.path } })}>Unstage</button></Show>
     </span></Show><button class="summary-open-tab" title={`Open ${props.item.path} in a tab`} aria-label={`Open ${props.item.path} in a tab`} onClick={props.onOpenTab}><Icon name="external" /></button><button class="open-editor-button" title={`Open ${props.item.path} in editor`} aria-label={`Open ${props.item.path} in editor`} onClick={() => props.onOpenEditor(value())}><Icon name="code" /></button></div>
-    <Show when={props.expanded}><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() || "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} onOpenEditor={props.onOpenEditorLine} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
+    <Show when={props.expanded}><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() ? describeError(loadError()).summary : "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} onOpenEditor={props.onOpenEditorLine} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
   </div>;
 }
 
@@ -681,9 +682,16 @@ function App() {
   });
   const [keyboardFileKey, setKeyboardFileKey] = createSignal<string | null>(null);
   const [folderOverrides, setFolderOverrides] = createSignal<Record<string, boolean>>({});
-  const [error, setError] = createSignal("");
+  const [error, setErrorText] = createSignal("");
+  const [errorContext, setErrorContext] = createSignal("");
+  const [errorPath, setErrorPath] = createSignal<string | null>(null);
+  let errorRevision = 0;
+  const errorInfo = createMemo(() => describeError(error(), errorContext()));
+  function setError(message: string, context = "", path = activePath()) { errorRevision++; batch(() => { setErrorText(message); setErrorContext(context); setErrorPath(message ? path : null); }); }
   const [busy, setBusy] = createSignal(false);
+  const [loadingStatus, setLoadingStatus] = createSignal("Loading history…");
   const [actionBusy, setActionBusy] = createSignal(false);
+  const [runningAction, setRunningAction] = createSignal<(ReturnType<typeof actionStatus> & { path: string; repository: string }) | null>(null);
   const [notice, setNotice] = createSignal("");
   const [progress, setProgress] = createSignal("");
   const [watchFallback, setWatchFallback] = createSignal(false);
@@ -838,7 +846,13 @@ function App() {
   createEffect(() => { activePath(); requestAnimationFrame(revealActiveTab); });
   createEffect(() => { tabOverflow(); requestAnimationFrame(updateTabScroll); });
   const repoReady = createMemo(() => Boolean(repo() && !repo()?.loading && !repo()?.loadError));
-  const busyStatus = () => actionBusy() && Boolean(progress() || cancelToken());
+  const busyStatus = () => actionBusy();
+  const actionMessage = () => {
+    const action = runningAction();
+    const message = (cancelRequested() ? action?.cancelling : action?.running) ?? "Updating repository…";
+    return action && action.path !== activePath() ? `${message} (${action.repository})` : message;
+  };
+  const progressMessage = () => !cancelRequested() && progress() ? `${actionMessage()} · ${progress()}` : actionMessage();
   createEffect(on(error, () => setErrorDetails(false), { defer: true }));
   const stashes = createMemo(() => repo()?.refs.filter(item => item.kind === "stash") ?? []);
   const conflicts = createMemo(() => repo()?.status.filter(item => item.index === "U" || item.worktree === "U" || ["AA", "DD"].includes(item.index + item.worktree)) ?? []);
@@ -1082,7 +1096,7 @@ function App() {
   }
   async function openRepo(path: string) {
     if (!path.trim()) return;
-    setBusy(true); setError(""); setNotice("");
+    setBusy(true); setLoadingStatus("Opening repository…"); setError(""); setNotice("");
     try {
       const result = await invoke<Repo>("repo_snapshot", { path: path.trim(), offset: 0 });
       batch(() => {
@@ -1117,10 +1131,10 @@ function App() {
     const path = await open({ directory: true, multiple: false, title: "Open a Git repository" });
     if (typeof path === "string") await openRepo(path);
   }
-  async function refresh() {
-    if (!isTauri()) return;
-    const path = activePath();
-    if (!path || !repoReady()) return;
+  async function refresh(path = activePath()) {
+    if (!isTauri()) return false;
+    const current = tabs().find(item => item.path === path);
+    if (!path || !current || current.loading || current.loadError) return false;
     try {
       const update = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
       setTabs(current => current.map(item => {
@@ -1129,8 +1143,15 @@ function App() {
         return mergeRepo(item, { ...update, commits: overlap >= 0 ? [...update.commits, ...item.commits.slice(overlap + 1)] : update.commits });
       }));
       refreshWorkingDiff(path);
-      setError("");
-    } catch (cause) { setError(String(cause)); }
+      if (activePath() === path) setError("");
+      return true;
+    } catch (cause) { if (activePath() === path) setError(String(cause), "Refreshing repository"); return false; }
+  }
+  async function recoverError() {
+    const path = errorPath(), revision = errorRevision;
+    if (!path) return;
+    if (activePath() === path) selectWorking();
+    if (await refresh(path) && errorRevision === revision) setError("");
   }
   // Status refreshes run one at a time; a request made while one runs is queued (and shared) instead of dropped.
   let stateRunning: Promise<void> | null = null;
@@ -1157,7 +1178,7 @@ function App() {
         setTabs(items => items.map(item => item.path === path ? { ...item, status: reuseEqual(item.status, update.status, entry => entry.path) } : item));
         refreshWorkingDiff(path);
       }
-    } catch (cause) { setError(String(cause)); }
+    } catch (cause) { if (activePath() === path) setError(String(cause), "Reading repository status"); }
     finally { stateBusy = false; }
   }
   async function loadMore() {
@@ -1174,11 +1195,11 @@ function App() {
       finally { if (matches()) setSearchBusy(false); }
       return;
     }
-    setBusy(true);
+    setBusy(true); setLoadingStatus("Loading history…");
     try {
       const update = await invoke<Repo>("repo_snapshot", { path: current.path, offset: current.commits.length });
       setTabs(tabs => tabs.map(item => item.path === current.path ? { ...update, commits: [...item.commits, ...update.commits] } : item));
-    } catch (cause) { setError(String(cause)); }
+    } catch (cause) { if (activePath() === current.path) setError(String(cause), "Loading history"); }
     finally { setBusy(false); }
   }
   // Search takes the branch box's place, as in Sublime Merge, until it is cleared or dismissed.
@@ -1375,6 +1396,7 @@ function App() {
     setSelected("compare"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null);
   }
   function closeFileTab() {
+    request++;
     setParkedFile(null);
     if (choice()) { setChoice(null); setDiff(null); resetFileInfo(); }
     if (detailsScroll) detailsScroll.scrollTop = 0;
@@ -1424,7 +1446,7 @@ function App() {
       detailsCache.set(cacheKey, result);
       if (detailsCache.size > 200) detailsCache.delete(detailsCache.keys().next().value!);
       if (id === request) setDetails(result);
-    } catch (cause) { if (id === request) setError(String(cause)); }
+    } catch (cause) { if (id === request && activePath() === path) setError(String(cause), `Commit ${hash.slice(0, 8)}`); }
   }
   async function selectFile(item: Choice, restoreScroll?: number) {
     const path = activePath();
@@ -1461,7 +1483,7 @@ function App() {
     try {
       const result = demoMode ? demoDiff(item) : await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: ignoreWhitespace(), fullContext: fullFile() });
       if (id === request) { shownDiffRevision = revision; show(result); }
-    } catch (cause) { if (id === request) setError(String(cause)); }
+    } catch (cause) { if (id === request && activePath() === path) setError(String(cause), `Changes in ${item.path}`); }
     finally { if (loadingFileDiff === id) loadingFileDiff = 0; }
   }
   async function editFile(item: Choice) {
@@ -1634,36 +1656,42 @@ function App() {
     applyOptimisticAction(path, operation);
     const previousFile = scopedAction ? choice() : null;
     const token = ["fetch", "pull", "pull_branch", "pull_merge", "pull_rebase", "push", "force_push_with_lease", "push_branch", "delete_remote_branch", "push_tag", "delete_remote_tag"].includes(operation.kind) ? crypto.randomUUID() : null;
-    setActionBusy(true); setError(""); setNotice(""); setProgress(""); setCancelToken(token); setCancelRequested(false);
+    const status = actionStatus(operation, repo()?.operation);
+    const repository = repo()?.name ?? path;
+    const context = () => activePath() === path ? status.label : `${status.label} (${repository})`;
+    const completedNotice = (message: string) => activePath() === path ? message : `${repository}: ${message}`;
+    batch(() => { setRunningAction({ ...status, path, repository }); setActionBusy(true); setError(""); setNotice(""); setProgress(""); setCancelToken(token); setCancelRequested(false); });
     try {
       const output = await invoke<string>("repo_action", { path, operation, cancelToken: token });
-      setNotice(output || "Done");
-      if (["merge", "rebase", "interactive_rebase", "pull", "pull_merge", "pull_rebase", "cherry_pick", "revert", "reset", "detach", "continue_operation", "abort_operation"].includes(operation.kind)) selectWorking();
-      if (!previousFile) { setChoice(null); setDiff(null); }
+      setNotice(`${completedNotice(status.completed)}${output.trim() ? `\n\n${output.trim()}` : ""}`);
+      if (activePath() === path) {
+        if (["merge", "rebase", "interactive_rebase", "pull", "pull_merge", "pull_rebase", "cherry_pick", "revert", "reset", "detach", "continue_operation", "abort_operation"].includes(operation.kind)) selectWorking();
+        if (!previousFile) { setChoice(null); setDiff(null); }
+      }
       setBranchMenu(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setMoreMenu(false); setStashMenu(false);
-      if (fileAction) await refreshState(); else await refresh();
-      if (previousFile) {
+      if (fileAction && activePath() === path) await refreshState(); else await refresh(path);
+      if (previousFile && activePath() === path) {
         const nextFile = workingFiles().find(item => item.path === previousFile.path && item.target === previousFile.target)
           ?? workingFiles().find(item => item.path === previousFile.path);
         // The status refresh reloads the same file's diff in place; under another target (all lines staged) it opens fresh.
         if (!nextFile) { setChoice(null); setDiff(null); }
         else if (nextFile.target !== previousFile.target) await selectFile(nextFile);
       }
-      if (searchQuery()) await performSearch(searchQuery());
+      if (activePath() === path && searchQuery()) await performSearch(searchQuery());
     } catch (cause) {
       setBranchMenu(false); setRefMenu(null); setPullMenu(false); setPushMenu(false); setStashMenu(false);
-      if (["merge", "rebase", "interactive_rebase", "pull_merge", "pull_rebase", "cherry_pick", "revert", "continue_operation"].includes(operation.kind)) selectWorking();
-      if (fileAction) await refreshState(); else await refresh();
-      setError(repo()?.operation && conflicts().length ? "Conflict detected. Resolve the files below, then Continue or Abort." : String(cause));
+      if (activePath() === path && ["merge", "rebase", "interactive_rebase", "pull_merge", "pull_rebase", "cherry_pick", "revert", "continue_operation"].includes(operation.kind)) selectWorking();
+      if (fileAction && activePath() === path) await refreshState(); else await refresh(path);
+      if (cancelRequested() && /\bOperation cancelled\b/i.test(String(cause))) setNotice(completedNotice(`${status.label} cancelled`));
+      else setError(activePath() === path && repo()?.operation && conflicts().length ? `Conflict detected. Resolve the files below, then Continue or Abort.\n\n${String(cause)}` : String(cause), context(), path);
     }
-    finally { setActionBusy(false); setProgress(""); setCancelToken(null); setCancelRequested(false); }
+    finally { setActionBusy(false); setRunningAction(null); setProgress(""); setCancelToken(null); setCancelRequested(false); }
   }
   async function cancelAction() {
-    const path = activePath();
+    const path = runningAction()?.path;
     const token = cancelToken();
     if (!path || !token || cancelRequested()) return;
     setCancelRequested(true);
-    setProgress("Cancelling operation…");
     try { await invoke<string>("repo_cancel", { path, token }); }
     catch (cause) { if (actionBusy()) { setError(String(cause)); setCancelRequested(false); } }
   }
@@ -2233,7 +2261,7 @@ function App() {
     let unlistenDrop: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
     if (isTauri()) void listen<{ path: string; message: string }>("git-progress", event => {
-      if (event.payload.path === activePath()) setProgress(event.payload.message);
+      if (event.payload.path === runningAction()?.path && actionBusy() && !cancelRequested()) setProgress(event.payload.message);
     }).then(unlisten => { unlistenProgress = unlisten; }).catch(cause => setError(String(cause)));
     const unlistenSsh: (() => void)[] = [];
     // Restored SSH tabs connect right away; pick up a prompt that was asked before these listeners existed.
@@ -2328,8 +2356,8 @@ function App() {
       </div>
         <div class="toolbar-center">
           <Show when={repoReady()}><button class="toolbar-button" title="Stash" disabled={actionBusy()} onClick={stashChanges}><Icon name="stash" /><span>Stash</span></button><div class="stash-control"><button class="toolbar-button" title="Unstash" aria-expanded={stashMenu()} disabled={actionBusy()} onClick={() => setStashMenu(!stashMenu())}><Icon name="unstash" /><span>Unstash</span><Show when={stashes().length}><small>{stashes().length}</small></Show></button><Show when={stashMenu()}><div class="stash-menu"><div class="eyebrow">SAVED STASHES</div><Show when={stashes().length} fallback={<div class="stash-empty">No saved stashes</div>}><For each={stashes()}>{item => <div class="stash-menu-row"><div class="stash-menu-label" title={item.name}>{item.name}</div><div class="stash-menu-actions"><button disabled={actionBusy()} title="Restore changes and keep this stash" onClick={() => void runAction({ kind: "apply_stash", value: { hash: item.target } })}>Apply</button><button disabled={actionBusy()} title="Restore changes and remove this stash" onClick={() => void runAction({ kind: "pop_stash", value: { hash: item.target } })}>Pop</button></div></div>}</For></Show></div></Show></div></Show>
-          <Show when={!busyStatus() && !error()} fallback={<div class="status-control"><Show when={busyStatus()} fallback={<div class="error-bar status-chip" role="alert"><button class="status-chip-text" title="Show the full error" aria-expanded={errorDetails()} onClick={() => setErrorDetails(!errorDetails())}>{error().split("\n")[0]}</button><button title="Dismiss error" aria-label="Dismiss error" onClick={() => setError("")}><Icon name="close" /></button></div>}><div class="progress-bar status-chip" role="status"><span>{progress() || "Starting Git operation…"}</span><Show when={cancelToken()}><button disabled={cancelRequested()} onClick={() => void cancelAction()}>{cancelRequested() ? "Cancelling…" : "Cancel"}</button></Show></div></Show>
-            <Show when={errorDetails() && error() && !busyStatus()}><div class="error-details"><pre>{error()}</pre><div class="error-details-actions"><button onClick={() => copyText(error())}>Copy</button><button onClick={() => setError("")}>Dismiss</button></div></div></Show></div>}><Show when={repo()} fallback={<span class="toolbar-title">Open a repository to begin</span>}><Show when={searchOpen() || searchQuery()} fallback={<div class="branch-control"><button class="branch-chip" title={repo()?.branch} disabled={!repoReady()} aria-expanded={branchMenu()} onClick={() => { const opening = !branchMenu(); setBranchMenu(opening); if (opening) { setBranchFilter(""); requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".branch-menu-filter")?.focus()); } }}><span class="branch-icon"><Icon name="branch" /></span><span class="branch-name">{repo()?.branch}</span><span class="branch-arrow"><ChevronDown /></span></button>
+          <Show when={!busyStatus() && !error()} fallback={<div class="status-control"><Show when={busyStatus()} fallback={<div class="error-bar status-chip" role="alert"><button class="status-chip-text" title="Show the full error" aria-expanded={errorDetails()} onClick={() => setErrorDetails(!errorDetails())}>{errorInfo().summary}</button><button title="Dismiss error" aria-label="Dismiss error" onClick={() => setError("")}><Icon name="close" /></button></div>}><div class="progress-bar status-chip" role="status"><span>{progressMessage()}</span><Show when={cancelToken()}><button disabled={cancelRequested()} onClick={() => void cancelAction()}>{cancelRequested() ? "Cancelling…" : "Cancel"}</button></Show></div></Show>
+            <Show when={errorDetails() && error() && !busyStatus()}><div class="error-details"><Show when={errorInfo().help}>{help => <p>{help()}</p>}</Show><pre>{error()}</pre><div class="error-details-actions"><Show when={errorInfo().unavailable}><button disabled={!tabs().some(tab => tab.path === errorPath())} onClick={() => void recoverError()}>Refresh repository</button></Show><button onClick={() => copyText(error())}>Copy</button><button onClick={() => setError("")}>Dismiss</button></div></div></Show></div>}><Show when={repo()} fallback={<span class="toolbar-title">Open a repository to begin</span>}><Show when={searchOpen() || searchQuery()} fallback={<div class="branch-control"><button class="branch-chip" title={repo()?.branch} disabled={!repoReady()} aria-expanded={branchMenu()} onClick={() => { const opening = !branchMenu(); setBranchMenu(opening); if (opening) { setBranchFilter(""); requestAnimationFrame(() => document.querySelector<HTMLInputElement>(".branch-menu-filter")?.focus()); } }}><span class="branch-icon"><Icon name="branch" /></span><span class="branch-name">{repo()?.branch}</span><span class="branch-arrow"><ChevronDown /></span></button>
           <Show when={branchMenu()}><div class="branch-menu"><input class="branch-menu-filter" type="search" aria-label="Filter branches" placeholder="Filter branches" value={branchFilter()} onInput={event => setBranchFilter(event.currentTarget.value)} />
             <div class="branch-menu-list"><div class="eyebrow">LOCAL BRANCHES</div><For each={matchingLocalBranches()}>{item => <div class="branch-menu-row"><button disabled={actionBusy()} onClick={() => void runAction({ kind: "checkout", value: { branch: item.name } })}>{item.isHead ? "✓ " : ""}{item.name}</button><Show when={!item.isHead}><button title={`Merge ${item.name} into ${repo()?.branch}`} disabled={actionBusy()} onClick={() => void runAction({ kind: "merge", value: { branch: item.name } }, `Merge ${item.name} into ${repo()?.branch}?`)}>Merge</button><button title={`Rebase ${repo()?.branch} onto ${item.name}`} disabled={actionBusy()} onClick={() => void runAction({ kind: "rebase", value: { branch: item.name } }, `Rebase ${repo()?.branch} onto ${item.name}?`)}>Rebase</button><button title={`Plan an interactive rebase onto ${item.name}`} disabled={actionBusy() || rebaseLoading()} onClick={() => void openRebasePlan(item.name)}>Plan…</button><button class="branch-delete" title={`Delete ${item.name}`} disabled={actionBusy()} onClick={() => void runAction({ kind: "delete_branch", value: { branch: item.name } }, `Delete branch ${item.name}?`)}><Icon name="close" /></button></Show><button title={`More actions for ${item.name}`} aria-label={`More actions for ${item.name}`} disabled={actionBusy()} onClick={event => openRefMenu(item, event.currentTarget)}><Icon name="more" /></button></div>}</For>
               <div class="eyebrow branch-menu-section">REMOTE BRANCHES</div><For each={matchingRemoteBranches()}>{item => <div class="branch-menu-row branch-menu-remote"><button title={`Create tracking branch from ${item.name}`} disabled={actionBusy()} onClick={() => { const target = remoteBranch(item); if (target) void runAction({ kind: "track_remote_branch", value: target }); }}>{item.name}</button></div>}</For>
@@ -2372,7 +2400,7 @@ function App() {
             if (element.scrollHeight - element.scrollTop - element.clientHeight < 350) void loadMore();
           }}>
             <Show when={!searchQuery() && comparison()}>{current => <div class={`compare-row ${selected() === "compare" ? "selected" : ""}`} style={{ height: `${compareRowHeight}px` }}>
-              <button class="compare-main" onClick={showComparison}><span class="branch-dot" style={{ background: branchColor(branchKey(current().head, repo()?.remotes ?? [])) }} /><span class="commit-main"><strong>{current().head} <span class="compare-vs">vs</span> {current().base}</strong><small>{current().error || (current().result ? `${current().result!.commits} commit${current().result!.commits === 1 ? "" : "s"} · ${current().result!.files.length} file${current().result!.files.length === 1 ? "" : "s"}` : "Comparing…")}</small></span></button>
+              <button class="compare-main" onClick={showComparison}><span class="branch-dot" style={{ background: branchColor(branchKey(current().head, repo()?.remotes ?? [])) }} /><span class="commit-main"><strong>{current().head} <span class="compare-vs">vs</span> {current().base}</strong><small>{(current().error ? describeError(current().error).summary : "") || (current().result ? `${current().result!.commits} commit${current().result!.commits === 1 ? "" : "s"} · ${current().result!.files.length} file${current().result!.files.length === 1 ? "" : "s"}` : "Comparing…")}</small></span></button>
               <Show when={!current().automatic}><button class="compare-close" title="Close comparison" aria-label="Close comparison" onClick={closeComparison}><Icon name="close" /></button></Show>
             </div>}</Show>
             <Show when={!searchQuery()}><button class={`working-row ${selected() === "working" ? "selected" : ""}`} onClick={selectWorking}><span class="working-node">●</span><span class="commit-main"><strong title={workingSummary()}>{workingSummary() || "Working Directory"}</strong><small>{workingSummary() ? "Commit Changes" : "No changes"}</small></span></button></Show>
@@ -2396,7 +2424,7 @@ function App() {
                 <Show when={current().result}>{result => <><dt>Merge base</dt><dd class="mono"><button class="commit-link" title="Show merge base commit" onClick={() => void jumpToCommit(result().mergeBase)}>{result().mergeBase}</button></dd>
                 <dt>Commits</dt><dd>{result().commits}</dd>
                 <dt>Stats</dt><dd class="commit-stats">{result().files.length} file{result().files.length === 1 ? "" : "s"} changed: <span class="stat-deleted">-{result().deletions}</span><span class="stat-added">+{result().additions}</span></dd></>}</Show>
-              </dl><Show when={current().error}><div class="empty-note">{current().error}</div></Show><Show when={!current().result && !current().error}><div class="empty-note">Comparing…</div></Show></div>}</Show>
+              </dl><Show when={current().error}><div class="empty-note" title={current().error}>{describeError(current().error).summary}</div></Show><Show when={!current().result && !current().error}><div class="empty-note">Comparing…</div></Show></div>}</Show>
             <Show when={selected() !== "working" && selected() !== "compare" && !choice()}><Show when={details()} fallback={<div class="empty-note">Loading commit…</div>}>
               <div class="detail-header"><dl class="commit-facts">
                 <dt>Commit Hash</dt><dd class="mono">{details()!.hash}</dd>
@@ -2412,7 +2440,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
             </Show></Show>
             <Show when={selected() !== "working" && selected() !== "compare" && !choice() && details()}><details class="commit-actions"><summary>Commit actions</summary><div class="commit-action-buttons"><button disabled={actionBusy()} onClick={() => void runAction({ kind: "cherry_pick", value: { hash: details()!.hash } })}>Cherry-pick</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "revert", value: { hash: details()!.hash } }, `Revert commit ${details()!.hash.slice(0, 8)}?`)}>Revert</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "detach", value: { hash: details()!.hash } }, `Check out ${details()!.hash.slice(0, 8)} in detached HEAD?`)}>Check out commit</button><button disabled={actionBusy()} onClick={tagSelectedCommit}>Create tag</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "reset", value: { hash: details()!.hash, mode: "soft" } }, `Soft reset ${repo()?.branch} to ${details()!.hash.slice(0, 8)}?`)}>Reset soft</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "reset", value: { hash: details()!.hash, mode: "mixed" } }, `Mixed reset ${repo()?.branch} to ${details()!.hash.slice(0, 8)}? This will unstage changes.`)}>Reset mixed</button><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "reset", value: { hash: details()!.hash, mode: "hard" } }, `Hard reset ${repo()?.branch} to ${details()!.hash.slice(0, 8)}? This discards tracked working changes and commits after that point.`)}>Reset hard</button><For each={repo()?.refs.filter(item => item.kind === "tag" && item.target === details()!.hash)}>{item => <button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "delete_tag", value: { name: item.name } }, `Delete local tag ${item.name}?`)}>Delete tag {item.name}</button>}</For></div></details></Show>
             <Show when={repo()?.operation && !choice()}><div class="operation-panel">
-              <strong>{repo()!.operation!.replace("_", "-")} in progress</strong>
+              <strong>{operationName(repo()!.operation!)} in progress</strong>
               <span>{conflicts().length ? `${conflicts().length} conflicted file${conflicts().length === 1 ? "" : "s"}. Edit or choose a side, then stage each file.` : repo()?.rebaseEditPause ? "Edit pause: stage and amend the commit, then continue." : "Continue or abort the operation."}</span>
               <div class="operation-buttons"><button disabled={actionBusy() || !!conflicts().length} onClick={() => void runAction({ kind: "continue_operation" })}>Continue</button><button disabled={actionBusy()} onClick={() => void runAction({ kind: "abort_operation" }, `Abort the ${repo()?.operation?.replace("_", "-")}?`)}>Abort</button></div>
               <Show when={repo()?.rebaseEditPause && !conflicts().length}><div class="rebase-amend"><label>Amend at an Edit pause<textarea aria-label="Amended commit message" placeholder="New message (optional)" value={rebaseAmendMessage()} onInput={event => setRebaseAmendMessage(event.currentTarget.value)} /></label><div class="operation-buttons"><button disabled={actionBusy() || !workingFiles().some(item => item.target === "staged")} onClick={() => void runAction({ kind: "amend_no_edit" })}>Amend staged changes</button><button disabled={actionBusy() || !rebaseAmendMessage().trim()} onClick={() => void runAction({ kind: "commit", value: { message: rebaseAmendMessage(), amend: true } })}>Amend with message</button></div></div></Show>
@@ -2428,16 +2456,16 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
                   <Show when={group.title === "UNSTAGED" && discardable().length}><ConfirmButton class="row-action" disabled={actionBusy()} resetKey={discardable().join("\0")} onConfirm={() => void runAction({ kind: "discard_files", value: { paths: discardable() } })}>Discard All</ConfirmButton></Show>
                   <Show when={group.title === "STAGED"} fallback={<button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_files", value: { paths: paths() } })}>Stage All</button>}><button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_files", value: { paths: paths() } })}>Unstage All</button></Show>
                 </>;
-              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onOpenEditorLine={(line, marks) => openSideEditor(item, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={setError} />}</For></>}</For></div></Show></Show>
+              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onOpenEditorLine={(line, marks) => openSideEditor(item, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={message => setError(message, `Changes in ${item.path}`)} />}</For></>}</For></div></Show></Show>
             <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><Show when={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target}><button title="Clear AI highlights" onClick={() => setMcpHighlight(null)}>Clear AI highlights</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
               <Show when={fileView() === "diff"}>
                 <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.target === "working" && choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
                 <Show when={choice()?.target === "working" && choice()?.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show>
                 <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it in the side editor.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} aiRows={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target && mcpHighlight()?.text === current().text ? mcpHighlight()?.rows : undefined} onSelection={setDiffSelection} onOpenEditor={(line, marks) => openSideEditor(choice()!, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
               </Show>
-              <Show when={fileView() === "edit" && selected() === "working"}><div class="file-edit-view"><Show when={activeFileDraft()} fallback={<div class="empty-note">{fileEditError() || (fileEditLoading() ? "Loading file…" : "No editable file loaded")}</div>}>{draft => <><div class="file-edit-toolbar"><span>{draft().stageOnSave ? "Saving stages the whole file" : "Edits remain unstaged until you stage them"}</span><button disabled={fileEditSaving()} onClick={discardEditedFile}>Cancel</button><button class="file-edit-save" disabled={fileEditSaving() || draft().text === draft().original} onClick={() => void saveEditedFile()}>{fileEditSaving() ? "Saving…" : "Save · Ctrl+S"}</button></div><Show when={fileEditError()}>{message => <div class="file-edit-error">{message()}</div>}</Show><textarea class="file-edit-textarea" aria-label={`Edit ${draft().path}`} spellcheck={false} disabled={fileEditSaving()} value={draft().text} onInput={event => setFileDraft(current => current ? { ...current, text: event.currentTarget.value } : current)} onKeyDown={event => { if (event.key === "Tab") { event.preventDefault(); const input = event.currentTarget; const start = input.selectionStart; const end = input.selectionEnd; input.setRangeText("  ", start, end, "end"); setFileDraft(current => current ? { ...current, text: input.value } : current); } }} /></>}</Show></div></Show>
-              <Show when={fileView() === "history"}><div class="file-inspection"><div class="file-inspection-heading">File history · {inspectRevision().slice(0, 8)}</div><Show when={fileInfoError()}>{message => <div class="empty-note">{message()}</div>}</Show><Show when={fileHistory()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading file history…" : "No file history loaded"}</div>}>{history => <><For each={history().commits}>{entry => <button class="file-history-row" title={`${entry.path} · ${entry.hash}`} onClick={() => void openHistoryCommit(entry)}><span class="file-history-subject">{entry.subject}</span><span class="file-history-meta">{entry.author} · {new Date(entry.timestamp * 1000).toLocaleDateString()} · {entry.hash.slice(0, 8)}</span></button>}</For><Show when={!history().commits.length && !fileInfoLoading()}><div class="empty-note">No committed history for this file.</div></Show><Show when={history().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileHistory(history().commits.length)}>{fileInfoLoading() ? "Loading…" : "Load more history"}</button></Show></>}</Show></div></Show>
-              <Show when={fileView() === "blame"}><div class="file-inspection"><div class="file-inspection-heading">Blame · {inspectRevision().slice(0, 8)} · select an attribution to open its commit</div><Show when={fileInfoError()}>{message => <div class="empty-note">{message()}</div>}</Show><Show when={fileBlame()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading blame…" : "No blame loaded"}</div>}>{result => <><div class="blame-lines"><For each={result().lines}>{line => <div class="blame-row"><span class="blame-number">{line.line}</span><button class="blame-attribution" title={`${line.summary} · ${line.author} · ${new Date(line.timestamp * 1000).toLocaleString()}`} onClick={() => void selectCommit(line.hash)}><span>{line.author}</span><code>{line.hash.slice(0, 8)}</code></button><code class="blame-content">{line.content || " "}</code></div>}</For></div><Show when={!result().lines.length && !fileInfoLoading()}><div class="empty-note">No committed lines to blame.</div></Show><Show when={result().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileBlame(result().lines[result().lines.length - 1].line + 1)}>{fileInfoLoading() ? "Loading…" : "Load more lines"}</button></Show></>}</Show></div></Show>
+              <Show when={fileView() === "edit" && selected() === "working"}><div class="file-edit-view"><Show when={activeFileDraft()} fallback={<div class="empty-note">{fileEditError() || (fileEditLoading() ? "Loading file…" : "No editable file loaded")}</div>}>{draft => <><div class="file-edit-toolbar"><span>{draft().stageOnSave ? "Saving stages the whole file" : "Edits remain unstaged until you stage them"}</span><button disabled={fileEditSaving()} onClick={discardEditedFile}>Cancel</button><button class="file-edit-save" disabled={fileEditSaving() || draft().text === draft().original} onClick={() => void saveEditedFile()}>{fileEditSaving() ? "Saving…" : "Save · Ctrl+S"}</button></div><Show when={fileEditError()}>{message => <div class="file-edit-error" title={message()}>{describeError(message()).summary}</div>}</Show><textarea class="file-edit-textarea" aria-label={`Edit ${draft().path}`} spellcheck={false} disabled={fileEditSaving()} value={draft().text} onInput={event => setFileDraft(current => current ? { ...current, text: event.currentTarget.value } : current)} onKeyDown={event => { if (event.key === "Tab") { event.preventDefault(); const input = event.currentTarget; const start = input.selectionStart; const end = input.selectionEnd; input.setRangeText("  ", start, end, "end"); setFileDraft(current => current ? { ...current, text: input.value } : current); } }} /></>}</Show></div></Show>
+              <Show when={fileView() === "history"}><div class="file-inspection"><div class="file-inspection-heading">File history · {inspectRevision().slice(0, 8)}</div><Show when={fileInfoError()}>{message => <div class="empty-note" title={message()}>{describeError(message()).summary}</div>}</Show><Show when={fileHistory()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading file history…" : "No file history loaded"}</div>}>{history => <><For each={history().commits}>{entry => <button class="file-history-row" title={`${entry.path} · ${entry.hash}`} onClick={() => void openHistoryCommit(entry)}><span class="file-history-subject">{entry.subject}</span><span class="file-history-meta">{entry.author} · {new Date(entry.timestamp * 1000).toLocaleDateString()} · {entry.hash.slice(0, 8)}</span></button>}</For><Show when={!history().commits.length && !fileInfoLoading()}><div class="empty-note">No committed history for this file.</div></Show><Show when={history().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileHistory(history().commits.length)}>{fileInfoLoading() ? "Loading…" : "Load more history"}</button></Show></>}</Show></div></Show>
+              <Show when={fileView() === "blame"}><div class="file-inspection"><div class="file-inspection-heading">Blame · {inspectRevision().slice(0, 8)} · select an attribution to open its commit</div><Show when={fileInfoError()}>{message => <div class="empty-note" title={message()}>{describeError(message()).summary}</div>}</Show><Show when={fileBlame()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading blame…" : "No blame loaded"}</div>}>{result => <><div class="blame-lines"><For each={result().lines}>{line => <div class="blame-row"><span class="blame-number">{line.line}</span><button class="blame-attribution" title={`${line.summary} · ${line.author} · ${new Date(line.timestamp * 1000).toLocaleString()}`} onClick={() => void selectCommit(line.hash)}><span>{line.author}</span><code>{line.hash.slice(0, 8)}</code></button><code class="blame-content">{line.content || " "}</code></div>}</For></div><Show when={!result().lines.length && !fileInfoLoading()}><div class="empty-note">No committed lines to blame.</div></Show><Show when={result().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileBlame(result().lines[result().lines.length - 1].line + 1)}>{fileInfoLoading() ? "Loading…" : "Load more lines"}</button></Show></>}</Show></div></Show>
             </Show>
           </div>
         </section>
@@ -2445,7 +2473,7 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
     </Show>
         <Show when={sideEditor()}>{target => <FileEditor target={target()} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
     </main>
-    <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? "RUNNING GIT COMMAND" : repo()?.loading || busy() || searchBusy() ? "LOADING REPOSITORY" : repo()?.loadError ? "REPOSITORY UNAVAILABLE" : "READY"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
+    <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? actionMessage() : repo()?.loading ? `Opening ${repo()?.name}…` : searchBusy() ? "Searching commits…" : busy() ? loadingStatus() : repo()?.loadError ? "Repository unavailable" : "Ready"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
     <Show when={actionDialog()}>{current => <div class="modal-backdrop" onClick={() => setActionDialog(null)}><div class="action-dialog" role="dialog" aria-modal="true" aria-label={current().title} onClick={event => event.stopPropagation()}>
       <div class="modal-title"><span>{current().title}</span><button aria-label="Close action dialog" onClick={() => setActionDialog(null)}><Icon name="close" /></button></div>
       <form onSubmit={event => { event.preventDefault(); submitActionDialog(); }}>

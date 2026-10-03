@@ -73,6 +73,7 @@ button { cursor: pointer; }
 .search-box button { border: 0; background: none; color: #98aab2; font-size: 16px; }
 .error-bar { flex: none; display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; color: #f5b4ae; background: #492f32; font-size: 13px; }
 .error-bar button { border: 0; background: none; color: inherit; font-size: 18px; }
+.error-details p { margin: 0 0 10px; color: var(--theme-text); font-size: 13px; line-height: 1.5; }
 .notice-bar { flex: none; display: flex; justify-content: space-between; align-items: center; max-height: 48px; overflow: auto; padding: 7px 14px; color: #bde0cb; background: #284139; font-size: 13px; white-space: pre-wrap; }
 .notice-bar button { border: 0; background: none; color: inherit; font-size: 17px; }
 .progress-bar { flex: none; display: flex; align-items: center; gap: 12px; padding: 7px 14px; background: var(--theme-heading); color: var(--theme-accent); font-size: 13px; }
