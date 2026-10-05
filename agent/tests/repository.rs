@@ -975,6 +975,7 @@ fn stages_one_hunk_without_staging_another() {
             path: "lines.txt".into(),
             index: 0,
             reverse: false,
+            diff: diff(path, "working", "lines.txt").unwrap().text,
         },
     )
     .unwrap();
@@ -991,6 +992,7 @@ fn stages_one_hunk_without_staging_another() {
             path: "lines.txt".into(),
             index: 0,
             reverse: true,
+            diff: diff(path, "staged", "lines.txt").unwrap().text,
         },
     )
     .unwrap();
@@ -1043,6 +1045,7 @@ fn later_hunk_actions_leave_earlier_hunks_untouched() {
             path: "lines.txt".into(),
             index: 1,
             reverse: false,
+            diff: diff(path, "working", "lines.txt").unwrap().text,
         },
     )
     .unwrap();
@@ -1061,6 +1064,7 @@ fn later_hunk_actions_leave_earlier_hunks_untouched() {
             path: "lines.txt".into(),
             index: 1,
             reverse: true,
+            diff: diff(path, "staged", "lines.txt").unwrap().text,
         },
     )
     .unwrap();
@@ -1088,6 +1092,166 @@ fn later_hunk_actions_leave_earlier_hunks_untouched() {
         original.replace("line 1\n", "FIRST\n")
     );
     assert!(diff(path, "staged", "lines.txt").unwrap().text.is_empty());
+}
+
+#[test]
+fn hunk_actions_reject_changes_since_the_displayed_diff() {
+    for reverse in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let path = dir.to_str().unwrap();
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.name", "Test"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        let original = (1..=40).map(|n| format!("line {n}\n")).collect::<String>();
+        let file = dir.join("lines.txt");
+        std::fs::write(&file, &original).unwrap();
+        git(dir, &["add", "lines.txt"]);
+        git(dir, &["commit", "-qm", "Base"]);
+        let intended = original.replace("line 30\n", "intended\n");
+        std::fs::write(&file, &intended).unwrap();
+        if reverse {
+            git(dir, &["add", "lines.txt"]);
+        }
+        let target = if reverse { "staged" } else { "working" };
+        let shown = diff(path, target, "lines.txt").unwrap().text;
+        std::fs::write(&file, intended.replace("line 5\n", "external\n")).unwrap();
+        if reverse {
+            git(dir, &["add", "lines.txt"]);
+        }
+        let index = git(dir, &["write-tree"]);
+        assert!(action(
+            path,
+            RepoAction::StageHunk {
+                path: "lines.txt".into(),
+                index: 0,
+                reverse,
+                diff: shown,
+            }
+        )
+        .unwrap_err()
+        .contains("Diff changed"));
+        assert_eq!(git(dir, &["write-tree"]), index);
+    }
+    // Older callers must fail closed instead of staging an unverified hunk.
+    assert!(serde_json::from_str::<RepoAction>(
+        r#"{"kind":"stage_hunk","value":{"path":"lines.txt","index":0,"reverse":false}}"#
+    )
+    .is_err());
+}
+
+#[test]
+fn partial_actions_and_snapshots_preserve_bytes_with_textconv() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path();
+    let path = dir.to_str().unwrap();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.name", "Test"]);
+    git(dir, &["config", "user.email", "test@example.com"]);
+    git(dir, &["config", "core.autocrlf", "false"]);
+    std::fs::write(dir.join("file.txt"), "UNCHANGED\n").unwrap();
+    git(dir, &["add", "file.txt"]);
+    git(dir, &["commit", "-qm", "Base"]);
+    std::fs::write(dir.join(".gitattributes"), "file.txt diff=uppercase\n").unwrap();
+    std::fs::write(dir.join(".git/uppercase.sh"), "tr 'a-z' 'A-Z' < \"$1\"\n").unwrap();
+    git(
+        dir,
+        &["config", "diff.uppercase.textconv", "sh .git/uppercase.sh"],
+    );
+    std::fs::write(dir.join("file.txt"), "UNCHANGED\nhello\n").unwrap();
+    assert!(git(dir, &["diff", "--textconv", "--", "file.txt"]).contains("+HELLO"));
+    for lines in [false, true] {
+        let shown = diff(path, "working", "file.txt").unwrap().text;
+        assert!(shown.contains("+hello") && !shown.contains("+HELLO"));
+        let selected = shown.lines().position(|line| line == "+hello").unwrap();
+        let stage = if lines {
+            RepoAction::StageLines {
+                path: "file.txt".into(),
+                lines: vec![selected],
+                diff: shown,
+            }
+        } else {
+            RepoAction::StageHunk {
+                path: "file.txt".into(),
+                index: 0,
+                reverse: false,
+                diff: shown,
+            }
+        };
+        action(path, stage).unwrap();
+        assert_eq!(git(dir, &["show", ":file.txt"]), "UNCHANGED\nhello");
+        let shown = diff(path, "staged", "file.txt").unwrap().text;
+        assert!(shown.contains("+hello") && !shown.contains("+HELLO"));
+        let selected = shown.lines().position(|line| line == "+hello").unwrap();
+        let unstage = if lines {
+            RepoAction::UnstageLines {
+                path: "file.txt".into(),
+                lines: vec![selected],
+                diff: shown,
+            }
+        } else {
+            RepoAction::StageHunk {
+                path: "file.txt".into(),
+                index: 0,
+                reverse: true,
+                diff: shown,
+            }
+        };
+        action(path, unstage).unwrap();
+        assert_eq!(git(dir, &["show", ":file.txt"]), "UNCHANGED");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt")).unwrap(),
+            "UNCHANGED\nhello\n"
+        );
+    }
+    git(dir, &["add", "file.txt"]);
+    git(dir, &["commit", "-qm", "Append lowercase"]);
+    let commit = git(dir, &["rev-parse", "HEAD"]);
+    let shown = diff(path, &commit, "file.txt").unwrap().text;
+    assert!(shown.contains("+hello") && !shown.contains("+HELLO"));
+}
+
+#[test]
+fn unstaging_renames_restores_both_paths_and_preserves_other_changes() {
+    for bulk in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let path = dir.to_str().unwrap();
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.name", "Test"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        std::fs::write(dir.join("old[1].txt"), "renamed contents\n").unwrap();
+        std::fs::write(dir.join("other.txt"), "base\n").unwrap();
+        git(dir, &["add", "--", "old[1].txt", "other.txt"]);
+        git(dir, &["commit", "-qm", "Base"]);
+        std::fs::rename(dir.join("old[1].txt"), dir.join("new[2].txt")).unwrap();
+        std::fs::write(dir.join("other.txt"), "unrelated staged change\n").unwrap();
+        git(dir, &["add", "--", "old[1].txt", "new[2].txt", "other.txt"]);
+        let entries = snapshot(path, 0, 10).unwrap().status;
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "new[2].txt" && entry.index == "R"));
+        action(
+            path,
+            if bulk {
+                RepoAction::UnstageFiles {
+                    paths: vec!["new[2].txt".into()],
+                }
+            } else {
+                RepoAction::UnstageFile {
+                    path: "new[2].txt".into(),
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(git(dir, &["diff", "--cached", "--name-only"]), "other.txt");
+        assert_eq!(git(dir, &["show", ":old[1].txt"]), "renamed contents");
+        assert!(!dir.join("old[1].txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("new[2].txt")).unwrap(),
+            "renamed contents\n"
+        );
+    }
 }
 
 #[test]
@@ -1708,6 +1872,43 @@ fn watcher_notices_nested_worktree_changes() {
     });
     assert!(watch(dir.to_str().unwrap(), 5_000).unwrap());
     edit.join().unwrap();
+}
+
+#[test]
+fn linked_worktree_watcher_notices_shared_refs_and_ignores_object_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("main");
+    let linked = temp.path().join("linked");
+    std::fs::create_dir(&dir).unwrap();
+    git(&dir, &["init", "-q", "-b", "main"]);
+    git(&dir, &["config", "user.name", "Test"]);
+    git(&dir, &["config", "user.email", "test@example.com"]);
+    std::fs::write(dir.join("file.txt"), "base\n").unwrap();
+    git(&dir, &["add", "file.txt"]);
+    git(&dir, &["commit", "-qm", "Base"]);
+    git(
+        &dir,
+        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    );
+    let path = linked.to_str().unwrap();
+    assert!(!watch(path, 1_000).unwrap());
+    git(&dir, &["branch", "external"]);
+    assert!(
+        watch(path, 5_000).unwrap(),
+        "shared loose ref must trigger refresh"
+    );
+    assert!(!watch(path, 1_000).unwrap());
+    git(&dir, &["pack-refs", "--all"]);
+    assert!(
+        watch(path, 5_000).unwrap(),
+        "shared packed refs must trigger refresh"
+    );
+    assert!(!watch(path, 1_000).unwrap());
+    std::fs::write(dir.join(".git/objects/probe"), "ignored").unwrap();
+    std::fs::write(dir.join(".git/packed-refs.lock"), "ignored").unwrap();
+    assert!(!watch(path, 1_000).unwrap());
+    std::fs::write(linked.join("file.txt"), "control edit\n").unwrap();
+    assert!(watch(path, 5_000).unwrap());
 }
 
 #[test]

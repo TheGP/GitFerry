@@ -204,6 +204,7 @@ pub enum RepoAction {
         path: String,
         index: usize,
         reverse: bool,
+        diff: String,
     },
     DiscardHunk {
         path: String,

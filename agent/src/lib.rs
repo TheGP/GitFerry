@@ -391,6 +391,13 @@ fn relevant_change(event: &notify::Event, git_dir: &Path) -> bool {
     }
     event.paths.is_empty()
         || event.paths.iter().any(|path| {
+            if let Ok(relative) = path.strip_prefix(git_dir) {
+                if relative.components().next().is_some_and(|part| {
+                    part.as_os_str() == "objects" || part.as_os_str() == "logs"
+                }) {
+                    return false;
+                }
+            }
             let mut in_git_dir = false;
             for part in path.components() {
                 let name = part.as_os_str().to_string_lossy();
@@ -430,10 +437,17 @@ struct RepoWatch {
 
 fn start_watch(root: &Path) -> Result<RepoWatch, String> {
     let git_dir = git(root, &["rev-parse", "--absolute-git-dir"])?;
-    let git_dir = PathBuf::from(text(&git_dir.stdout).trim());
+    let git_dir = PathBuf::from(text(&git_dir.stdout).trim())
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let common_dir = git(root, &["rev-parse", "--git-common-dir"])?;
+    let common_dir = root
+        .join(text(&common_dir.stdout).trim())
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     let state = Arc::new((Mutex::new(WatchState::default()), std::sync::Condvar::new()));
     let shared = state.clone();
-    let events_git_dir = git_dir.clone();
+    let events_git_dir = common_dir.clone();
     let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
         let (lock, wake) = &*shared;
         let Ok(mut state) = lock.lock() else { return };
@@ -448,7 +462,13 @@ fn start_watch(root: &Path) -> Result<RepoWatch, String> {
     watcher
         .watch(root, RecursiveMode::Recursive)
         .map_err(|error| error.to_string())?;
-    if !git_dir.starts_with(root) {
+    // Linked worktrees share refs and packed-refs outside their own Git directory.
+    if !common_dir.starts_with(root) {
+        watcher
+            .watch(&common_dir, RecursiveMode::Recursive)
+            .map_err(|error| error.to_string())?;
+    }
+    if !git_dir.starts_with(root) && !git_dir.starts_with(&common_dir) {
         watcher
             .watch(&git_dir, RecursiveMode::Recursive)
             .map_err(|error| error.to_string())?;
@@ -1515,6 +1535,8 @@ pub fn diff_with_context(
     let literal_file = literal_path(file)?;
     let run_diff = |args: &[&str]| {
         let mut args = args.to_vec();
+        // These bytes are also used for staging and exact file snapshots.
+        args.insert(1, "--no-textconv");
         if ignore_whitespace {
             args.insert(1, "-w");
         }
@@ -1851,6 +1873,7 @@ pub fn action_with_progress(
             path,
             index,
             reverse,
+            diff,
         } => apply_hunk(
             &root,
             &path,
@@ -1860,10 +1883,10 @@ pub fn action_with_progress(
             } else {
                 HunkAction::Stage
             },
-            None,
+            &diff,
         )?,
         RepoAction::DiscardHunk { path, index, diff } => {
-            apply_hunk(&root, &path, index, HunkAction::Discard, Some(&diff))?
+            apply_hunk(&root, &path, index, HunkAction::Discard, &diff)?
         }
         RepoAction::StageLines { path, lines, diff } => {
             apply_lines(&root, &path, &lines, &diff, LineAction::Stage)?
@@ -1874,26 +1897,13 @@ pub fn action_with_progress(
         RepoAction::DiscardLines { path, lines, diff } => {
             apply_lines(&root, &path, &lines, &diff, LineAction::Discard)?
         }
-        RepoAction::UnstageFile { path } => {
-            let path = literal_path(&path)?;
-            if head(&root).is_some() {
-                git(&root, &["restore", "--staged", "--", &path])?
-            } else {
-                git(&root, &["rm", "--cached", "--", &path])?
-            }
-        }
+        RepoAction::UnstageFile { path } => unstage_files(&root, &[path])?,
         RepoAction::DiscardFile { path } => {
             let path = literal_path(&path)?;
             git(&root, &["restore", "--worktree", "--", &path])?
         }
         RepoAction::StageFiles { paths } => git_for_paths(&root, &["add"], &paths)?,
-        RepoAction::UnstageFiles { paths } => {
-            if head(&root).is_some() {
-                git_for_paths(&root, &["restore", "--staged"], &paths)?
-            } else {
-                git_for_paths(&root, &["rm", "--cached", "--quiet"], &paths)?
-            }
-        }
+        RepoAction::UnstageFiles { paths } => unstage_files(&root, &paths)?,
         RepoAction::DiscardFiles { paths } => {
             git_for_paths(&root, &["restore", "--worktree"], &paths)?
         }
@@ -2158,7 +2168,7 @@ fn apply_hunk(
     file: &str,
     index: usize,
     action: HunkAction,
-    expected_diff: Option<&str>,
+    expected_diff: &str,
 ) -> Result<Output, String> {
     let path = literal_path(file)?;
     let diff_args = match action {
@@ -2166,19 +2176,22 @@ fn apply_hunk(
             "diff",
             "--cached",
             "--no-ext-diff",
+            "--no-textconv",
             "--no-color",
             "--",
             path.as_str(),
         ],
-        _ => vec!["diff", "--no-ext-diff", "--no-color", "--", path.as_str()],
+        _ => vec![
+            "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--", path.as_str(),
+        ],
     };
     let patch = git(repo, &diff_args)?.stdout;
     if patch.len() > MAX_DIFF_BYTES {
         return Err("Diff is too large for hunk actions".to_string());
     }
     let patch = text(&patch);
-    if expected_diff.is_some_and(|expected| expected != patch) {
-        return Err("Diff changed; reopen the file before discarding this hunk".to_string());
+    if expected_diff != patch {
+        return Err("Diff changed; reopen the file before applying this hunk".to_string());
     }
     let starts: Vec<usize> = patch
         .match_indices("\n@@")
@@ -2217,11 +2230,14 @@ fn apply_lines(
             "diff",
             "--cached",
             "--no-ext-diff",
+            "--no-textconv",
             "--no-color",
             "--",
             path.as_str(),
         ],
-        _ => vec!["diff", "--no-ext-diff", "--no-color", "--", path.as_str()],
+        _ => vec![
+            "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--", path.as_str(),
+        ],
     };
     let output = git(repo, &diff_args)?;
     if output.stdout.len() > MAX_DIFF_BYTES {
@@ -2546,6 +2562,24 @@ fn git_with_input(repo: &Path, args: &[&str], input: &[u8]) -> Result<Output, St
     } else {
         Err(text(&output.stderr).trim().to_string())
     }
+}
+
+fn unstage_files(root: &Path, paths: &[String]) -> Result<Output, String> {
+    if head(root).is_none() {
+        return git_for_paths(root, &["rm", "--cached", "--quiet"], paths);
+    }
+    let mut expanded = paths.to_vec();
+    // Status represents a staged rename by its destination; restore both index entries.
+    for entry in status(root)? {
+        if entry.index == "R" && paths.contains(&entry.path) {
+            if let Some(original) = entry.original_path {
+                if !expanded.contains(&original) {
+                    expanded.push(original);
+                }
+            }
+        }
+    }
+    git_for_paths(root, &["restore", "--staged"], &expanded)
 }
 
 /// Runs `git <args> -- <paths>` in chunks so long file lists stay under Windows' command-line limit.
