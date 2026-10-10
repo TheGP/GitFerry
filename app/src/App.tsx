@@ -8,16 +8,19 @@ import { highlightDiff } from "./diffHighlight";
 import { formatCommitDate } from "./commitDate";
 import { actionStatus, describeError, operationName } from "./statusMessages";
 import { version } from "../package.json";
-import { createHunkNotes, HunkNotes } from "./HunkNote";
+import { createHunkNotes, HunkNotes, refreshHunkNotes } from "./HunkNote";
+import { parseNotesResult, resolveNote, validateNote } from "./hunkNotes";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
-import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileHighlightRows, type McpRequest, type McpConnection } from "./mcpNavigation";
+import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection } from "./mcpNavigation";
 import "./App.css";
+import { availableWorktrees, repositoryTabs, reorderRepositoryTabs, worktreeGroupKey, worktreeLabel, type Worktree } from "./worktreeTabs";
+import { parseRepositoryMetadata, repositoryMetadataCache } from "./worktreeSession";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
 type Ref = { name: string; kind: string; target: string; isHead: boolean; ahead?: number; behind?: number };
 type Commit = { hash: string; parents: string[]; subject: string; author: string; timestamp: number; decorations: string[] };
-type Repo = { refsHash?: string; path: string; name: string; branch: string; head: string | null; status: Status[]; refs: Ref[]; remotes: string[]; commits: Commit[]; hasMore: boolean; operation?: string | null; rebaseEditPause?: boolean; loading?: boolean; loadError?: string };
+type Repo = { refsHash?: string; path: string; name: string; branch: string; head: string | null; status: Status[]; refs: Ref[]; remotes: string[]; commits: Commit[]; hasMore: boolean; operation?: string | null; rebaseEditPause?: boolean; loading?: boolean; loadError?: string; commonGitDir?: string; repositoryName?: string; worktrees?: Worktree[] };
 type RepoState = { refsHash?: string; branch: string; head: string | null; status: Status[]; operation?: string | null; rebaseEditPause?: boolean };
 type SearchResult = { commits: Commit[]; hasMore: boolean };
 type Details = { hash: string; subject: string; body: string; author: string; authorEmail: string; timestamp: number; parents: string[]; files: { path: string; status: string; additions?: number | null; deletions?: number | null }[]; tree?: string; additions?: number | null; deletions?: number | null };
@@ -43,6 +46,9 @@ type ActionDialog = { title: string; description?: string; submitLabel: string; 
 const recentKey = "gitferry.recent";
 const tabsKey = "gitferry.openTabs";
 const activeKey = "gitferry.activeTab";
+const worktreeSelectionKey = "gitferry.worktreeSelection";
+const worktreeOrderKey = "gitferry.worktreeOrder";
+const worktreeMetadataKey = "gitferry.worktreeMetadata";
 const themeKey = "gitferry.theme";
 const editorKey = "gitferry.editor";
 const editorExecutableKey = "gitferry.editorExecutable";
@@ -97,9 +103,11 @@ function savedSession(): { tabs: Repo[]; activePath: string | null } {
     const stored = JSON.parse(localStorage.getItem(tabsKey) ?? "[]");
     if (!Array.isArray(stored)) return { tabs: [], activePath: null };
     const paths = [...new Set(stored.filter((path): path is string => typeof path === "string" && Boolean(path.trim())))];
+    const metadata = parseRepositoryMetadata(localStorage.getItem(worktreeMetadataKey));
     const tabs = paths.map(path => ({
+      ...metadata[repositoryKey(path)],
       path, name: path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path,
-      branch: "Loading…", head: null, status: [], refs: [], remotes: [], commits: [], hasMore: false, loading: true,
+      branch: metadata[repositoryKey(path)]?.branch ?? "Loading…", head: null, status: [], refs: [], remotes: [], commits: [], hasMore: false, loading: true,
     }));
     const selected = localStorage.getItem(activeKey);
     return { tabs, activePath: selected && paths.includes(selected) ? selected : paths[0] ?? null };
@@ -283,7 +291,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     }), { key: "key" }));
   });
   const hunkCount = createMemo(() => lines().filter(line => line.kind === "hunk").length);
-  const hunkNotes = createHunkNotes(() => props.repoPath, () => props.item.path, lines, () => (props.working && ["working", "staged", "untracked"].includes(props.item.target)) || isComparisonTarget(props.item.target));
+  const hunkNotes = createHunkNotes(() => props.repoPath, () => props.item.path, () => numberedDiffRows(lines(), props.item.target), () => (props.working && ["working", "staged", "untracked"].includes(props.item.target)) || isComparisonTarget(props.item.target), () => props.item.target);
   const [selectedLines, setSelectedLines] = createSignal<number[]>([]);
   const [selectedHunk, setSelectedHunk] = createSignal(0);
   createEffect(() => props.onSelection?.({ rows: selectedLines(), hunkIndex: hunkCount() ? selectedHunk() : null }));
@@ -380,8 +388,9 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     }
   }
   return <>
+    <Show when={hunkNotes().error}><div class="hunk-notes-error" role="alert">{hunkNotes().error}</div></Show>
     <Show when={actionable() && hunkCount()}><div class="line-selection-toolbar" data-mode={selectedLines().length ? "lines" : "hunk"}><span>{lineStageNote() || (selectedLines().length ? `${selectedLines().length} line${selectedLines().length === 1 ? "" : "s"} selected` : `Hunk ${selectedHunk() + 1} of ${hunkCount()}`)}</span><Show when={props.item.target === "working"}><ConfirmButton class="discard-selection" disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} resetKey={`${selectedHunk()}:${selectedLines().join()}`} onConfirm={() => applySelection(true)}>{selectedLines().length ? "Discard Lines" : "Discard Hunk"}</ConfirmButton></Show><button class={selectedLines().length ? "stage-lines" : "hunk-action"} disabled={props.actionBusy || props.value.truncated || fileOnlyChange()} onClick={() => applySelection(false)}>{props.item.target === "staged" ? "Unstage" : "Stage"} {selectedLines().length ? "Lines" : "Hunk"}</button></div></Show>
-    <div ref={element => diffViews.set(element, () => ({ value: props.value, item: props.item, selection: { rows: selectedLines(), hunkIndex: hunkCount() ? selectedHunk() : null } }))} class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""} ${props.aiRows?.has(index()) ? "ai-highlight" : ""}`} data-row-index={index()} data-old-line={row.oldNumber ?? undefined} data-new-line={row.newNumber ?? undefined} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
+    <div ref={element => diffViews.set(element, () => ({ value: props.value, item: props.item, selection: { rows: selectedLines(), hunkIndex: hunkCount() ? selectedHunk() : null } }))} class={`diff-content ${actionable() ? "actionable" : ""} ${hunkCount() ? "has-hunks" : ""}`} onCopy={copyDiffSelection} onPointerUp={() => { dragStart = -1; }}><For each={rows}>{(row, index) => <><HunkNotes notes={hunkNotes().matched.get(index())} row={row} /><div class={`diff-line ${row.kind} ${selectedSet().has(index()) ? "selected" : ""} ${props.aiRows?.has(index()) ? "ai-highlight" : ""}`} data-row-index={index()} data-old-line={row.oldNumber ?? undefined} data-new-line={row.newNumber ?? undefined} data-copy-prefix={row.hunkIndex >= 0 && (row.kind === "added" || row.kind === "deleted" || row.line.startsWith(" ")) ? row.line.charAt(0) : ""} onClick={event => { if (actionable() && row.hunkIndex >= 0 && !(event.target as HTMLElement).closest("button")) selectHunk(row.hunkIndex); }}>
       <Show when={changed(index())} fallback={<span class="line-number"><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></span>}><button class="line-number selectable" type="button" title="Select line for staging" aria-label={`Select ${row.kind === "added" ? "new" : "old"} line ${row.kind === "added" ? row.newNumber : row.oldNumber}`} aria-pressed={selectedSet().has(index())} onPointerDown={event => { if (event.button === 0) { dragStart = index(); dragged = false; } }} onPointerEnter={event => { if (dragStart >= 0 && index() !== dragStart && (event.buttons & 1)) { dragged = true; anchor = dragStart; setSelectedLines(selectRange(dragStart, index())); } }} onClick={event => selectLine(index(), event)}><span class="old-line">{row.oldNumber ?? ""}</span><span class="new-line">{row.newNumber ?? ""}</span></button></Show>
       <span class="line-text" title={editorOpenable() && editorLine(index()) !== null ? (isWorkingTarget(props.item.target) ? "Double-click to edit in the side editor" : "Double-click to view the file as of this commit") : undefined} onDblClick={() => openEditorAt(index())}><For each={row.parts}>{part => <span class={`${part.types.map(type => `syntax-${type}`).join(" ")} ${part.changed ? "word-change" : ""}`}>{part.text}</span>}</For></span>
     </div></>}</For></div><Show when={props.value.truncated}><div class="truncated-note">Diff preview limited to 512 KB.</div></Show>
@@ -392,12 +401,13 @@ function demoDiff(item: Choice): Diff {
   return { text: `diff --git a/${item.path} b/${item.path}\nindex 2a6d9f1..a83f140 100644\n--- a/${item.path}\n+++ b/${item.path}\n@@ -12,6 +12,9 @@ function RepositoryView() {\n   const branch = repository.branch;\n-  const loading = false;\n+  const loading = repository.isLoading;\n+  const remote = repository.remoteHost;\n+  const preview = "This long sample line checks that changed code wraps inside the diff pane instead of disappearing beyond its right edge, even when the file contains a full sentence with many words and a long identifier like RepositoryPreviewConfigurationWithRemoteTrackingEnabled";\n   return renderHistory(branch);\n }\n`, truncated: false };
 }
 
-function DiffCard(props: { item: Choice; repoPath: string; working: boolean; recent: boolean; expanded: boolean; eager: boolean; keyboardSelected: boolean; ignoreWhitespace: boolean; actionBusy: boolean; scrollRoot: HTMLElement; onSelect: () => void; onToggle: () => void; onOpenTab: () => void; onOpenEditor: (diff: Diff | null) => void; onOpenEditorLine: (line: number, marks: HunkMarks | null) => void; onAction: (operation: Operation, confirmation?: string) => void; onError: (error: string) => void }) {
+function DiffCard(props: { item: Choice; repoPath: string; working: boolean; recent: boolean; expanded: boolean; eager: boolean; keyboardSelected: boolean; ignoreWhitespace: boolean; actionBusy: boolean; scrollRoot: HTMLElement; aiHighlight?: { text: string; rows: Set<number> }; onClearHighlight: () => void; onSelect: () => void; onToggle: () => void; onOpenTab: () => void; onOpenEditor: (diff: Diff | null) => void; onOpenEditorLine: (line: number, marks: HunkMarks | null) => void; onAction: (operation: Operation, confirmation?: string) => void; onError: (error: string) => void }) {
   let element!: HTMLDivElement;
   const [value, setValue] = createSignal<Diff | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [loadError, setLoadError] = createSignal("");
   const [loadedKey, setLoadedKey] = createSignal("");
+  const aiRows = () => props.aiHighlight?.text === value()?.text ? props.aiHighlight?.rows : undefined;
   let loadId = 0;
   let fileKey = "";
   onCleanup(() => { loadId++; });
@@ -448,8 +458,8 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
       <Show when={props.item.target === "untracked"}><ConfirmButton class="row-action" disabled={props.actionBusy} onConfirm={() => props.onAction({ kind: "delete_untracked", value: { paths: [props.item.path] } })}>Delete</ConfirmButton></Show>
       <Show when={props.item.target === "working" && props.item.status !== "U"}><ConfirmButton class="row-action" disabled={props.actionBusy} onConfirm={() => props.onAction({ kind: "discard_file", value: { path: props.item.path } })}>Discard</ConfirmButton></Show>
       <Show when={props.item.target === "staged"} fallback={<button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "stage_file", value: { path: props.item.path } })}>{props.item.target === "working" && props.item.status === "U" ? "Mark resolved" : "Stage"}</button>}><button class="row-action stage" disabled={props.actionBusy} onClick={() => props.onAction({ kind: "unstage_file", value: { path: props.item.path } })}>Unstage</button></Show>
-    </span></Show><button class="summary-open-tab" title={`Open ${props.item.path} in a tab`} aria-label={`Open ${props.item.path} in a tab`} onClick={props.onOpenTab}><Icon name="external" /></button><button class="open-editor-button" title={`Open ${props.item.path} in editor`} aria-label={`Open ${props.item.path} in editor`} onClick={() => props.onOpenEditor(value())}><Icon name="code" /></button></div>
-    <Show when={props.expanded}><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() ? describeError(loadError()).summary : "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} onOpenEditor={props.onOpenEditorLine} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
+    </span></Show><Show when={aiRows()?.size}><button title="Clear AI highlights" onClick={props.onClearHighlight}>Clear AI highlights</button></Show><button class="summary-open-tab" title={`Open ${props.item.path} in a tab`} aria-label={`Open ${props.item.path} in a tab`} onClick={props.onOpenTab}><Icon name="external" /></button><button class="open-editor-button" title={`Open ${props.item.path} in editor`} aria-label={`Open ${props.item.path} in editor`} onClick={() => props.onOpenEditor(value())}><Icon name="code" /></button></div>
+    <Show when={props.expanded}><Show when={props.item.target === "working" && props.item.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show><Show when={value()} fallback={<div class="empty-note">{loadError() ? describeError(loadError()).summary : "Loading diff…"}</div>}>{current => <DiffText value={current()} item={props.item} working={props.working} ignoreWhitespace={props.ignoreWhitespace} actionBusy={props.actionBusy || loading()} repoPath={props.repoPath} aiRows={aiRows()} onOpenEditor={props.onOpenEditorLine} onAction={(operation, confirmation) => props.onAction(operation, confirmation)} />}</Show></Show>
   </div>;
 }
 
@@ -552,6 +562,7 @@ function mergeRepo(previous: Repo, update: Repo): Repo {
     refs: reuseEqual(previous.refs, update.refs, item => `${item.kind}:${item.name}`),
     status: reuseEqual(previous.status, update.status, item => item.path),
     remotes: JSON.stringify(previous.remotes) === JSON.stringify(update.remotes) ? previous.remotes : update.remotes,
+    worktrees: reuseEqual(previous.worktrees ?? [], update.worktrees ?? [], item => item.path),
   };
   const keys = new Set([...Object.keys(previous), ...Object.keys(next)]) as Set<keyof Repo>;
   return [...keys].every(key => previous[key] === next[key]) ? previous : next;
@@ -585,7 +596,19 @@ function App() {
   const [actionDialogValues, setActionDialogValues] = createSignal<Record<string, string>>({});
   const [tabs, setTabs] = createSignal<Repo[]>(restored.tabs);
   const [activePath, setActivePath] = createSignal<string | null>(restored.activePath);
+  const [worktreeSelection, setWorktreeSelection] = createSignal<Record<string, string>>((() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(worktreeSelectionKey) ?? "{}");
+      return saved && typeof saved === "object" && !Array.isArray(saved) ? Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
+    } catch { return {}; }
+  })());
   const [selected, setSelected] = createSignal("working");
+  const [worktreeOrder, setWorktreeOrder] = createSignal<Record<string, string[]>>((() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(worktreeOrderKey) ?? "{}");
+      return saved && typeof saved === "object" && !Array.isArray(saved) ? Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(path => typeof path === "string"))) : {};
+    } catch { return {}; }
+  })());
   const [details, setDetails] = createSignal<Details | null>(null);
   const [choice, setChoice] = createSignal<Choice | null>(null);
   // A file tab left open while viewing the Summary; it closes with its × or when the view changes.
@@ -706,6 +729,7 @@ function App() {
   const [canScrollTabsLeft, setCanScrollTabsLeft] = createSignal(false);
   const [canScrollTabsRight, setCanScrollTabsRight] = createSignal(false);
   const [refMenu, setRefMenu] = createSignal<{ ref: Ref; x: number; y: number } | null>(null);
+  const [fileMenu, setFileMenu] = createSignal<{ file: string; path: string; selectedText: string; x: number; y: number } | null>(null);
   const [rebasePlan, setRebasePlan] = createSignal<{ onto: string; branch: string; steps: RebaseStep[] } | null>(null);
   const [rebaseAmendMessage, setRebaseAmendMessage] = createSignal("");
   const [rebaseLoading, setRebaseLoading] = createSignal(false);
@@ -746,7 +770,9 @@ function App() {
   const [mcpError, setMcpError] = createSignal("");
   const [mcpBusy, setMcpBusy] = createSignal(false);
   const [mcpPort, setMcpPort] = createSignal(Number(localStorage.getItem("gitferry.mcpPort")) || 39847);
-  const [mcpHighlight, setMcpHighlight] = createSignal<{ repo: string; target: string; file: string; text: string; rows: Set<number> } | null>(null);
+  const [mcpHighlights, setMcpHighlights] = createSignal<{ repo: string; target: string; file: string; text: string; rows: Set<number> }[]>([]);
+  const mcpHighlight = (item: Choice | null | undefined) => item ? mcpHighlights().find(mark => mark.repo === activePath() && mark.target === item.target && mark.file === item.path) : undefined;
+  const clearMcpHighlight = (item: Choice) => setMcpHighlights(marks => marks.filter(mark => mark.repo !== activePath() || mark.target !== item.target || mark.file !== item.path));
   const [diffSelection, setDiffSelection] = createSignal<{ rows: number[]; hunkIndex: number | null }>({ rows: [], hunkIndex: null });
   const [revealedCommit, setRevealedCommit] = createSignal<{ repo: string; commit: Commit } | null>(null);
   const [scrollTop, setScrollTop] = createSignal(0);
@@ -776,15 +802,19 @@ function App() {
   let fileFinderTimer: ReturnType<typeof setTimeout> | undefined;
   let stateBusy = false;
   let navigationArea: "commits" | "files" = "commits";
-  const [tabDrag, setTabDrag] = createSignal<{ path: string; from: number; to: number; dx: number; width: number; settling: boolean } | null>(null);
+  const [tabDrag, setTabDrag] = createSignal<{ kind: "repository" | "worktree"; path: string; from: number; to: number; dx: number; width: number; settling: boolean } | null>(null);
   let suppressTabClick = false;
   let tabStrip!: HTMLDivElement;
+  let worktreeStrip!: HTMLElement;
   let commitScroll!: HTMLDivElement;
   let detailsScroll!: HTMLDivElement;
   const repo = createMemo(() => tabs().find(item => item.path === activePath()) ?? null);
+  const groupedTabs = createMemo(() => repositoryTabs(tabs(), activePath(), worktreeSelection()));
+  const selectedWorktrees = createMemo(() => repo() ? availableWorktrees(repo()!, tabs(), worktreeOrder()[worktreeGroupKey(repo()!)] ?? []) : []);
+  const repositoryActive = (item: Repo) => Boolean(repo() && worktreeGroupKey(item) === worktreeGroupKey(repo()!));
   const tabBranchVisibility = createMemo(() => {
     const seen = new Set<string>();
-    return new Map(tabs().map(item => {
+    return new Map(groupedTabs().map(item => {
       const name = item.name.toLocaleLowerCase();
       const visible = showTabBranch() || seen.has(name);
       seen.add(name);
@@ -841,6 +871,19 @@ function App() {
     if (commitScroll) commitScroll.scrollTop = 0;
     if (view?.scrollTop) requestAnimationFrame(() => { if (activePath() === path && commitScroll) { commitScroll.scrollTop = view.scrollTop; setScrollTop(commitScroll.scrollTop); } });
     saveTabs();
+  }
+  function activateRepository(path: string) {
+    const item = tabs().find(tab => tab.path === path);
+    if (!item) return;
+    const key = worktreeGroupKey(item);
+    const remembered = worktreeSelection()[key];
+    const target = availableWorktrees(item, tabs()).find(tree => repositoryKey(tree.path) === repositoryKey(remembered ?? ""))?.path ?? item.path;
+    void activateWorktree(target);
+  }
+  async function activateWorktree(path: string) {
+    const opened = tabs().find(tab => repositoryKey(tab.path) === repositoryKey(path));
+    if (opened) activateTab(opened.path);
+    else await openRepo(path);
   }
   createEffect(() => { tabs(); requestAnimationFrame(updateTabScroll); });
   createEffect(() => { activePath(); requestAnimationFrame(revealActiveTab); });
@@ -1073,8 +1116,13 @@ function App() {
     localStorage.setItem(recentKey, JSON.stringify(next));
   }
   function saveTabs() {
+    const selected = repo();
+    if (selected && worktreeSelection()[worktreeGroupKey(selected)] !== selected.path) setWorktreeSelection(current => ({ ...current, [worktreeGroupKey(selected)]: selected.path }));
     localStorage.setItem(tabsKey, JSON.stringify(tabs().map(item => item.path)));
     localStorage.setItem(activeKey, activePath() ?? "");
+    localStorage.setItem(worktreeSelectionKey, JSON.stringify(worktreeSelection()));
+    localStorage.setItem(worktreeOrderKey, JSON.stringify(worktreeOrder()));
+    localStorage.setItem(worktreeMetadataKey, JSON.stringify(repositoryMetadataCache(tabs(), parseRepositoryMetadata(localStorage.getItem(worktreeMetadataKey)))));
   }
   async function restoreRepo(path: string) {
     try {
@@ -1100,7 +1148,7 @@ function App() {
     try {
       const result = await invoke<Repo>("repo_snapshot", { path: path.trim(), offset: 0 });
       batch(() => {
-        setTabs(current => current.some(item => item.path === result.path) ? current.map(item => item.path === result.path ? result : item) : [...current, result]);
+        setTabs(current => current.some(item => repositoryKey(item.path) === repositoryKey(result.path)) ? current.map(item => repositoryKey(item.path) === repositoryKey(result.path) ? result : item) : [...current, result]);
         setActivePath(result.path); setScrollTop(0); setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
         selectWorking(); setShowOpen(false);
       });
@@ -1570,6 +1618,15 @@ function App() {
     else void hideSideEditor();
   }
   async function readSideEditorFile(path: string, file: string, commit?: string) {
+    if (commit === "untracked") commit = undefined;
+    if (commit === "staged" && !demoMode) {
+      try {
+        return fileFromSnapshotDiff(await invoke<Diff>("repo_diff", { path, target: "staged-file", file, ignoreWhitespace: false, fullContext: true }), file);
+      } catch (cause) {
+        if (path.startsWith("ssh://") && String(cause).includes("Invalid diff target")) throw new Error("This SSH agent needs updating to show staged file contents.");
+        throw cause;
+      }
+    }
     if (commit && !demoMode) return fileFromSnapshotDiff(await invoke<Diff>("repo_diff", { path, target: snapshotDiffTarget(commit.split("..").pop() ?? commit), file, ignoreWhitespace: false, fullContext: true }), file);
     if (commit && demoMode) return parseDiffLines(demoDiff({ path: file, status: "M", target: commit })).filter(row => row.newNumber !== null).map(row => row.line.slice(1)).join("\n") + "\n";
     if (demoMode) return demoDiff({ path: file, status: "M", target: "working" }).text;
@@ -1778,9 +1835,32 @@ function App() {
   }
   // A right-click opens the menu at the cursor; the ⋯ button opens it next to itself.
   function openRefMenu(ref: Ref, anchor: HTMLElement, point?: { x: number; y: number }) {
+    setFileMenu(null);
     const rect = anchor.getBoundingClientRect();
     const x = point?.x ?? rect.right - 8, y = point?.y ?? rect.top + 20;
     setRefMenu({ ref, x: Math.max(8, Math.min(x, innerWidth - 222)), y: Math.max(8, Math.min(y, innerHeight - 250)) });
+  }
+  function openFileMenu(event: MouseEvent) {
+    const element = event.target instanceof Element ? event.target : null;
+    const repository = activePath();
+    const file = element?.closest<HTMLElement>(".summary-diff-card")?.dataset.path
+      ?? (element?.closest(".file-tab") ? (choice() ?? parkedFile())?.path
+        : element?.closest(".diff-content, .diff-heading, .file-actions") ? choice()?.path : null);
+    if (!repository || !file) return;
+    event.preventDefault();
+    const selection = window.getSelection();
+    let selectedText = selection && event.currentTarget instanceof Element && event.currentTarget.contains(selection.anchorNode) && event.currentTarget.contains(selection.focusNode) ? selection.toString() : "";
+    // Reuse diff copying so selected additions/removals retain their +/- prefixes.
+    const content = element?.closest(".diff-content");
+    if (content && selectedText) {
+      const clipboardData = new DataTransfer();
+      content.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData }));
+      selectedText = clipboardData.getData("text/plain") || selectedText;
+    }
+    const separator = !repository.startsWith("ssh://") && repository.includes("\\") ? "\\" : "/";
+    setRefMenu(null);
+    setFileMenu({ file, path: `${repository.replace(/[\\/]+$/, "")}${separator}${file.replace(/\//g, separator)}`, selectedText,
+      x: Math.max(8, Math.min(event.clientX, innerWidth - 222)), y: Math.max(8, Math.min(event.clientY, innerHeight - 160)) });
   }
   function copyText(text: string) {
     // Fall back to a hidden textarea when the webview denies the async clipboard API.
@@ -1855,8 +1935,8 @@ function App() {
         ?? detailsScroll?.querySelector<HTMLElement>(".summary-diff-card:has(.file-row.keyboard-selected) .diff-content");
     const context = content ? diffViews.get(content)?.() : null;
     const value = context?.value ?? diff(), item = context?.item ?? choice(), rows = value && item ? mcpRows(value, item.target) : [];
-    const highlighted = mcpHighlight();
-    const aiRows = highlighted?.repo === activePath() && highlighted.target === item?.target && highlighted.file === item?.path && highlighted.text === value?.text ? highlighted.rows : new Set<number>();
+    const highlighted = mcpHighlight(item);
+    const aiRows = highlighted?.text === value?.text ? highlighted?.rows ?? new Set<number>() : new Set<number>();
     const selection = context?.selection ?? (choice() ? diffSelection() : { rows: [], hunkIndex: null });
     const textRows = new Map<HTMLElement, ReturnType<typeof mcpRows>>();
     const textSelection = nativeRange && nativeSelection
@@ -1900,8 +1980,23 @@ function App() {
       if (navigation && (request !== initialRequest || activePath() !== initialPath)) throw new Error("The user changed the view during this request; retry");
       if (navigation && (actionDialog() || actionBusy() || busy() || sideEditorDirty() || activeFileDraft()?.text !== activeFileDraft()?.original)) throw new Error("Finish or cancel the open dialog or operation, or save/cancel the editor changes before AI navigation");
     };
-    await valid(["open_repository", "show_branch", "reveal_change", "reveal_file"].includes(message.tool));
+    await valid(["open_repository", "close_repository", "show_branch", "reveal_change", "reveal_file"].includes(message.tool));
+    if (["close_repository", "reorder_repositories"].includes(message.tool) && tabDrag()) throw new Error("Finish dragging the repository tabs before changing them through MCP");
     if (message.tool === "get_view") return mcpView();
+    if (message.tool === "reorder_repositories") {
+      const order = a.repositories;
+      if (!Array.isArray(order) || order.length !== tabs().length) throw new Error("repositories must contain every open tab exactly once; call list_repositories again");
+      const byPath = new Map(tabs().map(tab => [repositoryKey(tab.path), tab]));
+      const ordered = order.map(path => {
+        if (typeof path !== "string") throw new Error("Invalid repository path in tab order");
+        const key = repositoryKey(path), tab = byPath.get(key);
+        if (!tab) throw new Error("Tab order contains an unknown or duplicate repository; call list_repositories again");
+        byPath.delete(key);
+        return tab;
+      });
+      setTabs(ordered); saveTabs();
+      return { repositories: ordered.map(tab => tab.path), activeRepository: activePath(), confirmed: true };
+    }
     if (message.tool === "list_repositories") {
       const open = await Promise.all(tabs().map(async tab => {
         if (tab.loading || tab.loadError) return { tabId: tab.path, path: tab.path, name: tab.name, branch: null, head: null, active: tab.path === activePath(), loading: Boolean(tab.loading), error: tab.loadError ?? null };
@@ -1910,11 +2005,17 @@ function App() {
           return { tabId: tab.path, path: tab.path, name: tab.name, branch: current.branch, head: current.head, active: tab.path === activePath(), selectedCommit: tab.path === activePath() ? selected() : tabViews.get(tab.path)?.selected ?? "working" };
         } catch (cause) { return { tabId: tab.path, path: tab.path, name: tab.name, branch: null, head: null, active: tab.path === activePath(), error: String(cause) }; }
       }));
-      return { repositories: open, recent: recent().map(path => ({ path, open: tabs().some(tab => repositoryKey(tab.path) === repositoryKey(path)) })) };
+      return { repositories: open.map(item => ({ ...item, commonGitDir: tabs().find(tab => tab.path === item.path)?.commonGitDir ?? null })), recent: recent().map(path => ({ path, open: tabs().some(tab => repositoryKey(tab.path) === repositoryKey(path)) })) };
     }
     const repository = a.repository;
     if (!repository) throw new Error("repository is required");
     let tab = tabs().find(item => repositoryKey(item.path) === repositoryKey(repository));
+    if (message.tool === "close_repository") {
+      const draft = fileDraft();
+      if (tab && draft?.repo === tab.path && draft.text !== draft.original) throw new Error(`Save or cancel the unsaved edits to ${draft.path} before closing this repository`);
+      if (tab) closeTab(tab.path);
+      return { repository: tab?.path ?? repository, closed: Boolean(tab), activeRepository: activePath(), confirmed: true };
+    }
     if (message.tool === "open_repository") {
       const current = await invoke<Repo>("repo_snapshot", { path: tab?.path ?? repository, offset: 0 });
       if (a.branch && current.branch !== a.branch) throw new Error(`Repository is on ${current.branch}, expected ${a.branch}. Open the worktree path for that branch.`);
@@ -1925,18 +2026,72 @@ function App() {
     }
     if (!tab || tab.loading || tab.loadError) throw new Error("Repository is not open and ready. Call open_repository with its path first.");
     const path = tab.path;
+    if (message.tool === "write_notes") {
+      if (!a.notes?.length || a.notes.length > 100) throw new Error("Specify 1-100 notes");
+      const entries = a.notes.map(validateNote);
+      if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error("Note ids must be unique within a request");
+      const original = await invoke<{ content: string }>("repo_read_notes", { path });
+      const parsed = parseNotesResult(original.content);
+      if (parsed.errors.length) throw new Error(`Repair existing notes before writing: ${parsed.errors.join("; ")}`);
+      const matches: { id: string; file?: string; target?: string; side?: string; line?: number; deleted?: boolean }[] = [];
+      const diffs = new Map<string, Diff>();
+      for (const entry of entries) {
+        if ("deleted" in entry) { matches.push({ id: entry.id, deleted: true }); continue; }
+        if (!entry.target) throw new Error(`Note ${entry.id}: specify target working, staged or untracked`);
+        const key = `${entry.target}\0${entry.file}`;
+        let value = diffs.get(key);
+        if (!value) {
+          if (entry.target === "untracked") {
+            const current = await invoke<RepoState>("repo_state", { path });
+            if (!current.status.some(file => file.path === entry.file && file.index === "?")) throw new Error(`Note ${entry.id}: file is not untracked`);
+            // Preview labels for binary files are not source code to which a note can attach.
+            await invoke<{ content: string }>("repo_read_file", { path, file: entry.file });
+          }
+          value = await invoke<Diff>("repo_diff", { path, target: entry.target, file: entry.file, fullContext: true });
+          diffs.set(key, value);
+        }
+        if (value.truncated) throw new Error(`Note ${entry.id}: cannot validate a truncated diff`);
+        const rows = mcpRows(value, entry.target), match = resolveNote(entry, rows, true);
+        if (match.row < 0) throw new Error(match.error ?? `Note ${entry.id}: quote not found in ${entry.file} (${entry.target})`);
+        const row = rows[match.row], side = entry.side ?? (row.kind === "deleted" ? "old" : "new");
+        const line = side === "old" ? row.oldNumber : row.newNumber;
+        if (!line) throw new Error(`Note ${entry.id}: matched row has no ${side} line number`);
+        // Save the verified location as well as the quote; repeated loop lines stay unambiguous.
+        Object.assign(entry, { side, startLine: line });
+        matches.push({ id: entry.id, file: entry.file, target: entry.target, side, line });
+      }
+      await valid();
+      if (a.validateOnly) return { repository: path, notes: matches, validated: true, written: false, confirmed: true };
+      for (const [key, value] of diffs) {
+        const [target, file] = key.split("\0");
+        const latest = await invoke<Diff>("repo_diff", { path, target, file, fullContext: true });
+        if (latest.truncated || latest.text !== value.text) throw new Error("Code changed during note validation; reread the diff and retry");
+      }
+      await valid();
+      let content = original.content.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+      if (content && !content.endsWith("\n")) content += "\n";
+      content += entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
+      const saved = await invoke<{ content: string }>("repo_save_notes", { path, content, expectedContent: original.content });
+      if (saved.content !== content) throw new Error("Notes saved, but readback differs; inspect the notes file before retrying");
+      refreshHunkNotes(path);
+      return { repository: path, notes: matches, validated: true, written: true, confirmed: true };
+    }
     if (message.tool === "reveal_file") {
       if (!a.file) throw new Error("file is required");
       if (a.branch && a.revision) throw new Error("Specify either branch or revision, not both");
       const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
       const ref = a.branch ? current.refs.find(ref => (ref.kind === "branch" || ref.kind === "remote") && ref.name === a.branch) : null;
       if (a.branch && !ref) throw new Error(`Branch ${a.branch} does not exist in this repository`);
-      const revision = ref?.target ?? (a.revision === "working" ? null : !a.revision || a.revision === "HEAD" ? current.head : a.revision);
-      if (a.revision !== "working" && !revision) throw new Error("This repository has no commit to browse; specify revision: working");
+      const workingTarget = a.revision && ["working", "staged", "untracked"].includes(a.revision) ? a.revision : null;
+      const revision = ref?.target ?? (workingTarget ? null : !a.revision || a.revision === "HEAD" ? current.head : a.revision);
+      if (!workingTarget && !revision) throw new Error("This repository has no commit to browse; specify revision: working or staged");
+      if (workingTarget === "untracked" && !current.status.some(file => file.path === a.file && file.index === "?")) throw new Error("This file is not untracked");
       const detail = revision ? await invoke<Details>("repo_commit", { path, hash: revision }) : null;
-      const content = await readSideEditorFile(path, a.file, detail?.hash);
-      const startLine = a.startLine ?? 1, endLine = a.endLine ?? startLine;
-      fileHighlightRows(content, startLine, endLine, a.quote);
+      const content = await readSideEditorFile(path, a.file, workingTarget === "staged" ? "staged" : detail?.hash);
+      if (a.ranges && (a.startLine != null || a.endLine != null || a.quote != null)) throw new Error("Do not combine ranges with startLine/endLine/quote");
+      const ranges = a.ranges ?? [{ startLine: a.startLine ?? 1, endLine: a.endLine, quote: a.quote }];
+      const selectedRows = fileRangeRows(content, ranges);
+      const startLine = ranges[0].startLine, endLine = ranges[0].endLine ?? startLine;
       await valid(true);
       setTabs(tabs => tabs.map(item => item.path === path ? mergeRepo(item, current) : item));
       activateTab(path);
@@ -1947,16 +2102,17 @@ function App() {
         void selectCommit(detail.hash);
       } else selectWorking();
       const navigationRequest = request;
-      const target: EditorTarget = { repo: path, path: a.file, commit: detail?.hash, line: startLine, marks: null, nonce: ++sideEditorNonce,
-        readOnly: true, revisionLabel: a.branch ? `${a.branch} · ${detail?.hash.slice(0, 8)}` : detail?.hash.slice(0, 8) ?? "Working tree",
-        content, annotation: { startLine, endLine, comment: a.comment } };
+      const target: EditorTarget = { repo: path, path: a.file, commit: workingTarget === "staged" || workingTarget === "untracked" ? workingTarget : detail?.hash, line: startLine, marks: null, nonce: ++sideEditorNonce,
+        readOnly: true, revisionLabel: a.branch ? `${a.branch} · ${detail?.hash.slice(0, 8)}` : detail?.hash.slice(0, 8) ?? (workingTarget === "staged" ? "Staged index" : "Working tree"),
+        content, annotation: { startLine, endLine, comment: a.comment, ranges: a.ranges } };
       await showSideEditor(target);
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
       await valid();
       if (request !== navigationRequest || activePath() !== path || sideEditor()?.nonce !== target.nonce) throw new Error("The view changed before navigation could be confirmed");
       const input = document.querySelector<HTMLTextAreaElement>(".editor-input");
-      if (!input?.readOnly || input.value !== content.replace(/\r\n?/g, "\n") || document.querySelectorAll(".editor-row.ai-highlight").length !== endLine - startLine + 1) throw new Error("GitFerry could not confirm the file and rendered highlights");
-      return { repository: path, branch: current.branch, file: a.file, revision: detail?.hash ?? "working", editor: mcpView().editor, confirmed: true };
+      const highlighted = [...document.querySelectorAll(".editor-row")].flatMap((row, index) => row.classList.contains("ai-highlight") ? [index] : []);
+      if (!input?.readOnly || input.value !== content.replace(/\r\n?/g, "\n") || highlighted.length !== selectedRows.size || highlighted.some(index => !selectedRows.has(index))) throw new Error("GitFerry could not confirm the file and rendered highlights");
+      return { repository: path, branch: current.branch, file: a.file, revision: detail?.hash ?? workingTarget ?? "working", editor: mcpView().editor, confirmed: true };
     }
     if (message.tool === "list_branches" || message.tool === "show_branch") {
       const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
@@ -2004,8 +2160,11 @@ function App() {
       // The exact diff validated above is the diff rendered below; no second read can shift its lines.
       setChoice(item); setParkedFile(null); setDiff(value); resetFileInfo(); setFileView("diff");
       shownDiffRevision = item.revision ?? "";
-      setMcpHighlight({ repo: path, target, file: a.file, text: value.text, rows: selectedRows });
-    } else setMcpHighlight(null);
+      // Keep evidence in other files, but replace this file's ranges. Bound temporary diff storage.
+      setMcpHighlights(marks => [...marks.filter(mark => mark.repo !== path || mark.target !== target || mark.file !== a.file),
+        ...(selectedRows.size ? [{ repo: path, target, file: a.file!, text: value.text, rows: selectedRows }] : [])].slice(-100));
+      if (selectedRows.size) setSummaryDiffs(previous => ({ ...previous, [summaryKey(item)]: true }));
+    }
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     await valid();
     if (request !== navigationRequest || activePath() !== path || selected() !== (detail?.hash ?? "working")) throw new Error("The view changed before navigation could be confirmed");
@@ -2157,18 +2316,39 @@ function App() {
     const next = tabs().filter(item => item.path !== path);
     batch(() => {
       setTabs(next);
+      setMcpHighlights(marks => marks.filter(mark => mark.repo !== path));
       tabViews.delete(path); pendingComparisons.delete(path); initialSelection.delete(path); updateComparison(path, () => null);
       if (activePath() === path) { setActivePath(next.length ? next[next.length - 1].path : null); setScrollTop(0); selectWorking(); }
     });
     saveTabs();
   }
+  function closeRepository(path: string) {
+    const item = tabs().find(tab => tab.path === path);
+    if (!item) return;
+    const members = tabs().filter(tab => worktreeGroupKey(tab) === worktreeGroupKey(item));
+    const paths = new Set(members.map(tab => tab.path));
+    const draft = fileDraft();
+    const editing = sideEditor();
+    if (draft && paths.has(draft.repo) && draft.text !== draft.original) {
+      openActionDialog({ title: `Close repository with unsaved edits to ${draft.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => { setFileDraft(null); closeRepository(path); } });
+      return;
+    }
+    if (editing && paths.has(editing.repo) && sideEditorDirty()) {
+      openActionDialog({ title: `Close repository with unsaved edits to ${editing.path}?`, submitLabel: "Discard and close", danger: true, fields: [], onSubmit: () => { setSideEditorDirty(false); closeRepository(path); } });
+      return;
+    }
+    batch(() => { for (const member of members) closeTab(member.path); });
+  }
   // Pointer-based dragging: native HTML drag events are swallowed by the webview folder-drop handler.
   // The dragged tab follows the pointer while the others slide aside; the order is committed on drop.
-  function startTabDrag(path: string, event: PointerEvent) {
-    if (event.button !== 0 || tabDrag() || (event.target as Element).closest(".tab-close")) return;
-    const from = tabs().findIndex(item => item.path === path);
+  function startTabDrag(path: string, event: PointerEvent, kind: "repository" | "worktree" = "repository") {
+    if (event.button !== 0 || tabDrag() || (event.target as Element).closest(".tab-close") || kind === "worktree" && busy()) return;
+    const items = kind === "worktree" ? selectedWorktrees() : groupedTabs();
+    const group = repo() ? worktreeGroupKey(repo()!) : null;
+    const stripElement = kind === "worktree" ? worktreeStrip : tabStrip;
+    const from = items.findIndex(item => item.path === path);
     if (from < 0) return;
-    const startX = event.clientX, startScroll = tabStrip.scrollLeft;
+    const startX = event.clientX, startScroll = stripElement.scrollLeft;
     let rects: { left: number; right: number }[] = [];
     let dragging = false;
     const offsetFor = (to: number) => to > from ? rects[to].right - rects[from].right : to < from ? rects[to].left - rects[from].left : 0;
@@ -2176,41 +2356,46 @@ function App() {
       if (!dragging) {
         if (Math.abs(moveEvent.clientX - startX) < 5) return;
         dragging = true;
-        rects = Array.from(tabStrip.querySelectorAll<HTMLElement>(".repo-tab")).map(element => ({ left: element.offsetLeft, right: element.offsetLeft + element.offsetWidth }));
+        rects = Array.from(stripElement.querySelectorAll<HTMLElement>(kind === "worktree" ? ".worktree-tab" : ".repo-tab")).map(element => ({ left: element.offsetLeft, right: element.offsetLeft + element.offsetWidth }));
       }
-      const strip = tabStrip.getBoundingClientRect();
-      if (moveEvent.clientX < strip.left + 30) tabStrip.scrollLeft -= 12;
-      else if (moveEvent.clientX > strip.right - 30) tabStrip.scrollLeft += 12;
+      const strip = stripElement.getBoundingClientRect();
+      if (moveEvent.clientX < strip.left + 30) stripElement.scrollLeft -= 12;
+      else if (moveEvent.clientX > strip.right - 30) stripElement.scrollLeft += 12;
       const width = rects[from].right - rects[from].left;
-      const dx = Math.min(Math.max(moveEvent.clientX - startX + tabStrip.scrollLeft - startScroll, rects[0].left - rects[from].left), rects[rects.length - 1].right - rects[from].right);
+      const dx = Math.min(Math.max(moveEvent.clientX - startX + stripElement.scrollLeft - startScroll, rects[0].left - rects[from].left), rects[rects.length - 1].right - rects[from].right);
       // Swap with a neighbour once the dragged tab's leading edge passes its middle.
       const middle = (rect: { left: number; right: number }) => (rect.left + rect.right) / 2;
       const to = from + rects.filter((rect, index) => index > from && middle(rect) < rects[from].right + dx).length - rects.filter((rect, index) => index < from && middle(rect) > rects[from].left + dx).length;
-      setTabDrag({ path, from, to, dx, width, settling: false });
+      setTabDrag({ kind, path, from, to, dx, width, settling: false });
     };
-    const stop = () => {
+    const stop = (event: PointerEvent) => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
       const drag = tabDrag();
       if (!dragging || !drag) return;
+      if (event.type === "pointercancel") { setTabDrag(null); return; }
       suppressTabClick = true;
       setTimeout(() => { suppressTabClick = false; });
       setTabDrag({ ...drag, dx: offsetFor(drag.to), settling: true });
       setTimeout(() => batch(() => {
-        const next = [...tabs()];
-        const index = next.findIndex(item => item.path === path);
-        if (index >= 0) next.splice(drag.to, 0, next.splice(index, 1)[0]);
-        setTabs(next); setTabDrag(null); saveTabs();
+        if (kind === "worktree") {
+          if (group && repo() && worktreeGroupKey(repo()!) === group) {
+            const order = items.map(item => item.path);
+            order.splice(drag.to, 0, order.splice(from, 1)[0]);
+            setWorktreeOrder(current => ({ ...current, [group]: order }));
+          }
+        } else setTabs(reorderRepositoryTabs(tabs(), path, drag.to));
+        setTabDrag(null); saveTabs();
       }), 150);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", stop);
   }
-  function tabShift(path: string, index: number) {
+  function tabShift(path: string, index: number, kind: "repository" | "worktree" = "repository") {
     const drag = tabDrag();
-    if (!drag) return undefined;
+    if (!drag || drag.kind !== kind) return undefined;
     if (drag.path === path) return `translateX(${drag.dx}px)`;
     if (drag.from < drag.to && index > drag.from && index <= drag.to) return `translateX(${-drag.width}px)`;
     if (drag.to < drag.from && index >= drag.to && index < drag.from) return `translateX(${drag.width}px)`;
@@ -2302,9 +2487,9 @@ function App() {
     const visibility = () => { if (document.visibilityState === "visible") void refreshState(); };
     const keys = (event: KeyboardEvent) => {
       if (event.key === "Escape" && sshPrompt()) { answerSshPrompt(null); return; }
-      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); setActionDialog(null); closeFileFinder(); setRebasePlan(null); setBranchMenu(false); setTabListOpen(false); setRefMenu(null); setPushMenu(false); setPullMenu(false); setMoreMenu(false); setStashMenu(false); setErrorDetails(false); return; }
+      if (event.key === "Escape") { setPaletteOpen(false); setShowOpen(false); setShowSettings(false); setActionDialog(null); closeFileFinder(); setRebasePlan(null); setBranchMenu(false); setTabListOpen(false); setRefMenu(null); setFileMenu(null); setPushMenu(false); setPullMenu(false); setMoreMenu(false); setStashMenu(false); setErrorDetails(false); return; }
       const target = event.target instanceof Element ? event.target : null;
-      const modalOpen = Boolean(sshPrompt()) || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || moreMenu() || stashMenu();
+      const modalOpen = Boolean(sshPrompt()) || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || Boolean(fileMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || moreMenu() || stashMenu();
       const editable = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !modalOpen) {
         const inCommitEditor = Boolean(target?.closest(".commit-editor textarea"));
@@ -2338,17 +2523,18 @@ function App() {
     onCleanup(() => { unlistenMcp?.(); unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize", resize); });
   });
 
-  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); } }}>
+  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); if (!event.target.closest(".file-action-popover")) setFileMenu(null); } }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
     <header class="tabbar">
-      <div class={`tab-strip ${tabDrag() ? "reordering" : ""}`} ref={tabStrip} onScroll={updateTabScroll} onWheel={event => { if (tabOverflow() && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.preventDefault(); tabStrip.scrollLeft += event.deltaY; } }}>
-      <For each={tabs()}>{(item, index) => <div style={{ transform: tabShift(item.path, index()) }} class={`repo-tab ${activePath() === item.path ? "active" : ""} ${item.loading ? "loading" : ""} ${item.loadError ? "unavailable" : ""} ${tabDrag()?.path === item.path ? `dragging ${tabDrag()!.settling ? "settling" : ""}` : ""}`} onPointerDown={event => startTabDrag(item.path, event)}>
-        <button class="tab-main" title={`${item.name} · ${item.branch}`} onClick={() => { if (!suppressTabClick) activateTab(item.path); }}><span class="tab-name">{item.name}</span><Show when={tabBranchVisibility().get(item.path)}><span class="tab-branch">{item.branch}</span></Show></button>
-        <button class="tab-close" aria-label={`Close ${tabDisplayName(item)}`} onClick={() => closeTab(item.path)}><Icon name="close" /></button>
+      <div class={`tab-strip ${tabDrag()?.kind === "repository" ? "reordering" : ""}`} ref={tabStrip} onScroll={updateTabScroll} onWheel={event => { if (tabOverflow() && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.preventDefault(); tabStrip.scrollLeft += event.deltaY; } }}>
+      <For each={groupedTabs()}>{(item, index) => <div style={{ transform: tabShift(item.path, index()) }} class={`repo-tab ${repositoryActive(item) ? "active" : ""} ${item.loading ? "loading" : ""} ${item.loadError ? "unavailable" : ""} ${tabDrag()?.kind === "repository" && tabDrag()?.path === item.path ? `dragging ${tabDrag()!.settling ? "settling" : ""}` : ""}`} onPointerDown={event => startTabDrag(item.path, event)}>
+        <button class="tab-main" title={`${item.name} · ${item.branch}`} onClick={() => { if (!suppressTabClick) activateRepository(item.path); }}><span class="tab-name">{item.name}</span><Show when={tabBranchVisibility().get(item.path)}><span class="tab-branch">{item.branch}</span></Show></button>
+        <button class="tab-close" aria-label={`Close ${tabDisplayName(item)}`} onClick={() => closeRepository(item.path)}><Icon name="close" /></button>
       </div>}</For>
-      </div><div class="tab-navigation"><Show when={tabOverflow()}><button class="tab-scroll-button" title="Scroll tabs left" aria-label="Scroll tabs left" disabled={!canScrollTabsLeft()} onClick={() => tabStrip.scrollBy({ left: -Math.max(180, tabStrip.clientWidth * .7), behavior: "smooth" })}><Icon name="left" /></button><button class="tab-scroll-button" title="Scroll tabs right" aria-label="Scroll tabs right" disabled={!canScrollTabsRight()} onClick={() => tabStrip.scrollBy({ left: Math.max(180, tabStrip.clientWidth * .7), behavior: "smooth" })}><Icon name="right" /></button><button class="tab-list-button" title="List open repositories" aria-label="List open repositories" aria-expanded={tabListOpen()} onClick={() => setTabListOpen(!tabListOpen())}><Icon name="down" /></button></Show><button class="tab-add" title="Open repository" aria-label="Open repository" onClick={() => setShowOpen(true)}><Icon name="plus" /></button><Show when={tabListOpen()}><div class="tab-list-menu"><For each={tabs()}>{item => <button class={activePath() === item.path ? "active" : ""} title={item.path} onClick={() => activateTab(item.path)}><strong>{item.name}</strong><span>{item.branch}</span></button>}</For></div></Show></div>
+      </div><div class="tab-navigation"><Show when={tabOverflow()}><button class="tab-scroll-button" title="Scroll tabs left" aria-label="Scroll tabs left" disabled={!canScrollTabsLeft()} onClick={() => tabStrip.scrollBy({ left: -Math.max(180, tabStrip.clientWidth * .7), behavior: "smooth" })}><Icon name="left" /></button><button class="tab-scroll-button" title="Scroll tabs right" aria-label="Scroll tabs right" disabled={!canScrollTabsRight()} onClick={() => tabStrip.scrollBy({ left: Math.max(180, tabStrip.clientWidth * .7), behavior: "smooth" })}><Icon name="right" /></button><button class="tab-list-button" title="List open repositories" aria-label="List open repositories" aria-expanded={tabListOpen()} onClick={() => setTabListOpen(!tabListOpen())}><Icon name="down" /></button></Show><button class="tab-add" title="Open repository" aria-label="Open repository" onClick={() => setShowOpen(true)}><Icon name="plus" /></button><Show when={tabListOpen()}><div class="tab-list-menu"><For each={groupedTabs()}>{item => <button class={repositoryActive(item) ? "active" : ""} title={item.path} onClick={() => activateRepository(item.path)}><strong>{item.name}</strong><span>{item.branch}</span></button>}</For></div></Show></div>
       <button class="settings-button" title="Settings" aria-label="Settings" onClick={() => setShowSettings(true)}><Icon name="settings" /></button>
     </header>
+    <Show when={selectedWorktrees().length > 1}><nav ref={worktreeStrip} class={`worktree-tabbar ${tabDrag()?.kind === "worktree" ? "reordering" : ""}`} aria-label="Repository worktrees"><For each={selectedWorktrees()}>{(item, index) => <button style={{ transform: tabShift(item.path, index(), "worktree") }} class={`worktree-tab ${repositoryKey(activePath() ?? "") === repositoryKey(item.path) ? "active" : ""} ${tabDrag()?.kind === "worktree" && tabDrag()?.path === item.path ? `dragging ${tabDrag()!.settling ? "settling" : ""}` : ""}`} aria-pressed={repositoryKey(activePath() ?? "") === repositoryKey(item.path)} title={item.path} disabled={busy()} onPointerDown={event => startTabDrag(item.path, event, "worktree")} onClick={() => { if (!suppressTabClick) void activateWorktree(item.path); }}><Icon name="branch" /><span class="worktree-name">{worktreeLabel(item)}</span></button>}</For></nav></Show>
     <div class="toolbar">
       <div class="toolbar-side">
         <button class="toolbar-icon" title="Toggle locations" onClick={() => setLocationsOpen(!locationsOpen())}><Icon name="sidebar" /></button>
@@ -2371,6 +2557,11 @@ function App() {
         <Show when={repoReady()}><div class="push-control"><button class="toolbar-button" title="Pull" disabled={actionBusy()} onClick={() => void runAction({ kind: "pull" })}><Icon name="pull" /></button><button class="toolbar-button push-more" title="More pull options" aria-label="More pull options" aria-expanded={pullMenu()} disabled={actionBusy()} onClick={() => setPullMenu(!pullMenu())}><ChevronDown /></button><Show when={pullMenu()}><div class="push-menu"><button title="Fetch" disabled={actionBusy()} onClick={() => void runAction({ kind: "fetch" })}>Fetch</button><button onClick={() => void runAction({ kind: "pull_merge" })}>Pull with merge</button><button onClick={() => void runAction({ kind: "pull_rebase" })}>Pull with rebase</button><p>Choose how to combine diverged branches.</p></div></Show></div><div class="push-control"><button class="toolbar-button" title="Push" disabled={actionBusy()} onClick={() => void runAction({ kind: "push" })}><Icon name="push" /></button><button class="toolbar-button push-more" title="More push options" aria-label="More push options" aria-expanded={pushMenu()} disabled={actionBusy()} onClick={() => setPushMenu(!pushMenu())}><ChevronDown /></button><Show when={pushMenu()}><div class="push-menu"><button title="Force push with lease" disabled={actionBusy()} onClick={forcePushWithLease}>Force push with lease</button><p>Push only if the remote branch still matches your tracking branch.</p></div></Show></div></Show>
       </div>
     </div>
+        <Show when={fileMenu()}>{menu => <div class="ref-action-popover file-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label={`File actions for ${menu().file}`}><div class="ref-action-title" title={menu().path}>{menu().file}</div>
+          <Show when={menu().selectedText}><button role="menuitem" onClick={() => { const text = menu().selectedText; setFileMenu(null); copyText(text); }}>Copy</button></Show>
+          <button role="menuitem" onClick={() => { const path = menu().path; setFileMenu(null); copyText(path); }}>Copy path</button>
+          <button role="menuitem" onClick={() => { const file = menu().file; setFileMenu(null); copyText(file); }}>Copy relative path</button>
+        </div>}</Show>
         <Show when={refMenu()}>{menu => <div class="ref-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label={`Actions for ${menu().ref.name}`}><div class="ref-action-title" title={menu().ref.name}>{menu().ref.name}</div>
       <button onClick={() => { const name = menu().ref.name; setRefMenu(null); copyText(name); }}>Copy {menu().ref.kind === "tag" ? "tag" : "branch"} name</button>
       <Show when={(menu().ref.kind === "branch" || menu().ref.kind === "remote") && baseBranch() && baseBranch()!.name !== menu().ref.name && !menu().ref.name.endsWith("/HEAD")}><button onClick={() => { const ref = menu().ref; setRefMenu(null); void compareWithBase(ref); }}>Compare with {baseBranch()!.name}</button></Show>
@@ -2416,7 +2607,7 @@ function App() {
             <Show when={!displayedCommits().length}><div class="empty-note">{searchBusy() ? "Searching…" : searchQuery() ? "No matching commits" : "No commits yet"}</div></Show>
           </div>
         </section><div class="splitter commits-splitter" onPointerDown={event => startResize(bottomLayout() ? "history" : "commits", event)} />
-        <section class="details-pane" onPointerDown={() => { navigationArea = "files"; }}><div class="details-tabs"><button class={`details-tab ${!choice() ? "active" : ""}`} onClick={() => { if (choice()) setParkedFile(choice()); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><Show when={choice() ?? parkedFile()}>{file => <div class={`details-tab file-tab ${choice() ? "active" : ""}`} title={file().path}><button class="details-tab-label" onClick={() => { if (!choice()) void selectFile(file()); }}>{file().path.split("/").pop()?.split("\\").pop()}</button><button class="details-tab-close" title="Close file" aria-label={`Close ${file().path}`} onClick={closeFileTab}><Icon name="close" /></button></div>}</Show></div>
+        <section class="details-pane" onContextMenu={openFileMenu} onPointerDown={() => { navigationArea = "files"; }}><div class="details-tabs"><button class={`details-tab ${!choice() ? "active" : ""}`} onClick={() => { if (choice()) setParkedFile(choice()); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><Show when={choice() ?? parkedFile()}>{file => <div class={`details-tab file-tab ${choice() ? "active" : ""}`} title={file().path}><button class="details-tab-label" onClick={() => { if (!choice()) void selectFile(file()); }}>{file().path.split("/").pop()?.split("\\").pop()}</button><button class="details-tab-close" title="Close file" aria-label={`Close ${file().path}`} onClick={closeFileTab}><Icon name="close" /></button></div>}</Show></div>
           <div class="details-scroll" ref={detailsScroll} tabIndex={0} aria-label="Changed files" onScroll={scheduleDetailsSave}>
             <Show when={selected() === "compare" && !choice() && comparison()}>{current => <div class="detail-header"><dl class="commit-facts">
                 <dt>Comparing</dt><dd>{current().head} <span class="compare-vs">since it left</span> {current().base}</dd>
@@ -2456,12 +2647,12 @@ ${details()!.body.trimEnd()}` : ""}</pre></div>
                   <Show when={group.title === "UNSTAGED" && discardable().length}><ConfirmButton class="row-action" disabled={actionBusy()} resetKey={discardable().join("\0")} onConfirm={() => void runAction({ kind: "discard_files", value: { paths: discardable() } })}>Discard All</ConfirmButton></Show>
                   <Show when={group.title === "STAGED"} fallback={<button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_files", value: { paths: paths() } })}>Stage All</button>}><button class="row-action" disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_files", value: { paths: paths() } })}>Unstage All</button></Show>
                 </>;
-              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onOpenEditorLine={(line, marks) => openSideEditor(item, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={message => setError(message, `Changes in ${item.path}`)} />}</For></>}</For></div></Show></Show>
-            <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><Show when={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target}><button title="Clear AI highlights" onClick={() => setMcpHighlight(null)}>Clear AI highlights</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
+              })()}</span></Show></div></Show><For each={group.items}>{item => <DiffCard item={item} repoPath={repo()!.path} working={selected() === "working"} recent={selected() === "working" && item.target === "untracked" && item.modified !== undefined && now() - item.modified < recentlyModifiedMs} eager={files().length <= 20} ignoreWhitespace={ignoreWhitespace()} expanded={isSummaryExpanded(item)} keyboardSelected={keyboardFileKey() === summaryKey(item)} actionBusy={actionBusy()} scrollRoot={detailsScroll} aiHighlight={mcpHighlight(item)} onClearHighlight={() => clearMcpHighlight(item)} onSelect={() => setKeyboardFileKey(summaryKey(item))} onToggle={() => { setKeyboardFileKey(summaryKey(item)); toggleSummaryDiff(item); }} onOpenTab={() => void selectFile(item)} onOpenEditor={value => void openInEditor(item, value)} onOpenEditorLine={(line, marks) => openSideEditor(item, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} onError={message => setError(message, `Changes in ${item.path}`)} />}</For></>}</For></div></Show></Show>
+            <Show when={choice()}><div class="diff-heading"><span class="diff-heading-path" title={choice()?.path}>{choice()?.path}</span><Show when={fileView() === "diff" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><button class={`full-file-toggle ${fullFile() ? "active" : ""}`} aria-pressed={fullFile()} title="Show the whole file around the changes" onClick={() => { setFullFile(value => !value); if (choice()) void selectFile(choice()!); }}>Full file</button></Show><Show when={mcpHighlight(choice())?.rows.size}><button title="Clear AI highlights" onClick={() => clearMcpHighlight(choice()!)}>Clear AI highlights</button></Show><div class="file-view-switch" aria-label="File view"><Show when={choice()?.target !== "tracked"}><button class={fileView() === "diff" ? "active" : ""} aria-pressed={fileView() === "diff"} onClick={() => openFileView("diff")}>Diff</button></Show><Show when={selected() === "working" && choice()?.status !== "D"}><button class={fileView() === "edit" ? "active" : ""} aria-pressed={fileView() === "edit"} onClick={() => void editFile(choice()!)}>Edit</button></Show><button class={fileView() === "history" ? "active" : ""} aria-pressed={fileView() === "history"} onClick={() => openFileView("history")}>History</button><button class={fileView() === "blame" ? "active" : ""} aria-pressed={fileView() === "blame"} onClick={() => openFileView("blame")}>Blame</button></div><span class="diff-heading-target">{choice()?.target === "untracked" ? "NEW FILE" : choice()?.target === "tracked" ? "TRACKED" : choice()?.target === "working" ? "UNSTAGED" : choice()?.target === "staged" ? "STAGED" : choice()!.target.slice(0, 8)}</span><button class="diff-open-editor" title={`Open ${choice()?.path} in editor`} onClick={() => void openInEditor(choice()!, diff())}>Open in editor</button></div>
               <Show when={fileView() === "diff"}>
                 <Show when={selected() === "working"}><div class="file-actions"><Show when={choice()?.target === "staged"} fallback={<button disabled={actionBusy()} onClick={() => void runAction({ kind: "stage_file", value: { path: choice()!.path } })}>{choice()?.target === "working" && choice()?.status === "U" ? "Mark resolved" : "Stage file"}</button>}><button disabled={actionBusy()} onClick={() => void runAction({ kind: "unstage_file", value: { path: choice()!.path } })}>Unstage file</button></Show><Show when={choice()?.target === "working" && choice()?.status !== "U"}><button class="danger" disabled={actionBusy()} onClick={() => void runAction({ kind: "discard_file", value: { path: choice()!.path } }, `Discard changes to ${choice()!.path}?`)}>Discard changes</button></Show></div></Show>
                 <Show when={choice()?.target === "working" && choice()?.status === "U"}><div class="diff-filter-note">Conflicted file. Edit the file or choose a side in the conflict panel, then mark it resolved.</div></Show>
-                <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it in the side editor.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} aiRows={mcpHighlight()?.repo === activePath() && mcpHighlight()?.file === choice()?.path && mcpHighlight()?.target === choice()?.target && mcpHighlight()?.text === current().text ? mcpHighlight()?.rows : undefined} onSelection={setDiffSelection} onOpenEditor={(line, marks) => openSideEditor(choice()!, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
+                <Show when={ignoreWhitespace() && choice()?.target !== "untracked"}><div class="diff-filter-note">{whitespaceNote()}</div></Show><Show when={fullFile() && !ignoreWhitespace() && selected() === "working" && choice()?.target !== "untracked" && choice()?.target !== "tracked"}><div class="diff-filter-note">Hunk and line staging is off in full-file view. Double-click a line to edit it in the side editor.</div></Show><Show when={diff()} fallback={<div class="empty-note">Loading diff…</div>}>{current => <DiffText value={current()} item={choice()!} working={selected() === "working"} ignoreWhitespace={ignoreWhitespace()} fullContext={fullFile()} actionBusy={actionBusy()} repoPath={repo()!.path} aiRows={mcpHighlight(choice())?.text === current().text ? mcpHighlight(choice())?.rows : undefined} onSelection={setDiffSelection} onOpenEditor={(line, marks) => openSideEditor(choice()!, line, marks, false)} onAction={(operation, confirmation) => void runAction(operation, confirmation)} />}</Show>
               </Show>
               <Show when={fileView() === "edit" && selected() === "working"}><div class="file-edit-view"><Show when={activeFileDraft()} fallback={<div class="empty-note">{fileEditError() || (fileEditLoading() ? "Loading file…" : "No editable file loaded")}</div>}>{draft => <><div class="file-edit-toolbar"><span>{draft().stageOnSave ? "Saving stages the whole file" : "Edits remain unstaged until you stage them"}</span><button disabled={fileEditSaving()} onClick={discardEditedFile}>Cancel</button><button class="file-edit-save" disabled={fileEditSaving() || draft().text === draft().original} onClick={() => void saveEditedFile()}>{fileEditSaving() ? "Saving…" : "Save · Ctrl+S"}</button></div><Show when={fileEditError()}>{message => <div class="file-edit-error" title={message()}>{describeError(message()).summary}</div>}</Show><textarea class="file-edit-textarea" aria-label={`Edit ${draft().path}`} spellcheck={false} disabled={fileEditSaving()} value={draft().text} onInput={event => setFileDraft(current => current ? { ...current, text: event.currentTarget.value } : current)} onKeyDown={event => { if (event.key === "Tab") { event.preventDefault(); const input = event.currentTarget; const start = input.selectionStart; const end = input.selectionEnd; input.setRangeText("  ", start, end, "end"); setFileDraft(current => current ? { ...current, text: input.value } : current); } }} /></>}</Show></div></Show>
               <Show when={fileView() === "history"}><div class="file-inspection"><div class="file-inspection-heading">File history · {inspectRevision().slice(0, 8)}</div><Show when={fileInfoError()}>{message => <div class="empty-note" title={message()}>{describeError(message()).summary}</div>}</Show><Show when={fileHistory()} fallback={<div class="empty-note">{fileInfoLoading() ? "Loading file history…" : "No file history loaded"}</div>}>{history => <><For each={history().commits}>{entry => <button class="file-history-row" title={`${entry.path} · ${entry.hash}`} onClick={() => void openHistoryCommit(entry)}><span class="file-history-subject">{entry.subject}</span><span class="file-history-meta">{entry.author} · {new Date(entry.timestamp * 1000).toLocaleDateString()} · {entry.hash.slice(0, 8)}</span></button>}</For><Show when={!history().commits.length && !fileInfoLoading()}><div class="empty-note">No committed history for this file.</div></Show><Show when={history().hasMore}><button class="load-more" disabled={fileInfoLoading()} onClick={() => void loadFileHistory(history().commits.length)}>{fileInfoLoading() ? "Loading…" : "Load more history"}</button></Show></>}</Show></div></Show>

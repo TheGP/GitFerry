@@ -1,11 +1,14 @@
+import type { NoteEntry } from "./hunkNotes";
 export type Highlight =
   | { kind: "lines"; side: "old" | "new"; startLine: number; endLine?: number | null; quote?: string | null }
   | { kind: "hunk"; hunkIndex: number; quote?: string | null };
 export type DiffRow = { line: string; kind: string; hunkIndex: number; oldNumber: number | null; newNumber: number | null };
+export type FileRange = { startLine: number; endLine?: number | null; quote?: string | null; comment?: string | null };
 export type McpRequest = { id: number; tool: string; deadline: number; arguments: {
-  repository?: string; branch?: string | null; commit?: string; file?: string | null;
+  repository?: string; repositories?: string[]; branch?: string | null; commit?: string; file?: string | null;
   parent?: string | null; query?: string; offset?: number; revision?: string | null;
-  startLine?: number; endLine?: number | null; quote?: string | null; comment?: string | null; highlights?: Highlight[];
+  startLine?: number; endLine?: number | null; quote?: string | null; comment?: string | null; highlights?: Highlight[]; ranges?: FileRange[];
+  notes?: NoteEntry[]; validateOnly?: boolean;
 } };
 export type McpConnection = { url: string; token: string };
 
@@ -54,8 +57,13 @@ export function fileFromSnapshotDiff(value: { text: string; truncated: boolean }
 }
 
 export function fileHighlightRows(content: string, startLine: number, endLine?: number | null, quote?: string | null): Set<number> {
+  return fileRangeRows(content, [{ startLine, endLine, quote }]);
+}
+
+export function fileRangeRows(content: string, ranges: FileRange[]): Set<number> {
+  if (!ranges.length || ranges.length > 100) throw new Error("Specify 1–100 file ranges");
   const rows = numberedDiffRows(content.replace(/\r\n?/g, "\n").split("\n").map(line => ({ line, kind: "", hunkIndex: -1, oldNumber: null, newNumber: null })), "untracked");
-  return highlightRows(rows, [{ kind: "lines", side: "new", startLine, endLine, quote }]);
+  return highlightRows(rows, ranges.map(range => ({ kind: "lines", side: "new", ...range })));
 }
 
 export function numberedDiffRows(rows: DiffRow[], target: string): DiffRow[] {

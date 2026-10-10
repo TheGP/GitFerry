@@ -19,6 +19,23 @@ pub struct RepoSnapshot {
     /// Fingerprint of branch, remote and tag targets; changes when any ref moves.
     #[serde(default)]
     pub refs_hash: String,
+    /// Git's shared directory identifies actual linked worktrees, independently of folder names.
+    #[serde(default)]
+    pub common_git_dir: String,
+    #[serde(default)]
+    pub repository_name: String,
+    #[serde(default)]
+    pub worktrees: Vec<WorktreeEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeEntry {
+    pub path: String,
+    pub branch: String,
+    pub head: Option<String>,
+    pub bare: bool,
+    pub prunable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,6 +434,8 @@ pub enum Request {
         path: String,
         file: String,
     },
+    ReadNotes { path: String },
+    SaveNotes { path: String, content: String, expected_content: String },
     SaveFile {
         path: String,
         file: String,

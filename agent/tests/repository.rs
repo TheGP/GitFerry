@@ -1,7 +1,7 @@
 use gitferry_agent::{
     action, action_with_progress, blame, cancel_operation, commit_details, compare, diff,
     diff_with_context, file_history, read_file, rebase_plan, save_file, search, snapshot,
-    tracked_files, watch,
+    tracked_files, watch, read_notes, save_notes,
 };
 use gitferry_proto::{RebaseStep, RepoAction, Request, Response, RpcRequest, RpcResponse};
 use std::io::Write;
@@ -219,6 +219,83 @@ fn edits_working_files_and_stages_saved_staged_files() {
     assert!(read_file(path, "file.txt")
         .unwrap_err()
         .contains("mixed line endings"));
+}
+
+#[test]
+fn notes_allow_mixed_endings_and_save_atomically_without_losing_updates() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    let path = temp.path().to_str().unwrap();
+    assert_eq!(read_notes(path).unwrap().content, "");
+    let first = "{\"id\":\"a\",\"deleted\":true}\r\n{\"id\":\"b\",\"deleted\":true}\n";
+    std::fs::create_dir(temp.path().join(".gitferry")).unwrap();
+    std::fs::write(temp.path().join(".gitferry/notes.jsonl"), first).unwrap();
+    assert_eq!(read_notes(path).unwrap().content, first);
+    assert!(read_file(path, ".gitferry/notes.jsonl").unwrap_err().contains("mixed line endings"));
+    let next = format!("{first}{{\"id\":\"c\",\"deleted\":true}}\r\n");
+    assert_eq!(save_notes(path, &next, first).unwrap().content, next.replace("\r\n", "\n"));
+    assert!(save_notes(path, first, first).unwrap_err().contains("changed since validation"));
+    let saved = read_notes(path).unwrap().content;
+    assert!(save_notes(path, "bad json\n", &saved).is_err());
+    assert_eq!(read_notes(path).unwrap().content, saved);
+    let lock = std::fs::OpenOptions::new().read(true).write(true).open(temp.path().join(".git/gitferry-notes.lock")).unwrap();
+    lock.lock().unwrap();
+    assert!(save_notes(path, first, &saved).unwrap_err().contains("lock notes"));
+    assert_eq!(read_notes(path).unwrap().content, saved);
+    drop(lock);
+    assert!(save_notes(path, first, &saved).is_ok(), "Released OS lock is reusable even while its file exists");
+    assert!(!temp.path().join(".gitferry/notes.lock").exists());
+    assert_eq!(git(temp.path(), &["diff", "--cached", "--stat"]), "");
+}
+
+#[test]
+fn notes_can_create_file_and_surface_invalid_utf8() {
+    let temp = tempfile::tempdir().unwrap();
+    git(temp.path(), &["init", "-q"]);
+    let path = temp.path().to_str().unwrap();
+    save_notes(path, "{\"id\":\"a\",\"deleted\":true}\n", "").unwrap();
+    std::fs::write(temp.path().join(".gitferry/notes.jsonl"), [0xff]).unwrap();
+    assert!(read_notes(path).unwrap_err().contains("UTF-8"));
+}
+
+#[cfg(unix)]
+#[test]
+fn notes_lock_cannot_create_a_file_through_a_dangling_symlink() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    std::fs::create_dir(repo.join(".gitferry")).unwrap();
+    let outside = temp.path().join("outside");
+    std::os::unix::fs::symlink(&outside, repo.join(".git/gitferry-notes.lock")).unwrap();
+    assert!(save_notes(repo.to_str().unwrap(), "{\"id\":\"a\",\"deleted\":true}\n", "").is_err());
+    assert!(!outside.exists());
+}
+
+#[test]
+fn staged_file_snapshot_reads_the_index_without_changing_it() {
+    for format in ["sha1", "sha256"] {
+        let temp = tempfile::tempdir().unwrap();
+        git(temp.path(), &["init", "-q", &format!("--object-format={format}")]);
+        git(temp.path(), &["config", "user.name", "Test"]);
+        git(temp.path(), &["config", "user.email", "test@example.com"]);
+        let file = temp.path().join("file.txt");
+        std::fs::write(&file, "index first\nindex last\n").unwrap();
+        git(temp.path(), &["add", "file.txt"]);
+        std::fs::write(&file, "working version\n").unwrap();
+        let path = temp.path().to_str().unwrap();
+        let before = git(temp.path(), &["ls-files", "--stage"]);
+        // Works before the first commit, for both Git object formats.
+        let result = diff_with_context(path, "staged-file", "file.txt", false, true).unwrap();
+        assert!(!result.truncated);
+        assert!(result.text.contains("+index first\n+index last\n"));
+        assert!(!result.text.contains("working version"));
+        assert_eq!(git(temp.path(), &["ls-files", "--stage"]), before);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "working version\n");
+        git(temp.path(), &["commit", "-qm", "Initial"]);
+        // An unchanged index file is still returned in full, not an empty diff.
+        assert_eq!(diff_with_context(path, "staged-file", "file.txt", false, true).unwrap().text, result.text);
+    }
 }
 
 #[test]

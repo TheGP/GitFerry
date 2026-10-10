@@ -15,7 +15,24 @@ Write a note ONLY where a reviewer would likely ask "why?":
 
 Do NOT note: renames, formatting, imports, types, simple refactors, tests, obvious code, or anything the code already makes clear. Many changes need no note; a typical task gets 0–3. When unsure, skip.
 
-Format: append one JSON object per line. Never edit or rewrite existing lines:
+## Write and verify with MCP
+
+Prefer GitFerry's `write_notes` MCP tool when the repository is open. Read `list_repositories` and `get_diff` first; use the exact checkout's canonical `tabId`, file and diff target. Never switch a branch just to attach a note.
+
+```json
+{"repository":"C:/work/my-repo","notes":[{"id":"first-scroll-loop","file":"src/view.ts","target":"staged","side":"new","startLine":42,"quote":"await scrollToNext();","note":"Wait for the viewport update before reading the next batch."}]}
+```
+
+- `target` is `working`, `staged` or `untracked`; use index line numbers for staged notes. Deletions use `side: "old"`.
+- Use separate notes for separate logical changed blocks. Anchor each to its actual behavior, not an import or an unrelated test.
+- Repeated quotes need `startLine` and `side`, or exact `before`/`after` adjacent code lines. Ambiguous or missing anchors fail the whole batch.
+- `validateOnly: true` checks without writing. Require `confirmed: true` and `written: true` when saving; inspect every returned file/target/side/line.
+- Reveal each affected file with `reveal_change` and check the visible note placement before reporting success. Validation proves the anchor, not that an unopened file was rendered.
+- The tool appends records, normalizes notes to LF, and refuses concurrent updates or malformed existing records. Same id updates a note; `{"id":"first-scroll-loop","deleted":true}` removes it.
+
+Fallback if MCP is unavailable: use a UTF-8 writer that preserves existing records and writes LF (avoid PowerShell `Add-Content`/`Out-File` defaults). Validate every JSONL record and quote location, then verify the visible result. Never treat a read error as an empty file. Do not include `.gitferry/` in commits.
+
+Format: append one JSON object per line. Preserve existing records:
 {"id":"<short-kebab-slug>","file":"<repo-relative path, forward slashes>","quote":"<distinctive code copied verbatim from ONE line of the new code>","note":"<why, not what; 1 sentence, max 25 words>"}
 
 - quote: part of a single line you added or changed, unique in the file (never `}`, `return;`, `throw error;`). For a pure deletion, quote a deleted line.

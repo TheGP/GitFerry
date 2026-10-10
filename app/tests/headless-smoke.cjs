@@ -37,6 +37,12 @@ async function click(page, selector, options) {
   await page.locator(selector).click(options);
 }
 
+async function clickWorktree(page, checkout) {
+  await page.waitForFunction(path => [...document.querySelectorAll(".worktree-tab")].some(button => button.title === path), {}, checkout);
+  const index = await page.$$eval(".worktree-tab", (buttons, path) => buttons.findIndex(button => button.title === path), checkout);
+  await click(page, `.worktree-tab:nth-child(${index + 1})`);
+}
+
 async function doubleClickDiffWord(page, lineText, word) {
   await page.waitForFunction(text => [...document.querySelectorAll(".diff-line .line-text")].some(line => line.textContent === text), {}, lineText);
   const point = await page.evaluate(({ lineText, word }) => {
@@ -191,9 +197,101 @@ async function mcp(page, tool, args = {}) {
     window.__eventCallbacks["mcp-request"]({ event: "mcp-request", payload: { id, tool, arguments: args, deadline: Date.now() + 45000 } });
   }), { tool, args });
 }
+async function exerciseFileContextMenu(page, repository) {
+  await page.evaluate(() => {
+    window.__originalClipboardWrite = navigator.clipboard.writeText;
+    navigator.clipboard.writeText = async text => { window.__copiedFileText = text; };
+    window.__fileContextListener = event => { window.__fileContextPrevented = event.defaultPrevented; };
+    document.addEventListener("contextmenu", window.__fileContextListener);
+  });
+  try {
+    await click(page, ".diff-heading-path", { button: "right" });
+    await page.waitForSelector('.file-action-popover[role="menu"]');
+    assert.equal(await page.evaluate(() => window.__fileContextPrevented), true, "File menu replaces the browser context menu");
+    await click(page, ".file-action-popover button::-p-text(Copy path)");
+    assert.equal(await page.evaluate(() => window.__copiedFileText), path.join(repository.folder, "code.txt"));
+    assert.equal(await page.$(".file-action-popover"), null);
+    await click(page, ".diff-heading-path", { button: "right" });
+    await page.keyboard.press("Escape");
+    assert.equal(await page.$(".file-action-popover"), null, "Escape dismisses the menu");
+    await click(page, ".details-tab:first-child");
+    await page.waitForSelector('.summary-diff-card[data-path="code.txt"] .diff-content');
+    await click(page, '.summary-diff-card[data-path="code.txt"] .file-path', { button: "right" });
+    await click(page, ".file-action-popover button::-p-text(Copy relative path)");
+    assert.equal(await page.evaluate(() => window.__copiedFileText), "code.txt");
+    await page.evaluate(() => {
+      const text = document.querySelector('.summary-diff-card[data-path="code.txt"] .diff-line.added .line-text');
+      const range = document.createRange(); range.selectNodeContents(text);
+      window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    });
+    await click(page, '.summary-diff-card[data-path="code.txt"] .diff-line.added .line-text', { button: "right" });
+    assert.equal(await page.$eval(".file-action-popover button:first-of-type", button => button.textContent), "Copy");
+    await click(page, ".file-action-popover button:first-of-type");
+    assert.equal(await page.evaluate(() => window.__copiedFileText), "+working cause", "Copy preserves diff prefixes after menu focus changes");
+    await click(page, '.summary-diff-card[data-path="code.txt"] .file-path', { button: "right" });
+    await click(page, ".details-tab:first-child");
+    assert.equal(await page.$(".file-action-popover"), null, "Clicking outside dismisses the menu");
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+  } finally {
+    await page.evaluate(() => {
+      navigator.clipboard.writeText = window.__originalClipboardWrite;
+      document.removeEventListener("contextmenu", window.__fileContextListener);
+    });
+  }
+  console.log("File context menu: full and relative paths, diff copying, Escape and outside dismissal passed");
+}
+async function exerciseNotes(page, repository) {
+  const file = "notes-example.txt", source = path.join(repository.folder, file);
+  const notesPath = path.join(repository.folder, ".gitferry", "notes.jsonl");
+  fs.writeFileSync(source, "scroll();\nbetween loops\nscroll();\n");
+  const note = { id: "first-loop", file, target: "untracked", quote: "scroll();", note: "Wait for the first viewport update.", startLine: 1 };
+  const binary = path.join(repository.folder, "notes-binary.bin");
+  fs.writeFileSync(binary, Buffer.from([0, 1]));
+  let invalid = await mcp(page, "write_notes", { repository: repository.folder, notes: [{ ...note, file: "notes-binary.bin", quote: "Binary file" }] });
+  assert.match(invalid.error, /Binary files/); fs.unlinkSync(binary);
+  let reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [note], validateOnly: true });
+  assert.equal(reply.error, null); assert.equal(reply.result.written, false);
+  assert.equal(reply.result.notes[0].line, 1); assert.equal(fs.existsSync(notesPath), false);
+  reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [{ ...note, startLine: undefined }] });
+  assert.match(reply.error, /ambiguous/); assert.equal(fs.existsSync(notesPath), false);
+  reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [note, { ...note, id: "bad", startLine: 2 }] });
+  assert.match(reply.error, /line 2/); assert.equal(fs.existsSync(notesPath), false, "A bad anchor rejects the whole batch");
+  reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [note, { ...note, id: "second-loop", startLine: 3, note: "Wait for the second viewport update." }] });
+  assert.equal(reply.error, null); assert.deepEqual(reply.result.notes.map(note => note.line), [1, 3]);
+  const valid = fs.readFileSync(notesPath, "utf8");
+  assert.ok(!valid.includes("\r"));
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "untracked", file });
+  assert.equal(reply.error, null);
+  await page.waitForFunction(() => document.querySelectorAll(".hunk-note").length === 2);
+  const rendered = await page.$$eval(".hunk-notes", blocks => blocks.map(block => block.nextElementSibling.dataset.newLine));
+  assert.deepEqual(rendered, ["1", "3"], "Notes appear over their separate loops, not an import");
+  fs.writeFileSync(notesPath, valid.replace(/\n$/, "\r\n") + "bad json\n");
+  await page.waitForFunction(() => document.querySelector(".hunk-notes-error")?.textContent.includes("Notes line 3"));
+  assert.equal(await page.$$eval(".hunk-note", notes => notes.length), 2);
+  fs.writeFileSync(notesPath, Buffer.from([0xff]));
+  await page.waitForFunction(() => document.querySelector(".hunk-notes-error")?.textContent.includes("UTF-8"));
+  assert.equal(await page.$$eval(".hunk-note", notes => notes.length), 2, "Read failure retains previously loaded notes");
+  fs.writeFileSync(notesPath, valid.replace(/\n/g, "\r\n"));
+  await page.waitForFunction(() => !document.querySelector(".hunk-notes-error"));
+  git(repository.folder, "add", file);
+  fs.writeFileSync(source, "working only\nbetween loops\nscroll();\n");
+  reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [{ ...note, target: "staged" }] });
+  assert.equal(reply.error, null); assert.equal(reply.result.notes[0].target, "staged");
+  assert.ok(!fs.readFileSync(notesPath, "utf8").includes("\r"), "Writer normalizes earlier CRLF records too");
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "staged", file });
+  assert.equal(reply.error, null);
+  await page.waitForFunction(() => document.querySelector(".hunk-note")?.textContent.includes("first viewport"));
+  reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [{ id: "first-loop", deleted: true }, { id: "second-loop", deleted: true }] });
+  assert.equal(reply.error, null);
+  await page.waitForFunction(() => !document.querySelector(".hunk-note"));
+  git(repository.folder, "restore", "--staged", file);
+  fs.unlinkSync(source); fs.unlinkSync(notesPath); fs.rmdirSync(path.dirname(notesPath));
+}
+
 async function exerciseMcp(page, repository, restore) {
   let reply = await mcp(page, "open_repository", { repository: repository.folder, branch: "main" });
   assert.equal(reply.error, null);
+  await exerciseNotes(page, repository);
   await mcp(page, "open_repository", { repository: repository.worktree, branch: "topic" });
   reply = await mcp(page, "list_repositories");
   assert.equal(reply.result.repositories.find(tab => tab.path === repository.folder).branch, "main");
@@ -205,6 +303,7 @@ async function exerciseMcp(page, repository, restore) {
   reply = await mcp(page, "list_repositories");
   assert.equal(reply.result.repositories.find(tab => tab.path === repository.folder).head, git(repository.folder, "rev-parse", "HEAD"));
   await click(page, '.tab-main[title^="mcp ·"]');
+  await clickWorktree(page, repository.folder);
   await page.waitForFunction(() => document.querySelector(".commit-scroll")?.textContent.includes("External enumeration change"));
   await mcp(page, "open_repository", { repository: repository.worktree });
   fs.writeFileSync(path.join(repository.folder, "external.txt"), "external reveal\n");
@@ -217,12 +316,12 @@ async function exerciseMcp(page, repository, restore) {
   await click(page, ".commit-actions button::-p-text(Reset hard)");
   await page.waitForSelector(".action-dialog");
   const heads = [repository.folder, repository.worktree].map(folder => git(folder, "rev-parse", "HEAD"));
-  for (const tool of ["open_repository", "show_branch", "reveal_change", "reveal_file"]) {
+  for (const tool of ["open_repository", "close_repository", "show_branch", "reveal_change", "reveal_file"]) {
     reply = await mcp(page, tool, { repository: repository.worktree, branch: "topic", commit: repository.cause });
     assert.match(reply.error, /dialog/, `${tool} must not navigate while a confirmation is open`);
   }
   // Simulate asynchronous navigation already started before the dialog appeared.
-  await page.evaluate(() => document.querySelector('.tab-main[title^="mcp-topic"]')?.click());
+  await page.evaluate(path => [...document.querySelectorAll(".worktree-tab")].find(button => button.title === path)?.click(), repository.worktree);
   await submitActionDialog(page);
   await page.waitForFunction(() => document.querySelector(".error-bar")?.textContent.includes("Repository changed"));
   assert.deepEqual([repository.folder, repository.worktree].map(folder => git(folder, "rev-parse", "HEAD")), heads, "A confirmation from another tab must not execute");
@@ -279,6 +378,9 @@ async function exerciseMcp(page, repository, restore) {
   reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "working", file: "code.txt", highlights: [{ kind: "lines", side: "new", startLine: 2, quote: "working cause" }] });
   assert.equal(reply.error, null);
   assert.equal(await page.$$eval(".diff-line.ai-highlight.selected", rows => rows.length), 0, "AI highlights never select lines for staging");
+  await exerciseFileContextMenu(page, repository);
+  await click(page, '.summary-diff-card[data-path="code.txt"] .summary-open-tab');
+  await page.waitForSelector(".diff-line.added .line-number.selectable");
   await clickChangedLine(page, "+working cause");
   reply = await mcp(page, "get_view");
   assert.ok(reply.result.selection.lines.some(row => row.newNumber === 2));
@@ -307,6 +409,62 @@ async function exerciseMcp(page, repository, restore) {
   await click(page, ".editor-input");
   assert.equal(await page.$eval(".editor-input", input => document.activeElement === input), true, "The editor still accepts focus when clicked");
   await click(page, ".editor-tab-close");
+  // AI evidence follows the index, even if the same file has newer unstaged edits.
+  await click(page, ".details-tab:first-child");
+  fs.writeFileSync(path.join(repository.folder, "staged-extra.txt"), "first staged line\nsecond staged line\n");
+  git(repository.folder, "add", "code.txt", "staged-extra.txt");
+  fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\nunstaged cause\nlast\n");
+  const stagedState = { index: git(repository.folder, "diff", "--cached"), work: git(repository.folder, "diff"), status: git(repository.folder, "status", "--porcelain") };
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "staged", file: "code.txt" });
+  assert.equal(reply.error, null);
+  await click(page, ".details-tab:first-child");
+  await click(page, '.summary-diff-card[data-path="code.txt"][data-target="staged"] .file-row');
+  assert.equal(await page.$eval('.summary-diff-card[data-path="code.txt"][data-target="staged"] .file-row', row => row.getAttribute("aria-expanded")), "false");
+  reply = await mcp(page, "get_diff", { repository: repository.folder, commit: "staged", file: "code.txt" });
+  assert.ok(reply.result.rows.some(row => row.newNumber === 2 && row.line === "+working cause"));
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "staged", file: "code.txt", highlights: [
+    { kind: "lines", side: "old", startLine: 2, quote: "new cause" },
+    { kind: "lines", side: "new", startLine: 2, quote: "working cause" },
+  ] });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.confirmed, true);
+  assert.equal(reply.result.target, "staged");
+  assert.equal(reply.result.highlights.length, 2);
+  reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "staged", file: "staged-extra.txt", highlights: [{ kind: "hunk", hunkIndex: 0, quote: "second staged line" }] });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.confirmed, true);
+  const extraHighlightCount = reply.result.highlights.length;
+  await click(page, ".details-tab:first-child");
+  await page.waitForSelector('.summary-diff-card[data-path="staged-extra.txt"] .diff-line.ai-highlight');
+  const stagedCode = '.summary-diff-card[data-path="code.txt"][data-target="staged"]';
+  assert.equal(await page.$$eval(`${stagedCode} .diff-line.ai-highlight`, rows => rows.length), 2, "Summary retains the earlier file's AI highlights and expands it");
+  assert.equal(await page.$$eval('.summary-diff-card[data-target="working"] .diff-line.ai-highlight', rows => rows.length), 0, "Staged highlights do not bleed into newer working edits");
+  await click(page, `${stagedCode} .file-row`);
+  assert.equal(await page.$$eval(`${stagedCode} .diff-line.ai-highlight`, rows => rows.length), 0, "A collapsed file has no rendered highlights");
+  await click(page, `${stagedCode} .file-row`);
+  reply = await mcp(page, "get_view");
+  assert.equal(reply.result.target, "staged");
+  assert.equal(reply.result.highlights.length, 2);
+  assert.equal(await page.$$eval(".diff-line.ai-highlight.selected", rows => rows.length), 0, "Evidence does not select staged lines for unstaging");
+  await page.screenshot({ path: path.join(screenshots, "mcp-staged-highlights.png") });
+  await click(page, `${stagedCode} button[title='Clear AI highlights']`);
+  assert.equal(await page.$$eval(`${stagedCode} .diff-line.ai-highlight`, rows => rows.length), 0);
+  assert.equal(await page.$$eval('.summary-diff-card[data-path="staged-extra.txt"] .diff-line.ai-highlight', rows => rows.length), extraHighlightCount, "Clearing one file leaves other evidence intact");
+  assert.deepEqual({ index: git(repository.folder, "diff", "--cached"), work: git(repository.folder, "diff"), status: git(repository.folder, "status", "--porcelain") }, stagedState, "Highlighting and clearing never change the index or working files");
+  await mcp(page, "reveal_change", { repository: repository.folder, commit: "staged", file: "code.txt", highlights: [{ kind: "lines", side: "new", startLine: 2, quote: "working cause" }] });
+  fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\nchanged staged cause\nlast\n");
+  git(repository.folder, "add", "code.txt");
+  fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\nunstaged cause\nlast\n");
+  await shortcut(page, "r");
+  await page.waitForFunction(() => [...document.querySelectorAll(".line-text")].some(row => row.textContent === "changed staged cause"));
+  assert.equal(await page.$$eval(".diff-line.ai-highlight", rows => rows.length), 0, "A changed index hides stale evidence");
+  await click(page, ".details-tab:first-child");
+  await page.waitForFunction(() => [...document.querySelectorAll('.summary-diff-card[data-target="staged"] .line-text')].some(row => row.textContent === "changed staged cause"));
+  assert.equal(await page.$$eval(`${stagedCode} .diff-line.ai-highlight`, rows => rows.length), 0);
+  assert.equal(await page.$$eval('.summary-diff-card[data-path="staged-extra.txt"] .diff-line.ai-highlight', rows => rows.length), extraHighlightCount);
+  git(repository.folder, "restore", "--staged", "code.txt", "staged-extra.txt");
+  fs.unlinkSync(path.join(repository.folder, "staged-extra.txt"));
+  fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\nworking cause\nlast\n");
   reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: repository.cause, file: "code.txt" });
   assert.equal(reply.error, null);
   await doubleClickDiffWord(page, "new cause", "cause");
@@ -324,6 +482,21 @@ async function exerciseMcp(page, repository, restore) {
   assert.equal(await page.$eval(".editor-annotation p", note => note.textContent), comment);
   assert.equal((await mcp(page, "get_view")).result.editor.annotation.startLine, 2);
   await page.screenshot({ path: path.join(screenshots, "mcp-unchanged-file.png") });
+  const ranges = [{ startLine: 1, quote: "first", comment: "The setup." }, { startLine: 3, quote: "last", comment: "The final step." }, { startLine: 3, comment: "Overlapping evidence." }];
+  reply = await mcp(page, "reveal_file", { repository: repository.folder, revision: secondParent, file: "code.txt", ranges });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.confirmed, true);
+  assert.deepEqual(reply.result.editor.annotation.ranges, ranges);
+  assert.deepEqual(await page.$$eval(".editor-row.ai-highlight .editor-line-number", rows => rows.map(row => row.textContent)), ["1", "3"], "Only exact ranges are highlighted, without the gap or duplicate overlaps");
+  assert.deepEqual(await page.$$eval(".editor-annotation-range p", notes => notes.map(note => note.textContent)), ranges.map(range => range.comment));
+  await click(page, ".editor-annotation-range:nth-child(3) button");
+  await page.waitForFunction(() => document.querySelector(".editor-status")?.textContent.includes("Ln 3"));
+  await page.screenshot({ path: path.join(screenshots, "mcp-multiple-file-ranges.png") });
+  for (const bad of [[{ startLine: 1 }, { startLine: 3, quote: "wrong" }], [{ startLine: 1 }, { startLine: 4 }], []]) {
+    reply = await mcp(page, "reveal_file", { repository: repository.folder, revision: "working", file: "code.txt", ranges: bad });
+    assert.ok(reply.error);
+    assert.deepEqual((await mcp(page, "get_view")).result.editor.annotation.ranges, ranges, "An invalid later range must preserve all previous highlights");
+  }
   for (const args of [{ quote: "wrong code" }, { startLine: 4, endLine: 4 }, { file: "missing.txt" }, { branch: "missing-branch" }]) {
     reply = await mcp(page, "reveal_file", { repository: repository.folder, branch: "topic", file: "code.txt", startLine: 2, ...args });
     assert.ok(reply.error, "Invalid file evidence must fail");
@@ -338,6 +511,29 @@ async function exerciseMcp(page, repository, restore) {
   assert.equal(await page.$eval(".editor-input", input => input.readOnly), true);
   assert.deepEqual({ head: git(repository.folder, "rev-parse", "HEAD"), status: git(repository.folder, "status", "--porcelain"), file: fs.readFileSync(path.join(repository.folder, "code.txt"), "utf8") }, beforeFileReveal);
   await click(page, ".editor-tab-close");
+  // The entire staged file is a snapshot, including lines omitted from its ordinary diff.
+  git(repository.folder, "add", "code.txt");
+  fs.writeFileSync(path.join(repository.folder, "code.txt"), "newer working file\n");
+  const stagedFileState = { index: git(repository.folder, "ls-files", "--stage"), work: git(repository.folder, "diff") };
+  reply = await mcp(page, "reveal_file", { repository: repository.folder, revision: "staged", file: "code.txt", ranges: [{ startLine: 1, comment: "Unchanged context in the index." }, { startLine: 3, quote: "last", comment: "Another unchanged line." }] });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.confirmed, true);
+  assert.equal(reply.result.revision, "staged");
+  assert.equal((await mcp(page, "get_view")).result.editor.revision, "staged");
+  assert.equal(await page.$eval(".editor-input", input => input.value), "first\nworking cause\nlast\n");
+  assert.deepEqual(await page.$$eval(".editor-row.ai-highlight .editor-line-number", rows => rows.map(row => row.textContent)), ["1", "3"]);
+  assert.match(await page.$eval(".editor-commit", label => label.textContent), /Staged index/);
+  assert.deepEqual({ index: git(repository.folder, "ls-files", "--stage"), work: git(repository.folder, "diff") }, stagedFileState, "Revealing staged ranges does not change the index or files");
+  await click(page, ".editor-tab-close");
+  git(repository.folder, "restore", "--staged", "code.txt");
+  fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\nworking cause\nlast\n");
+  fs.writeFileSync(path.join(repository.folder, "untracked-evidence.txt"), "new first\nnew second\n");
+  reply = await mcp(page, "reveal_file", { repository: repository.folder, revision: "untracked", file: "untracked-evidence.txt", ranges: [{ startLine: 2, quote: "new second" }] });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.revision, "untracked");
+  assert.equal((await mcp(page, "get_view")).result.editor.revision, "untracked");
+  await click(page, ".editor-tab-close");
+  fs.unlinkSync(path.join(repository.folder, "untracked-evidence.txt"));
   reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "working", file: "code.txt", highlights: [{ kind: "lines", side: "new", startLine: 2, quote: "working cause" }] });
   assert.equal(reply.error, null);
   fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\ndifferent content\nlast\n");
@@ -348,9 +544,54 @@ async function exerciseMcp(page, repository, restore) {
     throw new Error(`${error.message}: view=${JSON.stringify((await mcp(page, "get_view")).result)} text=${await page.$eval(".details-pane", pane => pane.textContent)}`);
   }
   assert.equal(await page.$$eval(".diff-line.ai-highlight", rows => rows.length), 0, "Changed diffs clear stale emphasis");
-  await mcp(page, "open_repository", { repository: restore, branch: "main" });
-  await click(page, "button[aria-label='Close mcp-topic']");
-  await click(page, "button[aria-label='Close mcp']");
+  const originalOrder = (await mcp(page, "list_repositories")).result.repositories.map(tab => tab.tabId);
+  const previousView = (await mcp(page, "get_view")).result;
+  const reversed = [...originalOrder].reverse();
+  reply = await mcp(page, "reorder_repositories", { repositories: reversed });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.confirmed, true);
+  assert.deepEqual(reply.result.repositories, reversed);
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("gitferry.openTabs"))), reversed, "Tab order is persisted for restart");
+  const reorderedView = (await mcp(page, "get_view")).result;
+  assert.deepEqual([reorderedView.repository, reorderedView.commit, reorderedView.file], [previousView.repository, previousView.commit, previousView.file], "Moving tabs preserves their active selection");
+  for (const order of [reversed.slice(1), [reversed[0], reversed[0], ...reversed.slice(2)], [path.join(sandbox, "not-open"), ...reversed.slice(1)]]) {
+    reply = await mcp(page, "reorder_repositories", { repositories: order });
+    assert.ok(reply.error, "Incomplete, duplicate, or unknown tab orders must fail");
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("gitferry.openTabs"))), reversed, "Invalid orders do not partially move tabs");
+  }
+  await page.evaluate(() => [...document.querySelectorAll(".file-view-switch button")].find(button => button.textContent.trim() === "Edit")?.click());
+  await page.waitForSelector('.file-edit-textarea[aria-label="Edit code.txt"]');
+  const originalText = await page.$eval(".file-edit-textarea", input => input.value);
+  await page.locator(".file-edit-textarea").fill(originalText + "unsaved MCP draft\n");
+  reply = await mcp(page, "reorder_repositories", { repositories: originalOrder });
+  assert.equal(reply.error, null, "Reordering is allowed with unsaved edits");
+  assert.equal(await page.$eval(".file-edit-textarea", input => input.value), originalText + "unsaved MCP draft\n");
+  reply = await mcp(page, "close_repository", { repository: repository.folder });
+  assert.match(reply.error, /editor changes|unsaved/i);
+  await click(page, '.tab-main[title^="small ·"]');
+  reply = await mcp(page, "close_repository", { repository: repository.folder });
+  assert.match(reply.error, /unsaved/, "Inactive drafts must prevent closing their repository too");
+  assert.equal(await page.$(".action-dialog"), null, "MCP must refuse, not open a discard dialog");
+  assert.equal(fs.readFileSync(path.join(repository.folder, "code.txt"), "utf8"), "first\ndifferent content\nlast\n");
+  await click(page, '.tab-main[title^="mcp ·"]');
+  await clickWorktree(page, repository.folder);
+  await click(page, '.summary-diff-card[data-path="code.txt"] .summary-open-tab');
+  await page.evaluate(() => [...document.querySelectorAll(".file-view-switch button")].find(button => button.textContent.trim() === "Edit")?.click());
+  await page.waitForSelector('.file-edit-textarea[aria-label="Edit code.txt"]');
+  assert.equal(await page.$eval(".file-edit-textarea", input => input.value), originalText + "unsaved MCP draft\n", "Refusing an inactive close preserves its draft");
+  await page.locator(".file-edit-textarea").fill(originalText);
+  reply = await mcp(page, "close_repository", { repository: repository.worktree });
+  assert.equal(reply.result.closed, true);
+  assert.equal(reply.result.activeRepository, repository.folder, "Closing an inactive tab preserves the active repository");
+  reply = await mcp(page, "close_repository", { repository: repository.folder });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.confirmed, true);
+  assert.equal(reply.result.closed, true);
+  assert.equal(reply.result.activeRepository, restore);
+  reply = await mcp(page, "close_repository", { repository: alias });
+  assert.equal(reply.result.closed, false, "Repeated close is idempotent");
+  assert.equal(reply.result.confirmed, true);
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("gitferry.openTabs"))), originalOrder.filter(tab => ![repository.folder, repository.worktree].includes(tab)), "Closed tabs are absent from the saved session");
   console.log("MCP navigation: branch identity, tab reuse, old/new lines, hunks, old history, code search, selection and stale highlights passed");
 }
 
@@ -544,6 +785,8 @@ async function bridge(command, args) {
     repo_tracked_files: ["tracked_files", { path: args.path, query: args.query, limit: 100 }],
     repo_diff: ["diff", { path: args.path, target: args.target, file: args.file, ignore_whitespace: args.ignoreWhitespace ?? false, full_context: args.fullContext ?? false }],
     repo_read_file: ["read_file", { path: args.path, file: args.file }],
+    repo_read_notes: ["read_notes", { path: args.path }],
+    repo_save_notes: ["save_notes", { path: args.path, content: args.content, expected_content: args.expectedContent }],
     repo_save_file: ["save_file", { path: args.path, file: args.file, content: args.content, expected_content: args.expectedContent, stage: args.stage }],
     repo_action: ["action", { path: args.path, action: args.operation, cancel_token: args.cancelToken }],
     repo_cancel: ["cancel", { token: args.token }],

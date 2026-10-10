@@ -140,6 +140,7 @@ struct Connection {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
+    legacy_notes: bool,
 }
 
 impl Connection {
@@ -186,6 +187,7 @@ impl Connection {
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
+            legacy_notes: false,
         };
         // The first line arrives once ssh has signed in.
         let arch = session.read_line();
@@ -245,6 +247,14 @@ impl Connection {
         request: Request,
         progress: &mut impl FnMut(&str),
     ) -> Result<Response, String> {
+        let notes_path = match &request { Request::ReadNotes { path } => Some(path.clone()), _ => None };
+        if self.legacy_notes && matches!(request, Request::SaveNotes { .. }) {
+            return Ok(Response::Error("Update this host's bundled SSH agent to write validated notes".into()));
+        }
+        let request = if self.legacy_notes {
+            notes_path.as_ref().map(|path| Request::ReadFile { path: path.clone(), file: ".gitferry/notes.jsonl".into() }).unwrap_or(request)
+        } else { request };
+        let writing_notes = matches!(request, Request::SaveNotes { .. });
         let id = self.next_id;
         self.next_id += 1;
         serde_json::to_writer(&mut self.stdin, &RpcRequest { id, request })
@@ -257,10 +267,18 @@ impl Connection {
             let response: RpcResponse = serde_json::from_str(&self.read_line()?)
                 .map_err(|error| format!("Invalid remote response: {error}"))?;
             if response.id != id {
+                // Older agents return id 0 for an unknown request variant. Keep the connection
+                // and remember the fallback, rather than reconnecting on every notes poll.
+                if response.id == 0 && matches!(&response.response, Response::Error(error) if error.contains("unknown variant") && (error.contains("`read_notes`") || error.contains("`save_notes`"))) {
+                    self.legacy_notes = true;
+                    if let Some(path) = notes_path { return self.call(Request::ReadNotes { path }, progress); }
+                    if writing_notes { return Ok(Response::Error("Update this host's bundled SSH agent to write validated notes".into())); }
+                }
                 return Err("Remote response ID mismatch".to_string());
             }
             match response.response {
                 Response::Progress(message) => progress(&message),
+                Response::Error(error) if self.legacy_notes && notes_path.is_some() && error.contains("(os error 2)") => return Ok(Response::EditableFile(gitferry_proto::EditableFile { content: String::new() })),
                 other => return Ok(other),
             }
         }

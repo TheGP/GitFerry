@@ -1,4 +1,5 @@
-import { createEffect, createMemo, createSignal, Index, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show } from "solid-js";
+import type { FileRange } from "./mcpNavigation";
 import { highlightFileLines } from "./diffHighlight";
 import { describeError } from "./statusMessages";
 import "./fileEditor.css";
@@ -7,7 +8,7 @@ import "./fileEditor.css";
 export type HunkMarks = { added: number[]; removed: number[] };
 /** What to open: a file, the line to put the caret on and optionally the hunk to highlight. Without `commit` it is the
  * editable working-tree file; with it, the file as of that diff target (a commit or a comparison), read-only. An empty path is an empty editor. */
-export type EditorTarget = { repo: string; path: string; commit?: string; line: number; marks: HunkMarks | null; nonce: number; focus?: boolean; readOnly?: boolean; revisionLabel?: string; content?: string; annotation?: { startLine: number; endLine: number; comment?: string | null } };
+export type EditorTarget = { repo: string; path: string; commit?: string; line: number; marks: HunkMarks | null; nonce: number; focus?: boolean; readOnly?: boolean; revisionLabel?: string; content?: string; annotation?: { startLine: number; endLine: number; comment?: string | null; ranges?: FileRange[] } };
 type EditorDoc = { source: string; original: string; text: string; newline: "\n" | "\r\n" | "\r" };
 
 const newlineOf = (content: string): EditorDoc["newline"] => content.includes("\r\n") ? "\r\n" : content.includes("\r") ? "\r" : "\n";
@@ -105,11 +106,11 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     finally { if (id === loadId) setLoading(false); }
   }
   // Scrolls the target line to the upper third, puts the caret at its start and highlights the hunk.
-  function reveal() {
+  function reveal(requestedLine = props.target.line) {
     const text = doc()?.text;
     if (text === undefined) return;
     // Line 0 asks for the first conflict (or the top of the file).
-    const line = Math.max(1, Math.min(props.target.line || (conflicts()[0]?.start ?? 0) + 1, lines().length));
+    const line = Math.max(1, Math.min(requestedLine || (conflicts()[0]?.start ?? 0) + 1, lines().length));
     const target = props.target.marks;
     // A removal at the very end of the file marks the last line.
     setMarks(target && { added: new Set(target.added), removed: new Set(target.removed.map(item => Math.min(item, lines().length))) });
@@ -225,7 +226,8 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
 
   const isAdded = (index: number) => Boolean(marks()?.added.has(index + 1));
   const removedAbove = (index: number) => Boolean(marks()?.removed.has(index + 1));
-  const isHighlighted = (index: number) => Boolean(props.target.annotation && index + 1 >= props.target.annotation.startLine && index + 1 <= props.target.annotation.endLine);
+  const annotationRanges = () => props.target.annotation?.ranges ?? (props.target.annotation ? [props.target.annotation] : []);
+  const isHighlighted = (index: number) => annotationRanges().some(range => index + 1 >= range.startLine && index + 1 <= (range.endLine ?? range.startLine));
   return <>
     <div class="splitter editor-splitter" onPointerDown={event => props.onResize(event)} />
     <aside class="editor-pane" style={{ width: `${props.width}px` }} aria-label={shown() ? `Editor for ${props.target.path}` : "Editor"}>
@@ -233,7 +235,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
         <div class="editor-tabs-actions"><Show when={shown() && !readOnly() && conflicts().length}><button class="editor-conflict-count" title="Go to the next conflict" onClick={nextConflict}>{conflicts().length} conflict{conflicts().length === 1 ? "" : "s"}</button></Show><Show when={shown() && props.conflicted && !readOnly()}><button class="editor-mark-resolved" disabled={saving()} title="Save and stage the file as resolved" onClick={() => void markResolved()}>Mark resolved</button></Show><Show when={shown()}><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit ?? "working tree"}`}>{revisionLabel()} · read-only</span></Show></Show></div></div>
       <Show when={!shown()}><div class="editor-empty">Double-click a line in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
       <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
-      <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · Lines {annotation().startLine}{annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show></section>}</Show>
+      <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · {annotationRanges().length > 1 ? `${annotationRanges().length} ranges` : `Lines ${annotation().startLine}${annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}`}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show><Show when={annotation().ranges}><For each={annotation().ranges}>{range => <div class="editor-annotation-range"><button title="Go to highlighted lines" onClick={() => reveal(range.startLine)}>Lines {range.startLine}{(range.endLine ?? range.startLine) !== range.startLine ? `–${range.endLine}` : ""}</button><Show when={range.comment}><p>{range.comment}</p></Show></div>}</For></Show></section>}</Show>
       <Show when={shown() && error()}>{message => <div class="editor-error" title={message()}>{describeError(message()).summary}<Show when={describeError(message()).help}>{help => <p>{help()}</p>}</Show></div>}</Show>
       <div class="editor-scroll" ref={scroller} style={{ display: shown() ? undefined : "none" }}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>

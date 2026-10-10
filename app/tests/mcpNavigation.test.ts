@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileHighlightRows, type DiffRow } from "../src/mcpNavigation.ts";
+import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileHighlightRows, fileRangeRows, type DiffRow } from "../src/mcpNavigation.ts";
 
 const rows: DiffRow[] = [
   { line: "@@ -10,2 +10,2 @@", kind: "hunk", hunkIndex: 0, oldNumber: null, newNumber: null },
@@ -69,4 +69,12 @@ test("file highlights validate quotes and exclude the trailing display row", () 
   assert.throws(() => fileHighlightRows("first\n", 2), /fully present/);
   assert.throws(() => fileHighlightRows("", 1), /fully present/);
   assert.throws(() => fileHighlightRows("retry\n", 1, 1, "wrong"), /quote/);
+});
+test("file ranges keep gaps, deduplicate overlaps and validate every quote", () => {
+  const text = "first\r\nsecond\r\nthird\r\nfourth\r\n";
+  assert.deepEqual([...fileRangeRows(text, [{ startLine: 1, quote: "first", comment: "One" }, { startLine: 3, endLine: 4 }, { startLine: 4 }])], [0, 2, 3]);
+  assert.throws(() => fileRangeRows(text, [{ startLine: 1 }, { startLine: 3, quote: "wrong" }]), /quote/);
+  assert.throws(() => fileRangeRows(text, [{ startLine: 5 }]), /fully present/);
+  assert.throws(() => fileRangeRows(text, []), /1–100/);
+  assert.throws(() => fileRangeRows(text, Array.from({ length: 101 }, () => ({ startLine: 1 }))), /1–100/);
 });

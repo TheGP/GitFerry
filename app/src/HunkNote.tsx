@@ -1,25 +1,34 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { createMemo, createSignal, For, onCleanup, Show, type Accessor } from "solid-js";
-import { matchNotes, notesFile, parseNotes, rowCode, type Note, type NoteRow } from "./hunkNotes";
+import { matchNotesResult, parseNotesResult, rowCode, type Note, type NoteRow } from "./hunkNotes";
 import "./hunkNotes.css";
 
 // The repo watcher reloads diffs only when their text changes, so a notes-only change needs its own poll.
 // Every open diff of a repository shares one poll.
-const shared = new Map<string, { notes: Accessor<Note[]>; users: number; timer: number }>();
+const shared = new Map<string, { notes: Accessor<Note[]>; error: Accessor<string>; load: () => void; users: number; timer: number }>();
+export function refreshHunkNotes(path: string) { shared.get(path)?.load(); }
 
 function acquire(repoPath: string) {
   let entry = shared.get(repoPath);
   if (!entry) {
     const [notes, setNotes] = createSignal<Note[]>([]);
+    const [error, setError] = createSignal("");
     let text: string | null = null;
+    let loading = false;
     const load = () => {
-      if (text !== null && !document.hasFocus()) return;
-      void invoke<{ content: string }>("repo_read_file", { path: repoPath, file: notesFile })
-        .then(result => result.content, () => "")
-        .then(next => { if (next !== text) { text = next; setNotes(parseNotes(next)); } });
+      if (loading || text !== null && !document.hasFocus()) return;
+      loading = true;
+      void invoke<{ content: string }>("repo_read_notes", { path: repoPath })
+        .then(result => {
+          const parsed = parseNotesResult(result.content);
+          if (result.content !== text) { text = result.content; setNotes(parsed.notes); }
+          setError([...parsed.errors.slice(0, 3), ...(parsed.errors.length > 3 ? [`${parsed.errors.length - 3} more invalid note entries`] : [])].join("\n"));
+        })
+        .catch(cause => setError(`Could not load change notes: ${String(cause)}`))
+        .finally(() => { loading = false; });
     };
     load();
-    entry = { notes, users: 0, timer: window.setInterval(load, 3000) };
+    entry = { notes, error, load, users: 0, timer: window.setInterval(load, 3000) };
     shared.set(repoPath, entry);
   }
   entry.users++;
@@ -31,15 +40,18 @@ function release(repoPath: string) {
   if (entry && --entry.users === 0) { window.clearInterval(entry.timer); shared.delete(repoPath); }
 }
 
-export function createHunkNotes(repoPath: () => string, file: () => string, rows: () => NoteRow[], enabled: () => boolean) {
-  const notes = createMemo<Accessor<Note[]>>(() => {
-    if (!enabled() || !isTauri()) return () => [];
+export function createHunkNotes(repoPath: () => string, file: () => string, rows: () => NoteRow[], enabled: () => boolean, target: () => string) {
+  const source = createMemo(() => {
+    if (!enabled() || !isTauri()) return null;
     const path = repoPath();
     const entry = acquire(path);
     onCleanup(() => release(path));
-    return entry.notes;
+    return entry;
   });
-  return createMemo(() => matchNotes(notes()(), file(), rows()));
+  return createMemo(() => {
+    const result = matchNotesResult(source()?.notes() ?? [], file(), rows(), target());
+    return { ...result, error: [source()?.error(), ...result.errors].filter(Boolean).join("\n") };
+  });
 }
 
 // Shown right above the quoted line and starting at the row's left edge like diff lines do; an empty line-number

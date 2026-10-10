@@ -46,6 +46,8 @@
 .editor-annotation-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #dcae55; }
 .editor-annotation-heading button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; background: transparent; border: 0; color: var(--theme-secondary); font-size: 18px; }
 .editor-annotation p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.editor-annotation-range { margin-top: 8px; }
+.editor-annotation-range button { padding: 2px 6px; border: 1px solid var(--theme-border); background: var(--theme-raised); color: #dcae55; font-size: 13px; cursor: pointer; }
 
 /* Merge conflicts: the current side green, the incoming side blue (as in VS Code), with accept buttons on the <<<<<<< line above the text. */
 .editor-row.conflict-current { background: color-mix(in srgb, #3fa66b 20%, transparent); }

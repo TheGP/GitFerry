@@ -1,6 +1,6 @@
 use gitferry_agent::{
     action_with_progress, blame, cancel_operation, commit_details, compare, diff_with_context,
-    file_history, read_file, rebase_plan, save_file, search, snapshot, state, tracked_files, watch,
+    file_history, read_file, read_notes, rebase_plan, save_file, save_notes, search, snapshot, state, tracked_files, watch,
 };
 use gitferry_proto::{
     BlameResult, CommitDetails, CompareResult, DiffResult, EditableFile, FileHistoryResult,
@@ -142,6 +142,13 @@ async fn repo_snapshot(
             )?;
             match response {
                 Response::Snapshot(mut repo) => {
+                    let (host, _) = remote::parse_uri(&path)?;
+                    if !repo.common_git_dir.is_empty() {
+                        repo.common_git_dir = format!("ssh://{host}{}", repo.common_git_dir);
+                    }
+                    for worktree in &mut repo.worktrees {
+                        worktree.path = format!("ssh://{host}{}", worktree.path);
+                    }
                     repo.path = path;
                     Ok(repo)
                 }
@@ -503,6 +510,34 @@ async fn repo_read_file(
 }
 
 #[tauri::command]
+async fn repo_read_notes(app: tauri::AppHandle, path: String) -> Result<EditableFile, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            match app.state::<remote::RemoteManager>().call(&path, &agent_resources(&app), Request::ReadNotes { path: remote_path.to_string() })? {
+                Response::EditableFile(result) => Ok(result),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".into()),
+            }
+        } else { read_notes(&path) }
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn repo_save_notes(app: tauri::AppHandle, path: String, content: String, expected_content: String) -> Result<EditableFile, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if path.starts_with("ssh://") {
+            let (_, remote_path) = remote::parse_uri(&path)?;
+            match app.state::<remote::RemoteManager>().call(&path, &agent_resources(&app), Request::SaveNotes { path: remote_path.to_string(), content, expected_content })? {
+                Response::EditableFile(result) => Ok(result),
+                Response::Error(error) => Err(error),
+                _ => Err("Unexpected remote response".into()),
+            }
+        } else { save_notes(&path, &content, &expected_content) }
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn repo_save_file(
     app: tauri::AppHandle,
     path: String,
@@ -668,6 +703,8 @@ pub fn run() {
             repo_tracked_files,
             repo_diff,
             repo_read_file,
+            repo_read_notes,
+            repo_save_notes,
             repo_save_file,
             open_in_editor,
             repo_action,

@@ -13,9 +13,19 @@ Use the configured `gitferry` MCP server's tools to investigate and navigate the
 - Call `list_repositories` to locate the matching open tab. It returns each tab's `tabId`, canonical `path`, checked-out `branch`, `head`, and active flag. Recent paths are separate and have no verified branch until opened. Tabs represent repository/worktree paths, so two tabs with the same repository name can have different branches.
 - Pass the exact matching `tabId` as `repository`. Prefer the user's named repository and branch; use the active view when the request refers to it. Resolve ambiguity from these results before asking the user.
 - `open_repository` activates an existing tab or opens an absolute local path or `ssh://host/absolute/path`. Its optional `branch` is an expected checked-out branch: a mismatch fails. Choose the correct worktree path instead of checking out a branch to make a tab match.
+- `close_repository` closes the tab named by `repository` without deleting files. Save or cancel unsaved editor changes first; the tool never discards them. Require `confirmed: true`; `closed: false` means that tab was already closed.
+- `reorder_repositories` moves tabs by setting their complete left-to-right order. Read `list_repositories`, then pass `repositories` containing every open `tabId` exactly once in the desired order. It preserves the active repository and selections and saves the session. If tabs changed or the request fails validation, reread the list before retrying. Require `confirmed: true`.
+
+With grouped worktrees, this order includes every open checkout. The first occurrence of each `commonGitDir` sets the first row's repository order; the worktree row keeps its own saved drag order. `list_repositories` reports `commonGitDir` when supported by the agent.
 - `list_branches` reads local and remote refs. `show_branch` requires `repository` and `branch` and selects that branch's tip commit for browsing. It does not change the checked-out branch. Preserve this distinction in explanations.
 
 ## Investigate the change
+
+### Write authorized change notes
+
+When explicitly asked for repository change notes, use `write_notes` with the separate change-notes skill's guidance. Read the exact target diff first. Each entry needs `id`, `file`, `quote`, `note`, and `target: "working" | "staged" | "untracked"`; optional `side`, `startLine`, `before` and `after` disambiguate repeated code. The tool validates the whole batch before appending LF JSONL and returns matched file/target/side/line for every note. `validateOnly: true` does not write. Same id updates; `{id,deleted:true}` removes. Require `confirmed: true` and `written: true` for saves, then reveal the affected files to verify visible placement. It writes only `.gitferry/notes.jsonl`, never stages or edits source files. Do not write notes without user authorization.
+
+Repository tabs group linked worktrees, and the second row selects a checkout. MCP still addresses each checkout by its canonical `tabId`; last selected worktrees are remembered across sessions. Do not infer checkout identity from the first row's repository name.
 
 Choose tools according to the available evidence:
 
@@ -42,6 +52,14 @@ For explanations of existing code, use `reveal_file`; the file does not need to 
 
 Unlike `reveal_change`'s checked-out branch check, `reveal_file.branch` selects a local or remote branch to browse without checkout. Alternatively, pass `revision` as a full commit SHA, `HEAD` (default), or `working`; do not combine it with `branch`. Prefer the verified full SHA when refs could move during the investigation. The file opens read-only in the side editor, including unchanged code. Lines are 1-based; `quote` must occur in the highlighted range. `comment` is a plain-text, temporary explanation beside the code, not a repository edit. Require `confirmed: true`, and report the returned resolved `revision`, file, and line range. `get_view.editor` reads back the displayed revision and annotation. **Clear AI highlights** removes the annotation.
 
+For multiple non-adjacent ranges in a single file, make **one** `reveal_file` request with `ranges`, not repeated requests that replace each other. Each range has `startLine`, optional `endLine`, `quote`, and `comment`. Top-level `comment` can explain the whole file. Do not mix `ranges` with top-level `startLine`, `endLine`, or `quote`:
+
+```json
+{"repository":"C:/work/my-repo","revision":"staged","file":"src/example.ts","ranges":[{"startLine":12,"endLine":14,"quote":"retry","comment":"Retry while active."},{"startLine":42,"quote":"abort","comment":"Stop after cancellation."}]}
+```
+
+Use `revision: "staged"` for the entire index version, including unchanged context, and `working` for the disk file. `untracked` reads the disk file only if it is untracked. These values match the `commit` targets in `get_diff`/`reveal_change`; the parameter differs because `reveal_file` shows an entire file rather than a diff. Staged line numbers must come from the index, not newer working edits. Up to 100 ranges are supported, with separate comments and deduplicated overlap; gaps stay unhighlighted. Each range is verified before the editor changes. The user can click each range's line label to jump to it. Require `confirmed: true`; `get_view.editor.annotation.ranges` returns the ranges and `get_view.editor.revision` is `staged` for index snapshots. If an old SSH agent rejects staged snapshots, report that it needs updating; never substitute working content.
+
 When the user asks to show the culprit changes, complete the investigation with `reveal_change`:
 
 1. Read `get_diff` for the exact repository, commit, file, and optional parent to be shown. Use its `rows` to identify the evidence; line numbers refer to file lines, not diff row indexes.
@@ -66,7 +84,17 @@ Call shape:
 {"repository":"C:/work/my-repo","branch":"topic","commit":"<returned full SHA>","file":"src/example.ts","highlights":[{"kind":"lines","side":"new","startLine":42,"endLine":44,"quote":"retry"}]}
 ```
 
-AI highlights are gold emphasis, separate from staging selections. The user can remove them with **Clear AI highlights**. Report the selected repository, commit, file, line side/range, and why that code matters. For evidence in several files, reveal the main culprit first and provide the other locations in the explanation; each reveal changes the active file.
+AI highlights are gold emphasis, separate from staging selections. The user can remove them with **Clear AI highlights**. Report the selected repository, commit, file, line side/range, and why that code matters. For evidence in several files, reveal each file; earlier highlights remain in file tabs and expanded Summary cards. Each request replaces the highlights for that repository/file/target only. An empty `highlights` list clears that file's emphasis. Highlights are hidden when the diff changes and are temporary (last 100 file targets, cleared on app exit or repository close).
+
+### Highlight your staged changes
+
+When the user asks you to stage and highlight your changes, stage only the authorized changes through your usual Git tools first. MCP navigation itself does not stage. Then read `get_diff(repository, commit: "staged", file)` for each staged file and call `reveal_change` with `commit: "staged"` and the exact line ranges or hunk indexes returned by that diff:
+
+```json
+{"repository":"C:/work/my-repo","commit":"staged","file":"src/example.ts","highlights":[{"kind":"lines","side":"new","startLine":42,"endLine":44,"quote":"retry"}]}
+```
+
+Read the index after staging: working-file line numbers may differ, especially with partial staging or newer unstaged edits. Highlight only your changes if the index contains other staged work. Use `side: "old"` for removals, `side: "new"` for additions, or a hunk highlight when the entire hunk is yours. Require `confirmed: true` for each file. The user can open Summary to see the retained highlights together; the revealed files are expanded there. Highlighting leaves the index and working files unchanged.
 
 ## Handle incomplete results
 

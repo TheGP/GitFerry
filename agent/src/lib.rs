@@ -2,6 +2,7 @@ use gitferry_proto::{
     BlameLine, BlameResult, ChangedFile, CommitDetails, CommitSummary, CompareResult, DiffResult,
     EditableFile, FileHistoryEntry, FileHistoryResult, RebaseCommit, RebaseStep, RefEntry,
     RepoAction, RepoSnapshot, RepoState, Request, Response, SavedFile, SearchResult, StatusEntry,
+    WorktreeEntry,
 };
 use notify::{EventKind, RecursiveMode, Watcher};
 use std::collections::HashSet;
@@ -83,6 +84,8 @@ pub fn handle(request: Request) -> Response {
         } => diff_with_context(&path, &target, &file, ignore_whitespace, full_context)
             .map(Response::Diff),
         Request::ReadFile { path, file } => read_file(&path, &file).map(Response::EditableFile),
+        Request::ReadNotes { path } => read_notes(&path).map(Response::EditableFile),
+        Request::SaveNotes { path, content, expected_content } => save_notes(&path, &content, &expected_content).map(Response::EditableFile),
         Request::SaveFile {
             path,
             file,
@@ -930,11 +933,61 @@ pub fn snapshot_with(
     backend: ReadBackend,
 ) -> Result<RepoSnapshot, String> {
     let root = repo_root(path)?;
-    with_backend(
+    let mut snapshot = with_backend(
         backend,
         || gix_snapshot(&root, offset, limit),
         || git_snapshot(&root, offset, limit),
-    )
+    )?;
+    let common = git(
+        &root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let common = PathBuf::from(text(&common.stdout).trim());
+    snapshot.common_git_dir =
+        display_path(&common.canonicalize().map_err(|error| error.to_string())?);
+    snapshot.worktrees = linked_worktrees(&root)?;
+    snapshot.repository_name = snapshot
+        .worktrees
+        .first()
+        .map(|entry| repo_name(Path::new(&entry.path)))
+        .unwrap_or_else(|| repo_name(&root));
+    Ok(snapshot)
+}
+
+fn linked_worktrees(root: &Path) -> Result<Vec<WorktreeEntry>, String> {
+    // NUL separators preserve spaces, newlines and non-ASCII paths without Git's quoting rules.
+    let output = git(root, &["worktree", "list", "--porcelain", "-z"])?;
+    let mut entries = Vec::new();
+    let mut current: Option<WorktreeEntry> = None;
+    for field in text(&output.stdout).split('\0') {
+        if let Some(path) = field.strip_prefix("worktree ") {
+            if let Some(entry) = current.take() {
+                entries.push(entry);
+            }
+            let path = PathBuf::from(path);
+            current = Some(WorktreeEntry {
+                path: display_path(&path.canonicalize().unwrap_or(path)),
+                branch: "Detached HEAD".into(),
+                head: None,
+                bare: false,
+                prunable: false,
+            });
+        } else if let Some(entry) = current.as_mut() {
+            if let Some(head) = field.strip_prefix("HEAD ") {
+                entry.head = Some(head.to_string());
+            } else if let Some(branch) = field.strip_prefix("branch refs/heads/") {
+                entry.branch = branch.to_string();
+            } else if field == "bare" {
+                entry.bare = true;
+            } else if field == "prunable" || field.starts_with("prunable ") {
+                entry.prunable = true;
+            }
+        }
+    }
+    if let Some(entry) = current {
+        entries.push(entry);
+    }
+    Ok(entries)
 }
 
 fn gix_snapshot(root: &Path, offset: usize, limit: usize) -> Result<RepoSnapshot, String> {
@@ -971,6 +1024,9 @@ fn gix_snapshot(root: &Path, offset: usize, limit: usize) -> Result<RepoSnapshot
         operation,
         rebase_edit_pause,
         refs_hash,
+        common_git_dir: String::new(),
+        repository_name: String::new(),
+        worktrees: Vec::new(),
     })
 }
 
@@ -1020,6 +1076,9 @@ fn git_snapshot(root: &Path, offset: usize, limit: usize) -> Result<RepoSnapshot
         operation,
         rebase_edit_pause,
         refs_hash,
+        common_git_dir: String::new(),
+        repository_name: String::new(),
+        worktrees: Vec::new(),
     })
 }
 
@@ -1471,6 +1530,63 @@ fn editable_content(path: &Path) -> Result<String, String> {
     Ok(content)
 }
 
+// Notes are data, not an editable source buffer: mixed LF/CRLF is valid JSONL.
+fn notes_content(root: &Path) -> Result<String, String> {
+    let path = root.join(".gitferry/notes.jsonl");
+    if !path.try_exists().map_err(|error| error.to_string())? { return Ok(String::new()); }
+    let path = editable_path(root, ".gitferry/notes.jsonl")?;
+    let bytes = read_limited(&path, MAX_EDIT_BYTES)?;
+    if bytes.len() > MAX_EDIT_BYTES { return Err("Notes exceed the 1 MiB limit".into()); }
+    if bytes.contains(&0) { return Err("Notes must be UTF-8 text, not binary".into()); }
+    String::from_utf8(bytes).map_err(|_| "Notes must be UTF-8 text".into())
+}
+
+pub fn read_notes(path: &str) -> Result<EditableFile, String> {
+    Ok(EditableFile { content: notes_content(&repo_root(path)?)? })
+}
+
+pub fn save_notes(path: &str, content: &str, expected_content: &str) -> Result<EditableFile, String> {
+    if content.len() > MAX_EDIT_BYTES || content.contains('\0') { return Err("Invalid notes content or notes exceed 1 MiB".into()); }
+    for (index, line) in content.trim_start_matches('\u{feff}').lines().enumerate().filter(|(_, line)| !line.trim().is_empty()) {
+        let value: serde_json::Value = serde_json::from_str(line).map_err(|error| format!("Notes line {}: {error}", index + 1))?;
+        if !value.is_object() || value["id"].as_str().is_none_or(|id| id.trim().is_empty()) {
+            return Err(format!("Invalid notes entry at line {}", index + 1));
+        }
+        if value["deleted"] != true && ["file", "quote", "note"].iter().any(|key| value[key].as_str().is_none_or(|text| text.trim().is_empty())) {
+            return Err(format!("Notes line {} requires file, quote and note", index + 1));
+        }
+    }
+    let root = repo_root(path)?;
+    let directory = root.join(".gitferry");
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let directory = directory.canonicalize().map_err(|error| error.to_string())?;
+    if !directory.starts_with(&root) { return Err("Notes directory is outside the repository".into()); }
+    // Keep coordination files out of the worktree, including linked checkouts.
+    let git_dir = text(&git(&root, &["rev-parse", "--absolute-git-dir"])?.stdout);
+    let lock_path = PathBuf::from(git_dir.trim()).join("gitferry-notes.lock");
+    match std::fs::symlink_metadata(&lock_path) {
+        Ok(metadata) if !metadata.file_type().is_file() => return Err("Notes lock must be a regular file".into()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    // OS locks release on process exit, including a crash. Keep the inode stable for other writers.
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&lock_path)
+        .map_err(|error| format!("Cannot lock notes for writing: {error}"))?;
+    lock.try_lock().map_err(|error| format!("Cannot lock notes for writing: {error}"))?;
+    let result = (|| {
+        if notes_content(&root)? != expected_content { return Err("Notes changed since validation; reread and retry".into()); }
+        let normalized = content.replace("\r\n", "\n");
+        let mut temporary = tempfile::NamedTempFile::new_in(&directory).map_err(|error| error.to_string())?;
+        temporary.write_all(normalized.as_bytes()).map_err(|error| error.to_string())?;
+        temporary.as_file().sync_all().map_err(|error| error.to_string())?;
+        temporary.persist(directory.join("notes.jsonl")).map_err(|error| error.to_string())?;
+        Ok(EditableFile { content: normalized })
+    })();
+    drop(lock);
+    result
+}
+
 pub fn read_file(path: &str, file: &str) -> Result<EditableFile, String> {
     let root = repo_root(path)?;
     let file_path = editable_path(&root, file)?;
@@ -1555,6 +1671,13 @@ pub fn diff_with_context(
             "--",
             &literal_file,
         ])?,
+        "staged-file" => {
+            // Comparing the index to the empty tree returns an entire file, without writing objects
+            // or modifying the index. hash-object chooses the repository's SHA-1/SHA-256 format.
+            let empty = git_with_input(&root, &["hash-object", "-t", "tree", "--stdin"], b"")?;
+            let empty = text(&empty.stdout);
+            run_diff(&["diff", "--cached", "--no-ext-diff", "--no-color", empty.trim(), "--", &literal_file])?
+        }
         "untracked" => {
             let file_path = root.join(file);
             let canonical = file_path
