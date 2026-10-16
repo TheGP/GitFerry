@@ -591,12 +591,17 @@ async fn open_in_editor(
 async fn repo_action(
     app: tauri::AppHandle,
     path: String,
-    operation: RepoAction,
+    mut operation: RepoAction,
     cancel_token: Option<String>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if path.starts_with("ssh://") {
-            let (_, remote_path) = remote::parse_uri(&path)?;
+            let (host, remote_path) = remote::parse_uri(&path)?;
+            if let RepoAction::RemoveWorktree { path: target, .. } = &mut operation {
+                let (target_host, target_path) = remote::parse_uri(target)?;
+                if target_host != host { return Err("The worktree must be on the same SSH host".into()); }
+                *target = target_path.to_string();
+            }
             let response = app.state::<remote::RemoteManager>().call_with_progress(
                 &path,
                 &agent_resources(&app),

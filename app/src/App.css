@@ -28,6 +28,12 @@ button { cursor: pointer; }
 .worktree-tab:hover { background: var(--theme-heading); }
 .worktree-tab.active { color: var(--theme-text); background: var(--theme-toolbar); box-shadow: inset 0 -2px var(--theme-accent); }
 .worktree-tab svg { width: 13px; height: 13px; flex: none; }
+.worktree-merged { display: inline-flex; flex: none; color: #72c995; }
+.worktree-tab.removing { color: var(--theme-muted); background: var(--theme-heading); box-shadow: none; cursor: wait; }
+.worktree-removing { display: inline-flex; flex: none; align-items: center; gap: 6px; color: var(--theme-secondary); }
+.worktree-removing::before { content: ""; width: 11px; height: 11px; border: 2px solid var(--theme-border); border-top-color: currentColor; border-radius: 50%; animation: worktree-removing-spin .8s linear infinite; }
+@keyframes worktree-removing-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .worktree-removing::before { animation: none; } }
 .worktree-tab:focus-visible { outline: 1px solid var(--theme-accent); outline-offset: -2px; }
 .worktree-name, .worktree-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-tab { font-size: 13px; user-select: none; touch-action: pan-y; }
@@ -564,6 +570,9 @@ button { cursor: pointer; }
 .all-diff-card { margin-bottom: 8px; overflow: hidden; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-details); }
 .all-diff-card .file-actions { padding-right: 12px; }
 .all-diff-card .diff-content { padding-bottom: 13px; }
+.code-move-note { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; padding: 7px 12px; border-left: 3px solid var(--theme-accent); background: var(--theme-accent-soft); font-family: Inter, "Segoe UI", Arial, sans-serif; font-size: 13px; line-height: 1.5; color: var(--theme-secondary); user-select: none; }
+.code-move-note button { padding: 0; border: 0; background: none; color: var(--theme-accent-hover); font: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.code-move-note button:hover { text-decoration: underline; }
 .files-list .summary-diff-card { margin: 0; border: 0; border-bottom: 1px solid var(--theme-border); border-radius: 0; }
 .files-list .summary-diff-card:last-child { border-bottom: 0; }
 .summary-diff-heading { display: flex; align-items: stretch; background: var(--theme-raised); }
@@ -625,10 +634,14 @@ button { cursor: pointer; }
 .action-dialog .modal-title span { min-width: 0; overflow-wrap: anywhere; }
 .action-dialog .modal-title button { flex: none; }
 .action-dialog-body { display: flex; flex-direction: column; gap: 16px; padding: 19px 22px 22px; }
-.action-dialog-body p { margin: 0; color: var(--theme-secondary); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.action-dialog-body p { margin: 0; color: var(--theme-secondary); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-line; }
 .action-dialog-body label { display: flex; flex-direction: column; gap: 7px; color: var(--theme-secondary); font-size: 13px; font-weight: 700; }
-.action-dialog-body input, .action-dialog-body select { width: 100%; min-height: 38px; padding: 7px 10px; border: 1px solid var(--theme-border); border-radius: 4px; outline: 0; background: var(--theme-input); color: var(--theme-text); font-size: 14px; font-weight: 400; }
-.action-dialog-body input:focus, .action-dialog-body select:focus { border-color: var(--theme-accent); }
+.action-dialog-body input, .action-dialog-body select, .action-dialog-body textarea { width: 100%; min-height: 38px; padding: 7px 10px; border: 1px solid var(--theme-border); border-radius: 4px; outline: 0; background: var(--theme-input); color: var(--theme-text); font-size: 14px; font-weight: 400; }
+.action-dialog-body input:focus, .action-dialog-body select:focus, .action-dialog-body textarea:focus { border-color: var(--theme-accent); }
+.action-dialog-body textarea { resize: vertical; min-height: 150px; font-family: var(--code-font); line-height: 1.5; }
+.commit-message-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.edit-commit-message { padding: 6px 10px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 14px; }
+.edit-commit-message:hover { border-color: var(--theme-accent); }
 .action-dialog-footer { display: flex; justify-content: flex-end; gap: 9px; padding: 12px 22px; border-top: 1px solid var(--theme-border); }
 .action-dialog-footer button { min-width: 84px; padding: 7px 13px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; }
 .action-dialog-footer button:hover:not(:disabled) { background: var(--theme-hover); }

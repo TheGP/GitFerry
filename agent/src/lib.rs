@@ -5,7 +5,7 @@ use gitferry_proto::{
     WorktreeEntry,
 };
 use notify::{EventKind, RecursiveMode, Watcher};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -443,11 +443,7 @@ fn start_watch(root: &Path) -> Result<RepoWatch, String> {
     let git_dir = PathBuf::from(text(&git_dir.stdout).trim())
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let common_dir = git(root, &["rev-parse", "--git-common-dir"])?;
-    let common_dir = root
-        .join(text(&common_dir.stdout).trim())
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    let common_dir = common_git_dir(root)?;
     let state = Arc::new((Mutex::new(WatchState::default()), std::sync::Condvar::new()));
     let shared = state.clone();
     let events_git_dir = common_dir.clone();
@@ -938,14 +934,9 @@ pub fn snapshot_with(
         || gix_snapshot(&root, offset, limit),
         || git_snapshot(&root, offset, limit),
     )?;
-    let common = git(
-        &root,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?;
-    let common = PathBuf::from(text(&common.stdout).trim());
-    snapshot.common_git_dir =
-        display_path(&common.canonicalize().map_err(|error| error.to_string())?);
+    snapshot.common_git_dir = display_path(&common_git_dir(&root)?);
     snapshot.worktrees = linked_worktrees(&root)?;
+    mark_merged_worktrees(&root, &snapshot.refs, &mut snapshot.worktrees);
     snapshot.repository_name = snapshot
         .worktrees
         .first()
@@ -954,23 +945,80 @@ pub fn snapshot_with(
     Ok(snapshot)
 }
 
+fn common_git_dir(root: &Path) -> Result<PathBuf, String> {
+    // --path-format=absolute is unavailable in older macOS Git. Unknown rev-parse
+    // options are echoed with success, which would turn the output into a bogus path.
+    let output = git(root, &["rev-parse", "--git-common-dir"])?;
+    let path = root.join(text(&output.stdout).trim());
+    path.canonicalize().map_err(|error|
+        format!("Cannot resolve repository metadata directory {}: {error}", path.display()))
+}
+
+fn remove_worktree(root: &Path, path: &str, expected_head: Option<&str>, branch: &str, confirmed: bool) -> Result<Output, String> {
+    if !confirmed { return Err("Confirm worktree removal first".into()); }
+    if !Path::new(path).is_absolute() { return Err("An absolute worktree path is required".into()); }
+    let target = Path::new(path).canonicalize().map_err(|error| format!("Cannot open worktree: {error}"))?;
+    let trees = linked_worktrees(root)?;
+    let index = trees.iter().position(|tree| Path::new(&tree.path).canonicalize().ok().as_ref() == Some(&target))
+        .ok_or("This folder is not a worktree of this repository")?;
+    let tree = &trees[index];
+    if index == 0 || tree.bare || tree.prunable { return Err("The primary repository cannot be removed as a linked worktree".into()); }
+    if tree.head.as_deref() != expected_head || tree.branch != branch {
+        return Err("The worktree changed since confirmation; refresh and try again".into());
+    }
+    if operation(&target).is_some() { return Err("Finish or abort the worktree's Git operation before removing it".into()); }
+    if tree.branch == "Detached HEAD" {
+        let head = tree.head.as_deref().ok_or("The detached worktree has no commit")?;
+        let reachable = git(root, &["for-each-ref", &format!("--contains={head}"), "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"])?;
+        if reachable.stdout.is_empty() { return Err("Create a branch for this detached worktree's commits before removing it".into()); }
+    }
+    // Run from another registered checkout, even when the request comes from the removed checkout.
+    // Git checks cleanliness and locks; never force or recursively delete folders ourselves.
+    let controller = trees.iter().find(|tree| Path::new(&tree.path).is_dir()
+        && Path::new(&tree.path).canonicalize().ok().as_ref() != Some(&target))
+        .ok_or("No other repository directory is available to remove this worktree")?;
+    let controller = Path::new(&controller.path);
+    git(controller, &["worktree", "remove", "--", &display_path(&target)]).map_err(|error| {
+        let removed = linked_worktrees(controller).is_ok_and(|trees|
+            !trees.iter().any(|tree| Path::new(&tree.path).canonicalize().ok().as_ref() == Some(&target)));
+        if removed && target.exists() {
+            format!("Worktree removed from Git, but folder cleanup failed: {}. Close programs using this folder before deleting the remaining files.\n\n{error}", display_path(&target))
+        } else { error }
+    })
+}
+
 fn linked_worktrees(root: &Path) -> Result<Vec<WorktreeEntry>, String> {
     // NUL separators preserve spaces, newlines and non-ASCII paths without Git's quoting rules.
-    let output = git(root, &["worktree", "list", "--porcelain", "-z"])?;
+    let (output, separator) = match git(root, &["worktree", "list", "--porcelain", "-z"]) {
+        Ok(output) => (output, '\0'),
+        Err(error) if error.contains("unknown switch `z'") || error.contains("unknown option `z'") =>
+            (git(root, &["worktree", "list", "--porcelain"])
+                .map_err(|error| format!("Cannot list repository worktrees: {error}"))?, '\n'),
+        Err(error) => return Err(format!("Cannot list repository worktrees: {error}")),
+    };
+    parse_worktrees(&text(&output.stdout), separator)
+}
+
+fn parse_worktrees(output: &str, separator: char) -> Result<Vec<WorktreeEntry>, String> {
     let mut entries = Vec::new();
     let mut current: Option<WorktreeEntry> = None;
-    for field in text(&output.stdout).split('\0') {
+    for field in output.split(separator) {
         if let Some(path) = field.strip_prefix("worktree ") {
             if let Some(entry) = current.take() {
                 entries.push(entry);
             }
-            let path = PathBuf::from(path);
+            let path = if separator == '\n' && path.starts_with('"') {
+                let (decoded, _) = gix::quote::ansi_c::undo(path.as_bytes().into())
+                    .map_err(|error| format!("Cannot decode worktree path: {error}"))?;
+                PathBuf::from(text(decoded.as_ref()))
+            } else { PathBuf::from(path) };
             current = Some(WorktreeEntry {
                 path: display_path(&path.canonicalize().unwrap_or(path)),
                 branch: "Detached HEAD".into(),
                 head: None,
                 bare: false,
                 prunable: false,
+                merged_into: None,
             });
         } else if let Some(entry) = current.as_mut() {
             if let Some(head) = field.strip_prefix("HEAD ") {
@@ -988,6 +1036,34 @@ fn linked_worktrees(root: &Path) -> Result<Vec<WorktreeEntry>, String> {
         entries.push(entry);
     }
     Ok(entries)
+}
+
+fn mark_merged_worktrees(root: &Path, refs: &[RefEntry], worktrees: &mut [WorktreeEntry]) {
+    // Match the automatic comparison destination in App.tsx: prefer fetched remote refs.
+    let names = ["main", "master", "develop", "trunk"];
+    let base = names.iter().find_map(|name| refs.iter().find(|entry|
+        entry.kind == "remote" && entry.name == format!("origin/{name}")))
+        .or_else(|| names.iter().find_map(|name| refs.iter().find(|entry|
+            entry.kind == "remote" && entry.name.ends_with(&format!("/{name}")))))
+        .or_else(|| names.iter().find_map(|name| refs.iter().find(|entry|
+            entry.kind == "branch" && entry.name == *name)));
+    let Some(base) = base else { return };
+    // One ancestry query covers all named worktrees, including unopened checkouts.
+    // Pin the base hash so a concurrent ref update cannot change the meaning of this snapshot.
+    let Ok(output) = git(root, &["for-each-ref", "--format=%(objectname)",
+        &format!("--merged={}", base.target), "refs/heads"]) else { return };
+    let mut contained: HashSet<String> = text(&output.stdout).lines().map(str::to_owned).collect();
+    let mut detached = HashMap::new();
+    for tree in worktrees {
+        if tree.bare || tree.prunable || names.contains(&tree.branch.as_str()) { continue; }
+        let Some(head) = tree.head.as_ref() else { continue };
+        if tree.branch == "Detached HEAD" && !contained.contains(head) {
+            let included = detached.entry(head.clone()).or_insert_with(||
+                git(root, &["merge-base", "--is-ancestor", head, &base.target]).is_ok());
+            if *included { contained.insert(head.clone()); }
+        }
+        if contained.contains(head) { tree.merged_into = Some(base.name.clone()); }
+    }
 }
 
 fn gix_snapshot(root: &Path, offset: usize, limit: usize) -> Result<RepoSnapshot, String> {
@@ -1349,7 +1425,7 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
         &[
             "show",
             "-s",
-            "--format=%H%x00%s%x00%b%x00%an%x00%ae%x00%at%x00%P%x00%T",
+            "--format=%H%x00%s%x00%b%x00%an%x00%ae%x00%at%x00%P%x00%T%x00%B",
             hash,
         ],
     )?;
@@ -1358,7 +1434,7 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
         .trim_ascii_end()
         .split(|byte| *byte == 0)
         .collect();
-    if fields.len() != 8 {
+    if fields.len() != 9 {
         return Err("Git returned invalid commit details".to_string());
     }
     let parents: Vec<String> = text(fields[6])
@@ -1371,6 +1447,7 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
         hash: text(fields[0]),
         subject: text(fields[1]),
         body: text(fields[2]),
+        message: text(fields[8]),
         author: text(fields[3]),
         author_email: text(fields[4]),
         timestamp: text(fields[5]).parse().unwrap_or_default(),
@@ -1379,7 +1456,76 @@ pub fn commit_details(path: &str, hash: &str) -> Result<CommitDetails, String> {
         tree: text(fields[7]),
         additions: Some(additions),
         deletions: Some(deletions),
+        can_edit_message: can_edit_commit_message(&root, &text(fields[0])).unwrap_or(false),
     })
+}
+
+fn can_edit_commit_message(root: &Path, hash: &str) -> Result<bool, String> {
+    if operation(root).is_some() || git(root, &["symbolic-ref", "--quiet", "HEAD"]).is_err() {
+        return Ok(false);
+    }
+    let ancestors = git(root, &["merge-base", "--is-ancestor", hash, "HEAD"]);
+    if ancestors.is_err() { return Ok(false); }
+    Ok(git(root, &["for-each-ref", "--format=%(refname)", "--contains", hash, "refs/remotes/"])?
+        .stdout.is_empty())
+}
+
+/// Rewrite only commit objects and the current branch ref: never touch the index or worktree.
+fn reword_commit(root: &Path, hash: &str, message: &str, branch: &str, expected_head: &str) -> Result<String, String> {
+    if !valid_hash(hash) || !valid_hash(expected_head) { return Err("Invalid commit ID".into()); }
+    let canonical_hash = hash.to_ascii_lowercase();
+    let canonical_head = expected_head.to_ascii_lowercase();
+    let hash = canonical_hash.as_str();
+    let expected_head = canonical_head.as_str();
+    validate_branch(root, branch)?;
+    if message.trim().is_empty() || message.len() > 8 * 1024 || message.contains('\0') {
+        return Err("Commit message must be nonempty and at most 8 KiB".into());
+    }
+    let branch_ref = format!("refs/heads/{branch}");
+    let check_head = || -> Result<(), String> {
+        if head(root).as_deref() != Some(expected_head)
+            || text(&git(root, &["symbolic-ref", "--quiet", "HEAD"])?.stdout).trim() != branch_ref {
+            return Err("Current branch changed; reopen the commit message editor".into());
+        }
+        Ok(())
+    };
+    check_head()?;
+    if !can_edit_commit_message(root, hash)? {
+        return Err("Only unpushed commits on the current branch can have their message edited".into());
+    }
+    let range = format!("{hash}..{expected_head}");
+    let descendants = git(root, &["rev-list", "--reverse", "--topo-order", "--ancestry-path", &range])?;
+    let mut rewritten = HashMap::<String, String>::new();
+    let message = message.replace("\r\n", "\n");
+    for old in std::iter::once(hash).chain(std::str::from_utf8(&descendants.stdout).map_err(|error| error.to_string())?.split_whitespace()) {
+        let object = git(root, &["cat-file", "commit", old])?.stdout;
+        let boundary = object.windows(2).position(|bytes| bytes == b"\n\n").ok_or("Invalid commit object")?;
+        let mut next = Vec::new();
+        for line in object[..boundary].split(|byte| *byte == b'\n') {
+            if line.starts_with(b"gpgsig ") || line.starts_with(b"gpgsig-sha256 ") || line.starts_with(b"mergetag ") {
+                return Err("This history contains signed commits or merge tags. Use a signing-aware Git rebase to edit its message.".into());
+            }
+            if old == hash && line.starts_with(b"encoding ") { continue; }
+            if let Some(parent) = line.strip_prefix(b"parent ") {
+                let parent = std::str::from_utf8(parent).map_err(|error| error.to_string())?;
+                next.extend_from_slice(format!("parent {}", rewritten.get(parent).map(String::as_str).unwrap_or(parent)).as_bytes());
+            } else { next.extend_from_slice(line); }
+            next.push(b'\n');
+        }
+        next.push(b'\n');
+        if old == hash {
+            next.extend_from_slice(message.trim_end().as_bytes());
+            next.push(b'\n');
+        } else { next.extend_from_slice(&object[boundary + 2..]); }
+        let new_hash = git_with_input(root, &["hash-object", "-w", "-t", "commit", "--stdin"], &next)?;
+        rewritten.insert(old.to_string(), text(&new_hash.stdout).trim().to_string());
+    }
+    check_head()?;
+    if !can_edit_commit_message(root, hash)? { return Err("The commit is now pushed or a Git operation started; reopen its editor".into()); }
+    let new_head = rewritten.get(expected_head).ok_or("Current branch is not a descendant of this commit")?;
+    // Compare-and-swap prevents losing commits added while this message was being edited.
+    git(root, &["update-ref", "-m", "gitferry: edit commit message", &branch_ref, new_head, expected_head])?;
+    Ok(rewritten.get(hash).ok_or("Commit was not rewritten")?.clone())
 }
 
 /// Files changed from `from` (or the empty tree for a root commit) to `to`, with line counts and totals.
@@ -1987,6 +2133,8 @@ pub fn action_with_progress(
 ) -> Result<String, String> {
     let root = repo_root(path)?;
     let output = match action {
+        RepoAction::RemoveWorktree { path, expected_head, branch, confirmed } =>
+            remove_worktree(&root, &path, expected_head.as_deref(), &branch, confirmed)?,
         RepoAction::StageAll => git(&root, &["add", "-A"])?,
         RepoAction::StageFile { path } => {
             let path = literal_path(&path)?;
@@ -2046,6 +2194,9 @@ pub fn action_with_progress(
                 args.push("--amend");
             }
             git(&root, &args)?
+        }
+        RepoAction::RewordCommit { hash, message, branch, expected_head } => {
+            return reword_commit(&root, &hash, &message, &branch, &expected_head);
         }
         RepoAction::Fetch => git_with_progress(
             &root,
@@ -2810,4 +2961,28 @@ fn validate_remote(repo: &Path, remote: &str) -> Result<(), String> {
         return Err("Choose a configured remote".to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod worktree_listing_tests {
+    use super::parse_worktrees;
+
+    #[test]
+    fn legacy_paths_preserve_spaces_and_decode_git_quoting() {
+        let rows = "worktree /missing/repo with spaces é\nHEAD abc\nbranch refs/heads/main\n\nworktree \"/missing/linked \\303\\251\\t\\n\"\nHEAD def\ndetached\nprunable old checkout\n\n";
+        let trees = parse_worktrees(rows, '\n').unwrap();
+        assert_eq!(trees.len(), 2);
+        assert!(trees[0].path.ends_with("repo with spaces é"));
+        assert!(trees[1].path.ends_with("linked é\t\n"));
+        assert_eq!(trees[1].branch, "Detached HEAD");
+        assert!(trees[1].prunable);
+    }
+
+    #[test]
+    fn nul_paths_keep_embedded_newlines_without_unquoting() {
+        let trees = parse_worktrees("worktree /missing/a\nb\0HEAD abc\0branch refs/heads/topic\0\0", '\0').unwrap();
+        assert_eq!(trees.len(), 1);
+        assert!(trees[0].path.ends_with("a\nb"));
+        assert_eq!(trees[0].branch, "topic");
+    }
 }

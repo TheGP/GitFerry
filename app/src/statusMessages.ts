@@ -1,4 +1,5 @@
 const actionMessages = {
+  remove_worktree: ["Remove worktree", "Removing worktree…", "Worktree removed"],
   fetch: ["Fetch", "Fetching…", "Fetch complete"],
   pull: ["Pull", "Pulling…", "Pull complete"],
   pull_branch: ["Pull branch", "Pulling branch…", "Branch updated"],
@@ -20,6 +21,7 @@ const actionMessages = {
   discard_files: ["Discard file changes", "Discarding file changes…", "File changes discarded"],
   delete_untracked: ["Delete untracked files", "Deleting untracked files…", "Untracked files deleted"],
   commit: ["Commit", "Committing…", "Changes committed"],
+  reword_commit: ["Edit commit message", "Updating commit message…", "Commit message updated"],
   amend_no_edit: ["Amend commit", "Amending commit…", "Commit amended"],
   checkout: ["Switch branch", "Switching branch…", "Branch switched"],
   create_branch: ["Create branch", "Creating branch…", "Branch created"],

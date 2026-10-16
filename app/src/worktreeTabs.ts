@@ -1,7 +1,7 @@
 import { repositoryKey } from "./mcpNavigation.ts";
 
-export type Worktree = { path: string; branch: string; head: string | null; bare: boolean; prunable: boolean };
-export type WorktreeRepository = { path: string; name: string; branch: string; commonGitDir?: string; repositoryName?: string; worktrees?: Worktree[] };
+export type Worktree = { path: string; branch: string; head: string | null; bare: boolean; prunable: boolean; mergedInto?: string | null };
+export type WorktreeRepository = { path: string; name: string; branch: string; head?: string | null; commonGitDir?: string; repositoryName?: string; worktrees?: Worktree[] };
 
 export function worktreeGroupKey(repo: WorktreeRepository): string {
   return repositoryKey(repo.commonGitDir || repo.path);
@@ -26,15 +26,21 @@ export function availableWorktrees<T extends WorktreeRepository>(repo: T, tabs: 
   const paths = new Map(listed.map(entry => [repositoryKey(entry.path), entry]));
   for (const tab of members) {
     const key = repositoryKey(tab.path);
+    // A verified Git listing wins over old open-tab metadata after a checkout is removed.
+    if (repo.worktrees?.length && !paths.has(key)) continue;
     // Open checkouts retain their live branch information; an unavailable checkout can still be closed.
-    paths.set(key, { ...(paths.get(key) ?? { head: null, bare: false, prunable: false }), path: tab.path, branch: tab.branch });
+    const listed = paths.get(key);
+    paths.set(key, { ...(listed ?? { head: null, bare: false, prunable: false }), path: tab.path, branch: tab.branch,
+      mergedInto: listed?.branch === tab.branch && (tab.head === undefined || tab.head === listed.head) ? listed?.mergedInto : null });
   }
   const positions = new Map(order.map((path, index) => [repositoryKey(path), index]));
   return [...paths.values()].sort((a, b) => (positions.get(repositoryKey(a.path)) ?? order.length) - (positions.get(repositoryKey(b.path)) ?? order.length));
 }
 
 export function worktreeLabel(tree: Worktree): string {
-  return tree.branch === "Detached HEAD" && tree.head ? `Detached HEAD · ${tree.head.slice(0, 7)}` : tree.branch || "Detached HEAD";
+  if (tree.branch && tree.branch !== "Detached HEAD") return tree.branch;
+  const name = tree.path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || tree.path;
+  return `${name} (detached)`;
 }
 
 export function reorderRepositoryTabs<T extends WorktreeRepository>(tabs: T[], path: string, to: number): T[] {

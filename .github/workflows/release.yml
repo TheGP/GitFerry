@@ -39,7 +39,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Test repository reads and actions
-        run: cargo test --locked -p gitferry-agent --test repository --test read_parity --test worktrees
+        run: cargo test --locked -p gitferry-agent --lib --test repository --test read_parity --test worktrees
       - name: Configure static linker
         if: runner.os == 'Linux'
         run: |

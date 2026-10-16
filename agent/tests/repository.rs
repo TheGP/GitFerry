@@ -24,6 +24,117 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn reword_commit_preserves_dirty_files_and_merge_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "user.name", "Test"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    std::fs::write(root.join("file.txt"), "base\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "Old subject\n\nOriginal body"]);
+    let first = git(root, &["rev-parse", "HEAD"]);
+    let identity = git(root, &["show", "-s", "--format=%an <%ae> %at %cn <%ce> %ct", "HEAD"]);
+    git(root, &["switch", "-qc", "side"]);
+    git(root, &["commit", "--allow-empty", "-qm", "Side"]);
+    git(root, &["switch", "-q", "main"]);
+    git(root, &["commit", "--allow-empty", "-qm", "Later"]);
+    git(root, &["merge", "--no-ff", "side", "-m", "Merge side"]);
+    let old_head = git(root, &["rev-parse", "HEAD"]);
+    let old_tree = git(root, &["rev-parse", "HEAD^{tree}"]);
+    let side = git(root, &["rev-parse", "side"]);
+    std::fs::write(root.join("file.txt"), "staged\n").unwrap();
+    git(root, &["add", "."]);
+    std::fs::write(root.join("file.txt"), "working\n").unwrap();
+    std::fs::write(root.join("untracked.txt"), "untracked\n").unwrap();
+    let old_index = git(root, &["write-tree"]);
+    let old_status = git(root, &["status", "--porcelain"]);
+    let path = root.to_str().unwrap();
+    assert!(commit_details(path, &first).unwrap().can_edit_message);
+    let changed = action(path, RepoAction::RewordCommit { hash: first.clone(), message: "Updated subject\n\nA new explanation.".into(), branch: "main".into(), expected_head: old_head.clone() }).unwrap();
+    assert_ne!(changed, first);
+    assert_ne!(git(root, &["rev-parse", "HEAD"]), old_head);
+    assert_eq!(git(root, &["show", "-s", "--format=%B", &changed]), "Updated subject\n\nA new explanation.");
+    assert_eq!(git(root, &["show", "-s", "--format=%an <%ae> %at %cn <%ce> %ct", &changed]), identity);
+    assert_eq!(git(root, &["rev-parse", "HEAD^{tree}"]), old_tree);
+    assert_eq!(git(root, &["write-tree"]), old_index);
+    assert_eq!(git(root, &["status", "--porcelain"]), old_status);
+    assert_eq!(std::fs::read_to_string(root.join("file.txt")).unwrap(), "working\n");
+    assert_eq!(std::fs::read_to_string(root.join("untracked.txt")).unwrap(), "untracked\n");
+    assert_eq!(git(root, &["rev-parse", "side"]), side, "Other branches must retain their original history");
+    assert_eq!(git(root, &["log", "--format=%s", "HEAD"]), "Merge side\nLater\nSide\nUpdated subject");
+    let merge = commit_details(path, &git(root, &["rev-parse", "HEAD"])).unwrap();
+    assert_eq!(merge.parents.len(), 2);
+    assert_eq!(git(root, &["merge-base", "HEAD^1", "HEAD^2"]), changed);
+    let new_head = git(root, &["rev-parse", "HEAD"]);
+    action(path, RepoAction::RewordCommit { hash: new_head.clone(), message: "New merge message".into(), branch: "main".into(), expected_head: new_head }).unwrap();
+    assert_eq!(git(root, &["show", "-s", "--format=%s", "HEAD"]), "New merge message");
+    assert_eq!(git(root, &["write-tree"]), old_index);
+    assert_eq!(git(root, &["rev-parse", "HEAD^{tree}"]), old_tree);
+}
+
+#[test]
+fn reword_commit_rejects_pushed_stale_and_other_branch_commits() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "user.name", "Test"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["commit", "--allow-empty", "-qm", "Base"]);
+    let base = git(root, &["rev-parse", "HEAD"]);
+    git(root, &["update-ref", "refs/remotes/origin/main", &base]);
+    git(root, &["branch", "other"]);
+    git(root, &["commit", "--allow-empty", "-qm", "Unpushed"]);
+    let original = git(root, &["rev-parse", "HEAD"]);
+    let path = root.to_str().unwrap();
+    let edit = |hash: &str, head: &str, branch: &str, message: &str| action(path, RepoAction::RewordCommit { hash: hash.into(), message: message.into(), branch: branch.into(), expected_head: head.into() });
+    assert!(!commit_details(path, &base).unwrap().can_edit_message);
+    assert!(commit_details(path, &original).unwrap().can_edit_message);
+    assert!(edit(&base, &original, "main", "Wrong").unwrap_err().contains("unpushed"));
+    assert!(edit(&original, &base, "main", "Stale").unwrap_err().contains("changed"));
+    assert!(edit(&original, &original, "other", "Wrong branch").unwrap_err().contains("changed"));
+    assert!(edit(&original, &original, "main", "  ").is_err());
+    assert!(edit(&original, &original, "main", &"x".repeat(8193)).is_err());
+    // A commit can be pushed to a different remote branch without a direct decoration on this row.
+    git(root, &["update-ref", "refs/remotes/team/topic", &original]);
+    assert!(!commit_details(path, &original).unwrap().can_edit_message);
+    assert!(edit(&original, &original, "main", "Pushed").unwrap_err().contains("unpushed"));
+    git(root, &["update-ref", "-d", "refs/remotes/team/topic"]);
+    git(root, &["switch", "--detach", "-q", &original]);
+    assert!(!commit_details(path, &original).unwrap().can_edit_message);
+    assert!(edit(&original, &original, "main", "Detached").is_err());
+    git(root, &["switch", "-q", "other"]);
+    let other_head = git(root, &["rev-parse", "HEAD"]);
+    assert!(!commit_details(path, &original).unwrap().can_edit_message);
+    assert!(edit(&original, &other_head, "other", "Unrelated").unwrap_err().contains("unpushed"));
+    assert_eq!(git(root, &["rev-parse", "main"]), original);
+    git(root, &["switch", "-q", "main"]);
+    std::fs::write(root.join(".git/MERGE_HEAD"), &base).unwrap();
+    assert!(!commit_details(path, &original).unwrap().can_edit_message);
+    assert!(edit(&original, &original, "main", "During merge").is_err());
+    assert_eq!(git(root, &["rev-parse", "HEAD"]), original);
+}
+
+#[test]
+fn reword_commit_does_not_silently_drop_a_signature() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "user.name", "Test"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["commit", "--allow-empty", "-qm", "Base"]);
+    let tree = git(root, &["rev-parse", "HEAD^{tree}"]);
+    let object = format!("tree {tree}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n fixture\n -----END PGP SIGNATURE-----\n\nSigned message\n");
+    std::fs::write(root.join("signed.commit"), &object).unwrap();
+    let signed = git(root, &["hash-object", "-w", "-t", "commit", "signed.commit"]);
+    git(root, &["update-ref", "refs/heads/main", &signed]);
+    let error = action(root.to_str().unwrap(), RepoAction::RewordCommit { hash: signed.clone(), message: "Replacement".into(), branch: "main".into(), expected_head: signed.clone() }).unwrap_err();
+    assert!(error.contains("signed"));
+    assert_eq!(git(root, &["rev-parse", "HEAD"]), signed);
+    assert_eq!(git(root, &["cat-file", "commit", "HEAD"]), object.trim());
+}
+
+#[test]
 fn pulls_another_branch_safely_without_switching_or_changing_files() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("work");

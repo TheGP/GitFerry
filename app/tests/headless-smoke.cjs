@@ -240,6 +240,52 @@ async function exerciseFileContextMenu(page, repository) {
   }
   console.log("File context menu: full and relative paths, diff copying, Escape and outside dismissal passed");
 }
+async function exerciseWorktreeRemoval(page) {
+  const folder = makeRepo("worktree-removal"), linked = path.join(sandbox, "remove-this-checkout");
+  git(folder, "worktree", "add", "-b", "remove-topic", linked);
+  await openRepo(page, folder); await clickWorktree(page, linked);
+  const requestRemoval = async () => {
+    await page.waitForFunction(() => document.querySelector(".worktree-tab.active") && !document.querySelector(".worktree-tab.active").disabled);
+    await click(page, ".worktree-tab.active", { button: "right" });
+    await click(page, ".worktree-action-popover button");
+    await page.waitForSelector(".action-dialog");
+    assert.ok((await page.$eval(".action-dialog-body", body => body.textContent)).includes(linked));
+  };
+  const count = () => actionRequests.filter(request => request.kind === "remove_worktree").length;
+  const initial = count();
+  await requestRemoval(); await page.keyboard.press("Escape");
+  assert.equal(count(), initial); assert.ok(fs.existsSync(linked));
+  const untracked = path.join(linked, "keep.txt"); fs.writeFileSync(untracked, "Do not delete\n");
+  await requestRemoval(); await submitActionDialog(page);
+  await page.waitForFunction(() => document.body.textContent.includes("contains modified or untracked files"));
+  assert.equal(count(), initial + 1); assert.equal(fs.readFileSync(untracked, "utf8"), "Do not delete\n");
+  fs.unlinkSync(untracked);
+  await clickWorktree(page, linked);
+  fs.writeFileSync(path.join(linked, "base.txt"), "edited on disk\n");
+  await shortcut(page, "r");
+  await page.waitForFunction(() => [...document.querySelectorAll('.summary-diff-card[data-path="base.txt"] .line-text')].some(line => line.textContent === "edited on disk"));
+  await click(page, '.summary-diff-card[data-path="base.txt"] .line-text::-p-text(edited on disk)', { count: 2 });
+  await page.waitForSelector(".editor-input");
+  await page.locator(".editor-input").fill("unsaved in editor\n");
+  await requestRemoval(); await submitActionDialog(page);
+  await page.waitForFunction(() => document.body.textContent.includes("Save or discard the unsaved editor changes"));
+  assert.equal(count(), initial + 1, "Unsaved editor changes block deletion before Git runs");
+  assert.equal(await page.$eval(".editor-input", input => input.value), "unsaved in editor\n");
+  await click(page, "button[aria-label='Close editor']");
+  await page.waitForSelector(".action-dialog"); await submitActionDialog(page);
+  git(linked, "restore", "base.txt");
+  await requestRemoval(); await submitActionDialog(page);
+  await waitUntil(() => !fs.existsSync(linked), "remove confirmed clean worktree");
+  await page.waitForFunction(() => !document.querySelector(".worktree-tabbar"));
+  await waitForAction(page);
+  assert.equal(count(), initial + 2);
+  assert.ok(git(folder, "show-ref", "--verify", "refs/heads/remove-topic"));
+  assert.ok(fs.existsSync(folder));
+  const closed = await mcp(page, "close_repository", { repository: folder });
+  assert.equal(closed.error, null);
+  console.log("Worktree removal: confirmation cancellation, dirty checkout and unsaved editor refusal, active checkout removal and branch preservation passed");
+}
+
 async function exerciseNotes(page, repository) {
   const file = "notes-example.txt", source = path.join(repository.folder, file);
   const notesPath = path.join(repository.folder, ".gitferry", "notes.jsonl");
@@ -275,13 +321,16 @@ async function exerciseNotes(page, repository) {
   await page.waitForFunction(() => !document.querySelector(".hunk-notes-error"));
   git(repository.folder, "add", file);
   fs.writeFileSync(source, "working only\nbetween loops\nscroll();\n");
+  reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [{ ...note, id: "working-line", target: "working", side: "new", quote: "working only" }] });
+  assert.equal(reply.error, null); assert.equal(reply.result.notes[0].target, "working");
+  assert.equal(reply.result.notes[0].line, 1);
   reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [{ ...note, target: "staged" }] });
   assert.equal(reply.error, null); assert.equal(reply.result.notes[0].target, "staged");
   assert.ok(!fs.readFileSync(notesPath, "utf8").includes("\r"), "Writer normalizes earlier CRLF records too");
   reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: "staged", file });
   assert.equal(reply.error, null);
   await page.waitForFunction(() => document.querySelector(".hunk-note")?.textContent.includes("first viewport"));
-  reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [{ id: "first-loop", deleted: true }, { id: "second-loop", deleted: true }] });
+  reply = await mcp(page, "write_notes", { repository: repository.folder, notes: [{ id: "first-loop", deleted: true }, { id: "second-loop", deleted: true }, { id: "working-line", deleted: true }] });
   assert.equal(reply.error, null);
   await page.waitForFunction(() => !document.querySelector(".hunk-note"));
   git(repository.folder, "restore", "--staged", file);
@@ -752,7 +801,11 @@ async function bridge(command, args) {
   }
   if (command === "repo_cancel" && actionGate?.cancel) return "Cancellation requested";
   if (command === "plugin:window|is_maximized") return true;
-  if (command === "repo_diff") diffRequests++;
+  if (command === "repo_diff") {
+    // Match Tauri's required argument instead of silently supplying a default.
+    assert.equal(typeof args.ignoreWhitespace, "boolean", "repo_diff requires ignoreWhitespace");
+    diffRequests++;
+  }
   const heldSearch = command === "repo_search" && args.offset > 0 && searchGate && args.query === searchGate.query ? searchGate : null;
   if (heldSearch) { heldSearch.started = true; await heldSearch.promise; }
   if (command === "repo_save_file" && saveGate) {
@@ -783,7 +836,7 @@ async function bridge(command, args) {
     repo_file_history: ["file_history", { path: args.path, file: args.file, revision: args.revision, offset: args.offset, limit: 100 }],
     repo_blame: ["blame", { path: args.path, file: args.file, revision: args.revision, start_line: args.startLine, limit: 300 }],
     repo_tracked_files: ["tracked_files", { path: args.path, query: args.query, limit: 100 }],
-    repo_diff: ["diff", { path: args.path, target: args.target, file: args.file, ignore_whitespace: args.ignoreWhitespace ?? false, full_context: args.fullContext ?? false }],
+    repo_diff: ["diff", { path: args.path, target: args.target, file: args.file, ignore_whitespace: args.ignoreWhitespace, full_context: args.fullContext ?? false }],
     repo_read_file: ["read_file", { path: args.path, file: args.file }],
     repo_read_notes: ["read_notes", { path: args.path }],
     repo_save_notes: ["save_notes", { path: args.path, content: args.content, expected_content: args.expectedContent }],
@@ -843,6 +896,103 @@ async function openRepo(page, folder) {
   await page.locator(".open-modal .modal-body input").fill(folder);
   await page.locator(".open-modal .modal-body button[type='submit']").click();
   await page.waitForFunction(value => document.querySelector(".statusbar")?.textContent.includes(value), {}, folder);
+}
+
+async function exerciseMovedCode(page) {
+  const folder = path.join(sandbox, "moved-code");
+  fs.mkdirSync(folder);
+  git(folder, "init", "-b", "main");
+  git(folder, "config", "user.name", "GitFerry Test");
+  git(folder, "config", "user.email", "gitferry@example.test");
+  const helper = `/** Build the account report. */
+function buildReport(rows: Account[]) {
+    const active = rows.filter(row => row.enabled);
+    const ordered = active.sort((first, second) => first.rank - second.rank);
+    const names = ordered.map(row => row.displayName.trim());
+    logger.info('Report ready', { count: names.length });
+    return { names, total: names.length, first: ordered[0] };
+}
+`;
+  fs.writeFileSync(path.join(folder, "report.ts"), helper + "\nexport const version = 1;\n");
+  fs.writeFileSync(path.join(folder, "shared.ts"), "export const shared = true;\n");
+  git(folder, "add", "."); git(folder, "commit", "-m", "Report before extraction");
+  fs.writeFileSync(path.join(folder, "report.ts"), "export const version = 1;\n");
+  const moved = helper.replace("function buildReport", "export function buildSharedReport").replace("row.enabled", "row.enabled && !row.archived");
+  const destination = "export const shared = true;\n" + "\n".repeat(120) + moved;
+  fs.writeFileSync(path.join(folder, "shared.ts"), destination);
+  git(folder, "add", ".");
+  const tree = git(folder, "write-tree");
+  fs.writeFileSync(path.join(folder, "shared.ts"), destination.replace("buildSharedReport", "WORKING_VERSION"));
+  await openRepo(page, folder);
+  const source = '.summary-diff-card[data-path="report.ts"][data-target="staged"]';
+  await page.waitForSelector(`${source} .code-move-note`);
+  assert.match(await page.$eval(`${source} .code-move-note`, note => note.textContent), /Likely moved with edits.*Moved to shared.ts:122/);
+  await page.screenshot({ path: path.join(screenshots, "moved-code-summary.png") });
+  await click(page, `${source} .code-move-note button`);
+  await page.waitForFunction(() => document.querySelector(".diff-heading-path")?.textContent === "shared.ts");
+  await page.waitForFunction(() => [...document.querySelectorAll(".diff-line")].some(row => row.textContent.includes("buildSharedReport")));
+  assert.equal(await page.$eval(".diff-heading-target", target => target.textContent), "STAGED");
+  assert.ok(!(await page.$eval(".details-pane", pane => pane.textContent)).includes("WORKING_VERSION"), "The link opens index contents, not newer working changes");
+  await page.waitForFunction(() => {
+    const row = document.querySelector('.diff-line[data-new-line="122"]');
+    const pane = document.querySelector(".details-scroll");
+    if (!row || !pane) return false;
+    const rect = row.getBoundingClientRect(), bounds = pane.getBoundingClientRect();
+    return rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+  });
+  await page.screenshot({ path: path.join(screenshots, "moved-code-destination.png") });
+  await click(page, ".code-move-note button");
+  await page.waitForFunction(() => document.querySelector(".diff-heading-path")?.textContent === "report.ts");
+  assert.match(await page.$eval(".diff-content", content => content.textContent), /function buildReport/);
+  assert.equal(git(folder, "write-tree"), tree, "Move navigation does not change staging");
+  assert.match(fs.readFileSync(path.join(folder, "shared.ts"), "utf8"), /WORKING_VERSION/);
+  fs.writeFileSync(path.join(folder, "shared.ts"), "export const unrelated = 42;\n");
+  git(folder, "add", "shared.ts");
+  await page.waitForFunction(() => !document.querySelector(".code-move-note"));
+  await mcp(page, "close_repository", { repository: folder });
+  console.log(`Moved code UI passed: staged extraction, forward/back links, exact jump, index isolation and refresh. Screenshots: ${screenshots}`);
+}
+
+async function exerciseCommitMessage(page) {
+  const folder = makeRepo("message-edit");
+  const base = git(folder, "rev-parse", "HEAD");
+  git(folder, "update-ref", "refs/remotes/origin/main", base);
+  git(folder, "commit", "--allow-empty", "-m", "Unpushed message", "-m", "Original body.");
+  const first = git(folder, "rev-parse", "HEAD");
+  git(folder, "commit", "--allow-empty", "-m", "Later commit");
+  git(folder, "add", "base.txt");
+  fs.appendFileSync(path.join(folder, "base.txt"), "working only\n");
+  const index = git(folder, "write-tree"), status = git(folder, "status", "--porcelain");
+  const working = fs.readFileSync(path.join(folder, "base.txt"), "utf8");
+  await openRepo(page, folder);
+  await click(page, ".commit-row::-p-text(Unpushed message)");
+  await click(page, ".edit-commit-message");
+  assert.equal(await page.$eval(".action-dialog textarea", field => field.value), "Unpushed message\n\nOriginal body.");
+  await page.locator(".action-dialog textarea").fill("Renamed message\n\nUpdated body with useful detail.");
+  await page.screenshot({ path: path.join(screenshots, "edit-commit-message.png") });
+  await click(page, ".action-dialog-submit");
+  await waitUntil(() => git(folder, "log", "--format=%s").includes("Renamed message"), "earlier commit reworded");
+  await waitForAction(page);
+  await page.waitForFunction(() => document.querySelector(".commit-row.selected .commit-subject")?.textContent === "Renamed message");
+  assert.equal(git(folder, "log", "--format=%s"), "Later commit\nRenamed message\nInitial commit");
+  assert.equal(git(folder, "write-tree"), index);
+  assert.equal(git(folder, "status", "--porcelain"), status);
+  assert.equal(fs.readFileSync(path.join(folder, "base.txt"), "utf8"), working);
+  assert.equal(git(folder, "show", "HEAD~1:base.txt"), "one\ntwo\nthree");
+  assert.notEqual(git(folder, "rev-parse", "HEAD~1"), first);
+  await click(page, ".commit-row::-p-text(Initial commit)");
+  await page.waitForFunction(() => document.querySelector(".detail-header .commit-message")?.textContent === "Initial commit");
+  assert.equal(await page.$(".edit-commit-message"), null, "Pushed commits must not offer editing");
+  await click(page, ".commit-row::-p-text(Renamed message)");
+  await page.waitForSelector(".edit-commit-message");
+  // Cached commit details must lose permission when a remote ref starts reaching the commit.
+  git(folder, "update-ref", "refs/remotes/origin/main", git(folder, "rev-parse", "HEAD"));
+  await click(page, "button[title='More actions']");
+  await click(page, ".push-menu button[title='Refresh']");
+  await page.waitForFunction(() => !document.querySelector(".edit-commit-message"));
+  await click(page, ".commit-row::-p-text(Renamed message)");
+  await page.waitForFunction(() => document.querySelector(".detail-header .commit-message")?.textContent.includes("Updated body with useful detail."));
+  assert.equal(await page.$(".edit-commit-message"), null);
 }
 
 async function exerciseSideEditor(page, repository) {
@@ -1023,6 +1173,22 @@ async function main() {
   await page.goto("http://127.0.0.1:1420/");
   // The app renders only after restoring saved settings, so shortcuts pressed earlier are lost.
   await page.waitForSelector(".statusbar");
+  if (process.env.GITFERRY_MOVES_ONLY) {
+    await exerciseMovedCode(page);
+    assert.deepEqual(pageErrors, [], "Moved code navigation must have no uncaught errors");
+    return;
+  }
+  if (process.env.GITFERRY_REWORD_ONLY) {
+    await exerciseCommitMessage(page);
+    assert.deepEqual(pageErrors, [], "Commit message UI must have no uncaught errors");
+    console.log(`Commit message UI checks passed; screenshot: ${path.join(screenshots, "edit-commit-message.png")}`);
+    return;
+  }
+  if (process.env.GITFERRY_WORKTREE_REMOVE_ONLY) {
+    await exerciseWorktreeRemoval(page);
+    assert.deepEqual(pageErrors, [], "Worktree removal must have no uncaught errors");
+    return;
+  }
   if (process.env.GITFERRY_README_SHOWCASE) {
     await require("./readme-showcase.cjs")({ page, sandbox, screenshots, git, click, openRepo, mcp, selectTheme });
     assert.deepEqual(pageErrors, [], "showcase must have no uncaught browser errors");
@@ -1055,12 +1221,16 @@ async function main() {
     assert.deepEqual(pageErrors, [], "status UI must have no uncaught errors");
     return;
   }
+  await exerciseWorktreeRemoval(page);
   await exerciseMcp(page, mcpRepo, small);
   if (process.env.GITFERRY_MCP_ONLY) {
     assert.deepEqual(pageErrors, [], "browser must have no uncaught errors");
     console.log(`MCP-only UI smoke passed; diff selection screenshot: ${path.join(screenshots, "diff-word-selection.png")}`);
     return;
   }
+  await exerciseMovedCode(page);
+  await exerciseCommitMessage(page);
+  await mcp(page, "close_repository", { repository: path.join(sandbox, "message-edit") });
   await page.waitForSelector(".summary-diff-card .diff-content");
   await exerciseSideEditor(page, small);
   await exerciseComparisonBase(page);
@@ -1767,7 +1937,7 @@ main().catch(async error => {
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
+  for (const name of ["message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

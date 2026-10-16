@@ -37,7 +37,24 @@ test("manual worktree order tolerates removed checkouts and appends newly discov
   assert.deepEqual(availableWorktrees(repo, [repo], [topic.path, "C:/gone", primary.path]).map(tree => tree.path), [topic.path, primary.path, extra.path]);
 });
 
-test("worktree labels show branch names and identify detached checkouts without folder names", () => {
+test("worktree labels show branch names and identify detached checkouts by folder name", () => {
   assert.equal(worktreeLabel(primary.worktrees[0]), "main");
-  assert.equal(worktreeLabel({ ...primary.worktrees[0], branch: "Detached HEAD", head: "abcdef123456" }), "Detached HEAD · abcdef1");
+  for (const path of ["C:/trees/contracts-messaging-integration", "C:\\trees\\contracts-messaging-integration\\", "ssh://server/repos/contracts-messaging-integration/"]) {
+    assert.equal(worktreeLabel({ ...primary.worktrees[0], path, branch: "Detached HEAD", head: "abcdef123456" }), "contracts-messaging-integration (detached)");
+  }
+  assert.equal(worktreeLabel({ ...primary.worktrees[0], branch: "", head: null }), "app (detached)");
+});
+
+test("merge badges come from the selected snapshot and clear when a live checkout moves", () => {
+  const tree = { ...primary.worktrees[1], head: "old", mergedInto: "origin/main" };
+  const repo = { ...primary, worktrees: [primary.worktrees[0], tree] };
+  assert.equal(availableWorktrees(repo, [repo, { ...topic, head: "old" }])[1].mergedInto, "origin/main");
+  assert.equal(availableWorktrees(repo, [repo, { ...topic, head: "new" }])[1].mergedInto, null);
+  assert.equal(availableWorktrees(repo, [repo, { ...topic, branch: "other" }])[1].mergedInto, null);
+});
+
+test("verified Git listings do not resurrect removed worktrees from cached open tabs", () => {
+  const repo = { ...primary, worktrees: [primary.worktrees[0]] };
+  assert.deepEqual(availableWorktrees(repo, [repo, topic]).map(tree => tree.path), [primary.path]);
+  assert.equal(availableWorktrees({ ...primary, worktrees: undefined }, [primary, topic]).length, 2, "Old agents still use open checkout metadata");
 });

@@ -36,6 +36,9 @@ pub struct WorktreeEntry {
     pub head: Option<String>,
     pub bare: bool,
     pub prunable: bool,
+    /// Base branch containing this checkout's committed history, using the last fetched refs.
+    #[serde(default)]
+    pub merged_into: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +104,8 @@ pub struct CommitDetails {
     pub hash: String,
     pub subject: String,
     pub body: String,
+    #[serde(default)]
+    pub message: String,
     pub author: String,
     pub author_email: String,
     pub timestamp: i64,
@@ -113,6 +118,9 @@ pub struct CommitDetails {
     pub additions: Option<u64>,
     #[serde(default)]
     pub deletions: Option<u64>,
+    /// True only for commits on the current branch that no remote-tracking ref reaches.
+    #[serde(default)]
+    pub can_edit_message: bool,
 }
 
 /// What `head` changes relative to its merge base with `base`, like a pull request diff.
@@ -213,6 +221,13 @@ pub struct RebaseStep {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum RepoAction {
+    RemoveWorktree {
+        path: String,
+        expected_head: Option<String>,
+        branch: String,
+        #[serde(default)]
+        confirmed: bool,
+    },
     StageAll,
     StageFile {
         path: String,
@@ -265,6 +280,12 @@ pub enum RepoAction {
     Commit {
         message: String,
         amend: bool,
+    },
+    RewordCommit {
+        hash: String,
+        message: String,
+        branch: String,
+        expected_head: String,
     },
     Fetch,
     Pull,

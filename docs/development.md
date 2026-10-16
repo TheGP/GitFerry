@@ -29,6 +29,8 @@ pnpm tauri build
 
 `pnpm test:ui` uses headless Chrome and disposable Git repositories. It clicks through staging, commits, fetch/pull/push, branches, merge/rebase conflicts, tags, stash, diffs, themes, and layouts without opening a desktop window. Set `CHROME_PATH` if Chrome is installed elsewhere. Optionally set `GITFERRY_REAL_REPO` to inspect a large local repository in read-only mode.
 
+The worktree RPC regression test can use an older Git installation: set `GITFERRY_TEST_GIT_BIN_DIR` to its executable directory, then run `cargo test -p gitferry-agent --test worktrees rpc_snapshots`. This changes Git only for the child test process; it covers relative metadata paths and the legacy worktree listing used by older macOS Git.
+
 Set `CARGO_TARGET_DIR` to a roomy drive before building if the system drive has limited space. The Windows installer can be built with `pnpm tauri build --bundles nsis --ci`.
 
 ### Regenerate README screenshots
