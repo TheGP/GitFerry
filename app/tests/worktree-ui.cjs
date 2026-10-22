@@ -10,7 +10,8 @@ const primary = "C:/repos/app", topic = "C:/trees/topic", unopened = "C:/trees/u
 const worktrees = [primary, topic, unopened].map((path, index) => ({ path, branch: ["main", "topic", "unopened"][index], head: "1".repeat(40), bare: false, prunable: false }));
 worktrees[2].branch = "Detached HEAD";
 worktrees[1].mergedInto = "origin/main";
-const snapshot = repo => ({ path: repo, name: repo.split("/").pop(), repositoryName: "app", branch: worktrees.find(tree => tree.path === repo)?.branch ?? "independent", commonGitDir: repo === independent ? `${independent}/.git` : `${primary}/.git`, worktrees: repo === independent ? [{ ...worktrees[0], path: independent, branch: "independent" }] : worktrees, head: "1".repeat(40), status: [], refs: [], remotes: [], commits: [], hasMore: false });
+let topicStatus = [];
+const snapshot = repo => ({ path: repo, name: repo.split("/").pop(), repositoryName: "app", branch: worktrees.find(tree => tree.path === repo)?.branch ?? "independent", commonGitDir: repo === independent ? `${independent}/.git` : `${primary}/.git`, worktrees: repo === independent ? [{ ...worktrees[0], path: independent, branch: "independent" }] : worktrees, head: "1".repeat(40), status: repo === topic ? topicStatus : [], refs: [], remotes: [], commits: [], hasMore: false });
 let vite, browser;
 let releaseSnapshots = null;
 const removals = [];
@@ -50,7 +51,7 @@ async function main() {
       return snapshot(args.path);
     }
     if (command === "repo_watch") return new Promise(() => {});
-    if (command === "repo_notes" || command === "repo_read_notes") return [];
+    if (command === "repo_notes" || command === "repo_read_notes") return { content: "" };
     if (command === "ssh_current_prompt") return null;
     if (command === "repo_diff") return { text: "", truncated: false };
     return null;
@@ -86,6 +87,12 @@ async function main() {
   assert.equal(await page.$$eval(".worktree-merged", badges => badges.length), 1);
   assert.equal(await page.$eval(".worktree-tab.active .worktree-merged", badge => badge.getAttribute("aria-label")), "Commits included in origin/main");
   assert.match(await page.$eval(".worktree-merged", badge => badge.title), /last fetched.*Uncommitted edits/);
+  topicStatus = [{ path: "staged.txt", index: "A", worktree: " " }];
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelectorAll(".worktree-merged").length === 0);
+  topicStatus = [];
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelectorAll(".worktree-merged").length === 1);
   const beforeTabs = await page.evaluate(() => localStorage.getItem("gitferry.openTabs"));
   const first = await page.$eval(".worktree-tab:first-child", button => { const rect = button.getBoundingClientRect(); return { x: rect.x + 5, y: rect.y + rect.height / 2 }; });
   const last = await page.$eval(".worktree-tab:last-child", button => { const rect = button.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });

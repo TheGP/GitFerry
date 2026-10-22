@@ -249,6 +249,12 @@ async function exerciseWorktreeRemoval(page) {
   const folder = makeRepo("worktree-removal"), linked = path.join(sandbox, "remove-this-checkout");
   git(folder, "worktree", "add", "-b", "remove-topic", linked);
   await openRepo(page, folder); await clickWorktree(page, linked);
+  await page.waitForSelector(".worktree-tab.active .worktree-merged");
+  fs.writeFileSync(path.join(linked, "base.txt"), "staged change awaiting commit\n");
+  git(linked, "add", "base.txt");
+  await page.waitForFunction(() => !document.querySelector(".worktree-tab.active .worktree-merged"));
+  git(linked, "restore", "--staged", "base.txt"); git(linked, "restore", "base.txt");
+  await page.waitForSelector(".worktree-tab.active .worktree-merged");
   const requestRemoval = async () => {
     await page.waitForFunction(() => document.querySelector(".worktree-tab.active") && !document.querySelector(".worktree-tab.active").disabled);
     await click(page, ".worktree-tab.active", { button: "right" });

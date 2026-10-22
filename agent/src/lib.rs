@@ -1119,7 +1119,11 @@ fn mark_merged_worktrees(root: &Path, refs: &[RefEntry], worktrees: &mut [Worktr
                 git(root, &["merge-base", "--is-ancestor", head, &base.target]).is_ok());
             if *included { contained.insert(head.clone()); }
         }
-        if contained.contains(head) { tree.merged_into = Some(base.name.clone()); }
+        // Inspect each checkout's own index, including unopened worktrees. A merged HEAD
+        // does not mean staged work has been incorporated into the base branch.
+        if contained.contains(head) && git(Path::new(&tree.path), &["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none"]).is_ok() {
+            tree.merged_into = Some(base.name.clone());
+        }
     }
 }
 

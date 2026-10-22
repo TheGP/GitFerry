@@ -1,7 +1,8 @@
 import { repositoryKey } from "./mcpNavigation.ts";
 
 export type Worktree = { path: string; branch: string; head: string | null; bare: boolean; prunable: boolean; mergedInto?: string | null };
-export type WorktreeRepository = { path: string; name: string; branch: string; head?: string | null; commonGitDir?: string; repositoryName?: string; worktrees?: Worktree[] };
+export type WorktreeRepository = { path: string; name: string; branch: string; head?: string | null; status?: { index: string }[]; commonGitDir?: string; repositoryName?: string; worktrees?: Worktree[] };
+export const hasStagedChanges = (status: { index: string }[] = []) => status.some(entry => entry.index !== " " && entry.index !== "?");
 
 export function worktreeGroupKey(repo: WorktreeRepository): string {
   return repositoryKey(repo.commonGitDir || repo.path);
@@ -32,7 +33,7 @@ export function availableWorktrees<T extends WorktreeRepository>(repo: T, tabs: 
     const listed = paths.get(key);
     if (listed?.prunable) continue;
     paths.set(key, { ...(listed ?? { head: null, bare: false, prunable: false }), path: tab.path, branch: tab.branch,
-      mergedInto: listed?.branch === tab.branch && (tab.head === undefined || tab.head === listed.head) ? listed?.mergedInto : null });
+      mergedInto: !hasStagedChanges(tab.status) && listed?.branch === tab.branch && (tab.head === undefined || tab.head === listed.head) ? listed?.mergedInto : null });
   }
   const positions = new Map(order.map((path, index) => [repositoryKey(path), index]));
   return [...paths.values()].sort((a, b) => (positions.get(repositoryKey(a.path)) ?? order.length) - (positions.get(repositoryKey(b.path)) ?? order.length));

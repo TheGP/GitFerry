@@ -57,6 +57,44 @@ jobs:
           path: ${{ matrix.name }}
           if-no-files-found: error
 
+  ui:
+    needs: agents
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8
+      - uses: actions/download-artifact@v4
+        with:
+          name: gitferry-agent-linux-x64
+          path: test-agent
+      - name: Install frontend packages
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+      - name: Test UI with the release agent
+        working-directory: app
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+          GITFERRY_AGENT_PATH: ${{ github.workspace }}/test-agent/gitferry-agent-linux-x64
+        run: |
+          chmod +x "$GITFERRY_AGENT_PATH"
+          pnpm exec tsc --noEmit
+          pnpm test:unit
+          node tests/worktree-ui.cjs
+          node tests/headless-smoke.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: |
+            /tmp/gitferry-headless-*/screenshots/**
+            /tmp/gitferry-worktree-tabs.png
+          if-no-files-found: ignore
+
   draft:
     needs: agents
     runs-on: ubuntu-22.04
@@ -133,7 +171,7 @@ jobs:
           args: ${{ matrix.args }}
 
   publish:
-    needs: desktop
+    needs: [desktop, ui]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

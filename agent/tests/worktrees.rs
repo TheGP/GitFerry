@@ -91,6 +91,22 @@ fn worktree_merge_badges_use_ancestry_and_prefer_fetched_base() {
         assert_eq!(snap.worktrees.iter().find(|tree| tree.branch == "Detached HEAD").unwrap().merged_into.as_deref(), Some("origin/main"));
         assert!(snap.worktrees.iter().filter(|tree| tree.branch == "main" || tree.branch == "pending").all(|tree| tree.merged_into.is_none()));
     }
+    git(&topic, &["add", "uncommitted.txt"]);
+    for backend in [ReadBackend::Git, ReadBackend::Gix] {
+        let snap = snapshot_with(dir.to_str().unwrap(), 0, 1, backend).unwrap();
+        assert!(snap.worktrees.iter().find(|tree| tree.branch == "topic").unwrap().merged_into.is_none(), "An unopened worktree's staged changes hide its merged badge");
+        assert!(snap.worktrees.iter().find(|tree| tree.branch == "Detached HEAD").unwrap().merged_into.is_some(), "Equal HEADs must not share index status");
+    }
+    git(&topic, &["reset", "--mixed", "HEAD"]);
+    for backend in [ReadBackend::Git, ReadBackend::Gix] {
+        let snap = snapshot_with(dir.to_str().unwrap(), 0, 1, backend).unwrap();
+        assert_eq!(snap.worktrees.iter().find(|tree| tree.branch == "topic").unwrap().merged_into.as_deref(), Some("origin/main"), "Unstaging restores the badge");
+    }
+    std::fs::write(detached.join("staged.txt"), "Detached staged change\n").unwrap();
+    git(&detached, &["add", "staged.txt"]);
+    assert!(snapshot_with(dir.to_str().unwrap(), 0, 1, ReadBackend::Git).unwrap().worktrees.iter()
+        .find(|tree| tree.branch == "Detached HEAD").unwrap().merged_into.is_none());
+    git(&detached, &["reset", "--mixed", "HEAD"]);
     git(&topic, &["commit", "-qm", "More work", "--allow-empty"]);
     let snap = snapshot_with(dir.to_str().unwrap(), 0, 1, ReadBackend::Git).unwrap();
     assert!(snap.worktrees.iter().find(|tree| tree.branch == "topic").unwrap().merged_into.is_none());

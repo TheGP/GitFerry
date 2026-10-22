@@ -52,6 +52,12 @@ test("merge badges come from the selected snapshot and clear when a live checkou
   assert.equal(availableWorktrees(repo, [repo, { ...topic, head: "old" }])[1].mergedInto, "origin/main");
   assert.equal(availableWorktrees(repo, [repo, { ...topic, head: "new" }])[1].mergedInto, null);
   assert.equal(availableWorktrees(repo, [repo, { ...topic, branch: "other" }])[1].mergedInto, null);
+  for (const index of ["A", "M", "D", "R", "U"]) {
+    assert.equal(availableWorktrees(repo, [repo, { ...topic, head: "old", status: [{ index }] }])[1].mergedInto, null, "Staged changes hide even a cached badge");
+  }
+  for (const index of [" ", "?"]) {
+    assert.equal(availableWorktrees(repo, [repo, { ...topic, head: "old", status: [{ index }] }])[1].mergedInto, "origin/main");
+  }
 });
 
 test("verified Git listings do not resurrect removed worktrees from cached open tabs", () => {

@@ -17,7 +17,7 @@ import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
 import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection } from "./mcpNavigation";
 import "./App.css";
-import { availableWorktrees, repositoryTabs, reorderRepositoryTabs, worktreeGroupKey, worktreeLabel, type Worktree } from "./worktreeTabs";
+import { availableWorktrees, hasStagedChanges, repositoryTabs, reorderRepositoryTabs, worktreeGroupKey, worktreeLabel, type Worktree } from "./worktreeTabs";
 import { parseRepositoryMetadata, repositoryMetadataCache } from "./worktreeSession";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
@@ -1258,7 +1258,7 @@ function App() {
       const current = tabs().find(item => item.path === path);
       if (!current) return;
       const refsMoved = Boolean(update.refsHash && current.refsHash && update.refsHash !== current.refsHash);
-      if (refsMoved || update.head !== current.head || update.branch !== current.branch || update.operation !== current.operation || update.rebaseEditPause !== current.rebaseEditPause) {
+      if (refsMoved || update.head !== current.head || update.branch !== current.branch || update.operation !== current.operation || update.rebaseEditPause !== current.rebaseEditPause || hasStagedChanges(update.status) !== hasStagedChanges(current.status)) {
         if (activePath() === path) await refresh();
       } else if (JSON.stringify(update.status) !== JSON.stringify(current.status)) {
         setTabs(items => items.map(item => item.path === path ? { ...item, status: reuseEqual(item.status, update.status, entry => entry.path) } : item));
