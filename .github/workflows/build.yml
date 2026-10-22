@@ -12,6 +12,11 @@ on:
         type: boolean
         required: false
         default: false
+      desktop_target:
+        description: Desktop platforms to build
+        type: choice
+        options: [all, windows]
+        default: all
 
 permissions:
   contents: read
@@ -106,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-24.04]
+        os: ${{ fromJSON(inputs.desktop_target == 'windows' && '["windows-latest"]' || '["windows-latest","macos-latest","ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -137,3 +142,11 @@ jobs:
       - name: Build desktop app
         working-directory: app
         run: pnpm tauri build --no-bundle --ci
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: gitferry-windows-runtime
+          path: |
+            target/release/gitferry.exe
+            app/src-tauri/resources/gitferry-agent-*
+          if-no-files-found: error

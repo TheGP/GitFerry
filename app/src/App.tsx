@@ -1309,7 +1309,7 @@ function App() {
     if (!term || !path) return;
     if (demoMode) {
       const needle = term.toLowerCase();
-      setSearchResult({ commits: (repo()?.commits ?? []).filter(item => `${item.subject} ${item.author}`.toLowerCase().includes(needle)), hasMore: false });
+      setSearchResult({ commits: (repo()?.commits ?? []).filter(item => item.hash.toLowerCase().startsWith(needle) || `${item.subject} ${item.author}`.toLowerCase().includes(needle)), hasMore: false });
       return;
     }
     setSearchBusy(true);

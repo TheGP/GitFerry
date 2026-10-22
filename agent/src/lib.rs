@@ -815,7 +815,10 @@ fn log(
     };
     let count_arg = format!("--max-count={count}");
     let skip_arg = format!("--skip={offset}");
-    let mut args = vec!["log", "HEAD", "--all"];
+    let mut args = match filter {
+        Some(("hash", hash)) => vec!["log", "--no-walk", hash],
+        _ => vec!["log", "HEAD", "--all"],
+    };
     if !needs_filtering {
         args.push(&skip_arg);
     }
@@ -826,6 +829,7 @@ fn log(
     let pathspec;
     if let Some((kind, term)) = filter {
         match kind {
+            "hash" => {},
             "author" => args.extend(["--author", term]),
             "code" => args.extend(["-S", term]),
             "path" => {
@@ -1301,8 +1305,24 @@ pub fn search(
     if term.is_empty() {
         return Err("Search term cannot be empty".to_string());
     }
-    let (commits, has_more) = log(&root, offset, limit, Some((kind, term)))?;
+    let hash = if kind == "message" { search_commit_hash(&root, term)? } else { None };
+    let filter = hash.as_deref().map(|hash| ("hash", hash)).unwrap_or((kind, term));
+    let (commits, has_more) = log(&root, offset, limit, Some(filter))?;
     Ok(SearchResult { commits, has_more })
+}
+
+fn search_commit_hash(root: &Path, query: &str) -> Result<Option<String>, String> {
+    if !(4..=64).contains(&query.len()) || !query.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Ok(None);
+    }
+    let output = git(root, &["rev-parse", &format!("--disambiguate={}", query.to_ascii_lowercase())])?;
+    let objects = text(&output.stdout);
+    let mut hashes = objects.lines();
+    let Some(hash) = hashes.next() else { return Ok(None) };
+    if hashes.next().is_some() { return Err("Commit hash prefix is ambiguous; enter a longer hash".into()); }
+    // A hexadecimal message or a blob/tree id must still use ordinary message search.
+    Ok(git(root, &["rev-parse", "--verify", "--quiet", &format!("{hash}^{{commit}}")]).ok()
+        .map(|output| text(&output.stdout).trim().to_owned()).filter(|hash| valid_hash(hash)))
 }
 
 fn valid_hash(hash: &str) -> bool {

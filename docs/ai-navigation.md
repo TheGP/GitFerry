@@ -12,6 +12,8 @@ The server exposes `get_view`, `list_repositories`, `open_repository`, `close_re
 
 `close_repository({"repository":"<tabId>"})` closes a tab without deleting files; unsaved editor changes must be saved or cancelled first. Repeating the command after the tab has closed returns `closed: false`. `reorder_repositories({"repositories":["<tabId B>","<tabId A>"]})` sets the left-to-right order: include every open tab exactly once using the IDs from `list_repositories`. Reordering preserves the active tab and its selections. Both commands save the session and return `confirmed: true` when complete.
 
+Commit search accepts full hashes and unambiguous hexadecimal prefixes of at least four characters, as well as message text, `author:name` and `path:file`. A hash match returns that commit alone, including commits outside the loaded history page. Ambiguous prefixes ask for a longer hash; hexadecimal text that does not identify a commit still searches messages.
+
 For example, after reading a commit diff, an AI can navigate to the evidence with:
 
 ```json

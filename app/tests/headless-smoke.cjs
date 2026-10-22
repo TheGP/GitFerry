@@ -458,6 +458,20 @@ async function exerciseComparisonNotes(page) {
 async function exerciseMcp(page, repository, restore) {
   let reply = await mcp(page, "open_repository", { repository: repository.folder, branch: "main" });
   assert.equal(reply.error, null);
+  for (const query of [repository.cause.slice(0, 8), repository.cause.toUpperCase()]) {
+    reply = await mcp(page, "search_commits", { repository: repository.folder, query });
+    assert.equal(reply.error, null);
+    assert.deepEqual(reply.result.commits.map(commit => commit.hash), [repository.cause]);
+    assert.equal(reply.result.hasMore, false);
+  }
+  await shortcut(page, "f"); await page.waitForSelector(".search-box input");
+  await page.locator(".search-box input").fill(repository.cause.slice(0, 8));
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.querySelectorAll(".commit-row.search-result").length === 1);
+  assert.match(await page.$eval(".commit-row.search-result", row => row.textContent), /Introduce cause/);
+  await click(page, ".commit-row.search-result");
+  assert.equal((await mcp(page, "get_view")).result.commit, repository.cause);
+  await click(page, ".search-box button[title='Clear search']");
   await exerciseNotes(page, repository);
   await mcp(page, "open_repository", { repository: repository.worktree, branch: "topic" });
   reply = await mcp(page, "list_repositories");

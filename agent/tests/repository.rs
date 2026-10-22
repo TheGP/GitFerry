@@ -1329,6 +1329,60 @@ fn hunk_actions_reject_changes_since_the_displayed_diff() {
 }
 
 #[test]
+fn search_finds_short_and_full_commit_hashes_without_walking_parents() {
+    for format in ["sha1", "sha256"] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        git(root, &["init", "-q", "-b", "main", &format!("--object-format={format}")]);
+        git(root, &["config", "user.name", "Test"]);
+        git(root, &["config", "user.email", "test@example.com"]);
+        git(root, &["commit", "--allow-empty", "-qm", "Original change"]);
+        let original = git(root, &["rev-parse", "HEAD"]);
+        git(root, &["commit", "--allow-empty", "-qm", "Unrelated later change"]);
+        let latest = git(root, &["rev-parse", "HEAD"]);
+        let path = root.to_str().unwrap();
+        for query in [original[..8].to_string(), original.clone(), original.to_uppercase(), format!("  {}  ", &original[..8]), latest.clone()] {
+            let found = search(path, &query, 0, 1).unwrap();
+            assert_eq!(found.commits.len(), 1, "Hash search must return only the requested commit");
+            let expected = if query == latest { &latest } else { &original };
+            assert_eq!(&found.commits[0].hash, expected);
+            assert!(!found.has_more);
+            assert!(search(path, &query, 1, 1).unwrap().commits.is_empty());
+        }
+        git(root, &["commit", "--allow-empty", "-qm", "deadbeef message marker"]);
+        assert_eq!(search(path, "deadbeef", 0, 20).unwrap().commits[0].subject, "deadbeef message marker");
+        assert!(search(path, &"f".repeat(latest.len()), 0, 20).unwrap().commits.is_empty());
+    }
+}
+
+#[test]
+fn hash_search_reports_ambiguity_and_can_find_a_detached_object() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    git(root, &["init", "-q", "-b", "main", "--object-format=sha1"]);
+    git(root, &["config", "user.name", "Test"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    git(root, &["commit", "--allow-empty", "-qm", "Base"]);
+    let tree = git(root, &["rev-parse", "HEAD^{tree}"]);
+    let mut hashes = Vec::new();
+    // These fixed commit bodies share the four-character SHA-1 prefix 4a4c.
+    for nonce in [3, 209] {
+        let body = format!("tree {tree}\nauthor Test <test@example.com> 1700000000 +0000\ncommitter Test <test@example.com> 1700000000 +0000\n\nHash collision fixture {nonce}\n");
+        std::fs::write(root.join("object.commit"), body).unwrap();
+        let hash = git(root, &["hash-object", "-w", "-t", "commit", "object.commit"]);
+        assert!(hash.starts_with("4a4c"));
+        hashes.push(hash);
+    }
+    let path = root.to_str().unwrap();
+    assert!(search(path, "4a4c", 0, 20).unwrap_err().contains("ambiguous"));
+    for hash in hashes {
+        let found = search(path, &hash[..8], 0, 20).unwrap();
+        assert_eq!(found.commits.len(), 1);
+        assert_eq!(found.commits[0].hash, hash);
+    }
+}
+
+#[test]
 fn partial_actions_and_snapshots_preserve_bytes_with_textconv() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path();

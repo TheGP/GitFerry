@@ -33,7 +33,7 @@ Choose tools according to the available evidence:
 
 | Goal | Tool and arguments |
 | --- | --- |
-| Find messages, authors, or changed paths | `search_commits(repository, query, offset)`; queries support `author:name` and `path:file` |
+| Find a commit hash, message, author, or changed path | `search_commits(repository, query, offset)`; full hashes, unambiguous prefixes of 4+ hex characters, `author:name` and `path:file` |
 | Find introductions/removals of literal code | `find_changes(repository, query, offset)`; Git pickaxe `-S`, not regex |
 | Inspect a candidate and its changed files | `get_commit(repository, commit)` |
 | Read the exact file diff and numbered rows | `get_diff(repository, commit, file, parent?)` |
