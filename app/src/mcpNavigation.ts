@@ -8,7 +8,7 @@ export type McpRequest = { id: number; tool: string; deadline: number; arguments
   repository?: string; repositories?: string[]; branch?: string | null; commit?: string; file?: string | null;
   parent?: string | null; query?: string; offset?: number; revision?: string | null;
   startLine?: number; endLine?: number | null; quote?: string | null; comment?: string | null; highlights?: Highlight[]; ranges?: FileRange[];
-  notes?: NoteEntry[]; validateOnly?: boolean;
+  notes?: NoteEntry[]; validateOnly?: boolean; noteIds?: string[]; id?: string; view?: "summary" | "diff";
 } };
 export type McpConnection = { url: string; token: string };
 

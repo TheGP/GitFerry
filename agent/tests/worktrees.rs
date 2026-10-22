@@ -244,3 +244,93 @@ fn partial_worktree_removal_reports_unregistered_checkout_and_leftover_folder() 
     assert_eq!(snapshot_with(primary.to_str().unwrap(), 0, 1, ReadBackend::Git).unwrap().worktrees.len(), 1);
     drop(held);
 }
+
+#[test]
+fn forgetting_stale_registration_keeps_files_branch_index_and_other_worktrees() {
+    let temp = tempfile::tempdir().unwrap();
+    let primary = temp.path().join("main");
+    let linked = temp.path().join("broken with spaces é");
+    let other = temp.path().join("other broken checkout");
+    git(temp.path(), &["init", "-q", "-b", "main", primary.to_str().unwrap()]);
+    git(&primary, &["config", "user.name", "Test"]);
+    git(&primary, &["config", "user.email", "test@example.com"]);
+    std::fs::write(primary.join("tracked.txt"), "base\n").unwrap();
+    git(&primary, &["add", "."]); git(&primary, &["commit", "-qm", "Base"]);
+    git(&primary, &["worktree", "add", "-qb", "topic", linked.to_str().unwrap()]);
+    git(&primary, &["worktree", "add", "-qb", "other", other.to_str().unwrap()]);
+    let link = std::fs::read_to_string(linked.join(".git")).unwrap();
+    let admin = std::path::PathBuf::from(link.trim().strip_prefix("gitdir: ").unwrap());
+    std::fs::write(linked.join("tracked.txt"), "staged work\n").unwrap();
+    git(&linked, &["add", "tracked.txt"]);
+    let index = std::fs::read(admin.join("index")).unwrap();
+    std::fs::write(linked.join("keep.txt"), "remaining user data\n").unwrap();
+    std::fs::remove_file(linked.join(".git")).unwrap();
+    std::fs::remove_file(other.join(".git")).unwrap();
+    let snapshot = || snapshot_with(primary.to_str().unwrap(), 0, 1, ReadBackend::Git).unwrap();
+    let snap = snapshot();
+    let tree = snap.worktrees.iter().find(|tree| tree.branch == "topic").unwrap();
+    assert!(tree.prunable);
+    let forget = RepoAction::ForgetWorktree { path: tree.path.clone(), expected_head: tree.head.clone(), branch: tree.branch.clone(), confirmed: true };
+    for invalid in [primary.clone(), temp.path().join("unregistered"), std::path::PathBuf::from("relative")] {
+        let mut request = forget.clone();
+        if let RepoAction::ForgetWorktree { path, .. } = &mut request { *path = invalid.to_string_lossy().into(); }
+        assert!(action(primary.to_str().unwrap(), request).is_err());
+    }
+    let mut unconfirmed = forget.clone();
+    if let RepoAction::ForgetWorktree { confirmed, .. } = &mut unconfirmed { *confirmed = false; }
+    assert!(action(primary.to_str().unwrap(), unconfirmed).unwrap_err().contains("Confirm"));
+    let mut changed = forget.clone();
+    if let RepoAction::ForgetWorktree { expected_head, .. } = &mut changed { *expected_head = Some("0".repeat(40)); }
+    assert!(action(primary.to_str().unwrap(), changed).unwrap_err().contains("changed"));
+    std::fs::write(admin.join("locked"), "keep this checkout").unwrap();
+    assert!(action(primary.to_str().unwrap(), forget.clone()).is_err());
+    assert!(admin.is_dir());
+    std::fs::remove_file(admin.join("locked")).unwrap();
+    // A repaired checkout must never be forgotten using an earlier stale confirmation.
+    std::fs::write(linked.join(".git"), &link).unwrap();
+    assert!(action(primary.to_str().unwrap(), forget.clone()).unwrap_err().contains("live worktree"));
+    std::fs::remove_file(linked.join(".git")).unwrap();
+    #[cfg(unix)]
+    {
+        let outside = temp.path().join("outside-recovery");
+        std::fs::create_dir(&outside).unwrap();
+        let redirected = primary.join(".git/gitferry-removed-worktrees");
+        std::os::unix::fs::symlink(&outside, &redirected).unwrap();
+        assert!(action(primary.to_str().unwrap(), forget.clone()).unwrap_err().contains("redirected"));
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+        assert!(admin.exists());
+        std::fs::remove_file(redirected).unwrap();
+    }
+    let message = action(primary.to_str().unwrap(), forget).unwrap();
+    assert!(message.contains("remaining folder files were kept"));
+    assert!(!admin.exists());
+    assert_eq!(std::fs::read_to_string(linked.join("tracked.txt")).unwrap(), "staged work\n");
+    assert_eq!(std::fs::read_to_string(linked.join("keep.txt")).unwrap(), "remaining user data\n");
+    let backup = std::fs::read_dir(primary.join(".git/gitferry-removed-worktrees")).unwrap().next().unwrap().unwrap().path();
+    assert_eq!(std::fs::read(backup.join("index")).unwrap(), index);
+    assert_eq!(std::fs::read_to_string(backup.join("gitdir")).unwrap(), format!("{}/.git\n", linked.to_string_lossy().replace('\\', "/")));
+    assert_eq!(snapshot().worktrees.len(), 2);
+    assert!(snapshot().worktrees.iter().any(|tree| tree.branch == "other" && tree.prunable));
+    git(&primary, &["show-ref", "--verify", "refs/heads/topic"]);
+}
+
+#[test]
+fn forgetting_stale_detached_worktree_requires_reachable_commits() {
+    let temp = tempfile::tempdir().unwrap();
+    let primary = temp.path().join("main");
+    let linked = temp.path().join("broken detached");
+    git(temp.path(), &["init", "-q", "-b", "main", primary.to_str().unwrap()]);
+    git(&primary, &["config", "user.name", "Test"]); git(&primary, &["config", "user.email", "test@example.com"]);
+    git(&primary, &["commit", "-qm", "Base", "--allow-empty"]);
+    git(&primary, &["worktree", "add", "-q", "--detach", linked.to_str().unwrap()]);
+    git(&linked, &["commit", "-qm", "Unique detached commit", "--allow-empty"]);
+    std::fs::remove_file(linked.join(".git")).unwrap();
+    let snap = snapshot_with(primary.to_str().unwrap(), 0, 1, ReadBackend::Git).unwrap();
+    let tree = snap.worktrees.iter().find(|tree| tree.prunable).unwrap();
+    let forget = RepoAction::ForgetWorktree { path: tree.path.clone(), expected_head: tree.head.clone(), branch: tree.branch.clone(), confirmed: true };
+    assert!(action(primary.to_str().unwrap(), forget.clone()).unwrap_err().contains("Create a branch"));
+    git(&primary, &["branch", "saved-detached", tree.head.as_deref().unwrap()]);
+    action(primary.to_str().unwrap(), forget).unwrap();
+    assert!(linked.is_dir());
+    git(&primary, &["show-ref", "--verify", "refs/heads/saved-detached"]);
+}

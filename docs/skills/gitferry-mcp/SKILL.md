@@ -23,7 +23,9 @@ With grouped worktrees, this order includes every open checkout. The first occur
 
 ### Write authorized change notes
 
-When explicitly asked for repository change notes, use `write_notes` with the separate change-notes skill's guidance. Read the exact target diff first. Each entry needs `id`, `file`, `quote`, `note`, and `target: "working" | "staged" | "untracked"`; optional `side`, `startLine`, `before` and `after` disambiguate repeated code. The tool validates the whole batch before appending LF JSONL and returns matched file/target/side/line for every note. `validateOnly: true` does not write. Same id updates; `{id,deleted:true}` removes. Require `confirmed: true` and `written: true` for saves, then reveal the affected files to verify visible placement. It writes only `.gitferry/notes.jsonl`, never stages or edits source files. Do not write notes without user authorization.
+When explicitly asked for repository change notes, use `write_notes` with the separate change-notes skill's guidance. Read the exact target diff first. Each entry needs `id`, `file`, `quote`, `note`, and `target`: `working`, `staged`, `untracked`, full commit SHA, or `baseSHA..headSHA`. For an open comparison use `get_view.comparison.target` or `compare`; the saved target is pinned to exact SHAs. Optional `side`, `startLine`, `before` and `after` disambiguate repeated code. The tool validates the whole batch before appending LF JSONL and returns matched locations and separate visibility states. `validateOnly: true` does not write. Same id updates; `{id,deleted:true}` removes. Require `confirmed: true` and `written: true` for saves. It writes only `.gitferry/notes.jsonl`, never source or index. Do not write notes without user authorization.
+
+After saving, call `reveal_note(repository, id)` to open the correct target in Summary, expand the file and scroll to the note. Require `confirmed: true` and `note.matched`, `note.rendered`, `note.visible` all true. Use `view: "diff"` for notes outside normal hunk context. `get_view(noteIds: [id])` rechecks saved/matched/rendered/visible states, hidden reasons, missing ids and `notesError`; it reports up to 200 notes without a filter. Visibility means inside the app viewport, not OS window occlusion; `appFocused` reports focus. Saving alone does not prove visibility. An older note stays on its original comparison after the branch moves. Never use manual JSONL edits as a workaround for an outdated running server's comparison schema.
 
 Repository tabs group linked worktrees, and the second row selects a checkout. MCP still addresses each checkout by its canonical `tabId`; last selected worktrees are remembered across sessions. Do not infer checkout identity from the first row's repository name.
 
@@ -40,7 +42,7 @@ Choose tools according to the available evidence:
 
 Use returned full commit SHAs and file paths. For paged search/history results, follow `hasMore` with the next `offset` when the investigation needs more results. `find_changes` finds changes in occurrence counts; an edit that preserves the count may require file history and diff inspection. Search matches and blame attribution are evidence, not proof that a commit caused the reported problem. Explain the causal code change and any remaining uncertainty.
 
-For a merge, inspect `get_commit`'s parents and pass the appropriate parent SHA to both `get_diff` and `reveal_change`. The default is the first parent. For uncommitted changes, `get_diff` and `reveal_change` accept `working`, `staged`, or `untracked` as `commit`.
+For a merge, inspect `get_commit`'s parents and pass the appropriate parent SHA to both `get_diff` and `reveal_change`. The default is the first parent. For uncommitted changes, `get_diff` and `reveal_change` accept `working`, `staged`, or `untracked` as `commit`. Comparisons accept `commit: "compare"` or the exact `baseSHA..headSHA` from `get_view.comparison.target`.
 
 ## Show the evidence in GitFerry
 
@@ -51,6 +53,8 @@ For explanations of existing code, use `reveal_file`; the file does not need to 
 ```
 
 Unlike `reveal_change`'s checked-out branch check, `reveal_file.branch` selects a local or remote branch to browse without checkout. Alternatively, pass `revision` as a full commit SHA, `HEAD` (default), or `working`; do not combine it with `branch`. Prefer the verified full SHA when refs could move during the investigation. The file opens read-only in the side editor, including unchanged code. Lines are 1-based; `quote` must occur in the highlighted range. `comment` is a plain-text, temporary explanation beside the code, not a repository edit. Require `confirmed: true`, and report the returned resolved `revision`, file, and line range. `get_view.editor` reads back the displayed revision and annotation. **Clear AI highlights** removes the annotation.
+
+`reveal_file` returns `placement.surface: "side_editor"`, `persistent: false`, `shownInSummary: false`, and per-comment rendered/visible states. `get_view.editor.annotationPlacement` reads them back. Report the placement accurately; `confirmed: true` verifies the file and highlights, not visibility of every comment. Saved comments in Summary require `write_notes` followed by `reveal_note`.
 
 For multiple non-adjacent ranges in a single file, make **one** `reveal_file` request with `ranges`, not repeated requests that replace each other. Each range has `startLine`, optional `endLine`, `quote`, and `comment`. Top-level `comment` can explain the whole file. Do not mix `ranges` with top-level `startLine`, `endLine`, or `quote`:
 

@@ -954,6 +954,66 @@ fn common_git_dir(root: &Path) -> Result<PathBuf, String> {
         format!("Cannot resolve repository metadata directory {}: {error}", path.display()))
 }
 
+fn forget_worktree(root: &Path, path: &str, expected_head: Option<&str>, branch: &str, confirmed: bool) -> Result<String, String> {
+    if !confirmed { return Err("Confirm removal of the stale worktree registration first".into()); }
+    let target = Path::new(path);
+    if !target.is_absolute() { return Err("An absolute worktree path is required".into()); }
+    let trees = linked_worktrees(root)?;
+    let index = trees.iter().position(|tree| Path::new(&tree.path) == target)
+        .ok_or("This folder is no longer registered as a worktree; refresh the repository")?;
+    let tree = &trees[index];
+    if index == 0 || tree.bare { return Err("The primary repository cannot be forgotten".into()); }
+    if tree.head.as_deref() != expected_head || tree.branch != branch {
+        return Err("The worktree changed since confirmation; refresh and try again".into());
+    }
+    if !tree.prunable { return Err("This is a live worktree; use Remove worktree instead".into()); }
+    match std::fs::symlink_metadata(target.join(".git")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        _ => return Err("The worktree has a Git link or cannot be inspected; repair it before removing its registration".into()),
+    }
+    ensure_worktree_commits_reachable(root, tree)?;
+    let common = common_git_dir(root)?;
+    let worktrees = common.join("worktrees").canonicalize().map_err(|error| error.to_string())?;
+    if worktrees != common.join("worktrees") { return Err("Worktree metadata is outside its expected directory".into()); }
+    let mut matched = Vec::new();
+    for entry in std::fs::read_dir(&worktrees).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
+        let admin = entry.path().canonicalize().map_err(|error| error.to_string())?;
+        if admin.parent() != Some(worktrees.as_path()) || admin != entry.path() { continue; }
+        let Ok(link) = std::fs::read_to_string(admin.join("gitdir")) else { continue };
+        if Path::new(link.trim_end_matches(['\r', '\n'])) == target.join(".git") { matched.push(admin); }
+    }
+    if matched.len() != 1 { return Err("Cannot identify this worktree's registration safely".into()); }
+    let admin = &matched[0];
+    if ["locked", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"].iter().any(|name| admin.join(name).exists()) {
+        return Err("The worktree is locked or has an unfinished Git operation; recover it before removing its registration".into());
+    }
+    let backup_path = common.join("gitferry-removed-worktrees");
+    std::fs::create_dir_all(&backup_path).map_err(|error| error.to_string())?;
+    let backup = backup_path.canonicalize().map_err(|error| error.to_string())?;
+    if backup != backup_path { return Err("Worktree recovery directory is redirected; cannot remove the registration safely".into()); }
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos();
+    let destination = backup.join(format!("{}-{nonce}", admin.file_name().ok_or("Invalid worktree registration")?.to_string_lossy()));
+    // Move only this verified metadata directory. Keep the checkout, index and reflog for recovery.
+    // Recheck the missing link immediately before moving so a repaired checkout is not forgotten.
+    match std::fs::symlink_metadata(target.join(".git")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        _ => return Err("The worktree was repaired or cannot be inspected; refresh and try again".into()),
+    }
+    std::fs::rename(admin, &destination).map_err(|error| format!("Cannot remove stale worktree registration: {error}"))?;
+    Ok(format!("Stale worktree registration removed. The branch and remaining folder files were kept.\nGit metadata saved for recovery: {}", display_path(&destination)))
+}
+
+fn ensure_worktree_commits_reachable(root: &Path, tree: &WorktreeEntry) -> Result<(), String> {
+    if tree.branch == "Detached HEAD" {
+        let head = tree.head.as_deref().ok_or("The detached worktree has no commit")?;
+        let reachable = git(root, &["for-each-ref", &format!("--contains={head}"), "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"])?;
+        if reachable.stdout.is_empty() { return Err("Create a branch for this detached worktree's commits before removing it".into()); }
+    }
+    Ok(())
+}
+
 fn remove_worktree(root: &Path, path: &str, expected_head: Option<&str>, branch: &str, confirmed: bool) -> Result<Output, String> {
     if !confirmed { return Err("Confirm worktree removal first".into()); }
     if !Path::new(path).is_absolute() { return Err("An absolute worktree path is required".into()); }
@@ -962,16 +1022,13 @@ fn remove_worktree(root: &Path, path: &str, expected_head: Option<&str>, branch:
     let index = trees.iter().position(|tree| Path::new(&tree.path).canonicalize().ok().as_ref() == Some(&target))
         .ok_or("This folder is not a worktree of this repository")?;
     let tree = &trees[index];
-    if index == 0 || tree.bare || tree.prunable { return Err("The primary repository cannot be removed as a linked worktree".into()); }
+    if index == 0 || tree.bare { return Err("The primary repository cannot be removed as a linked worktree".into()); }
+    if tree.prunable { return Err("This worktree's Git link is missing. Use Forget stale worktree to remove its registration while keeping remaining files.".into()); }
     if tree.head.as_deref() != expected_head || tree.branch != branch {
         return Err("The worktree changed since confirmation; refresh and try again".into());
     }
     if operation(&target).is_some() { return Err("Finish or abort the worktree's Git operation before removing it".into()); }
-    if tree.branch == "Detached HEAD" {
-        let head = tree.head.as_deref().ok_or("The detached worktree has no commit")?;
-        let reachable = git(root, &["for-each-ref", &format!("--contains={head}"), "--format=%(refname)", "refs/heads", "refs/remotes", "refs/tags"])?;
-        if reachable.stdout.is_empty() { return Err("Create a branch for this detached worktree's commits before removing it".into()); }
-    }
+    ensure_worktree_commits_reachable(root, tree)?;
     // Run from another registered checkout, even when the request comes from the removed checkout.
     // Git checks cleanliness and locks; never force or recursively delete folders ourselves.
     let controller = trees.iter().find(|tree| Path::new(&tree.path).is_dir()
@@ -2133,6 +2190,8 @@ pub fn action_with_progress(
 ) -> Result<String, String> {
     let root = repo_root(path)?;
     let output = match action {
+        RepoAction::ForgetWorktree { path, expected_head, branch, confirmed } =>
+            return forget_worktree(&root, &path, expected_head.as_deref(), &branch, confirmed),
         RepoAction::RemoveWorktree { path, expected_head, branch, confirmed } =>
             remove_worktree(&root, &path, expected_head.as_deref(), &branch, confirmed)?,
         RepoAction::StageAll => git(&root, &["add", "-A"])?,

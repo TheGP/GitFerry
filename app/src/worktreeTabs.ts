@@ -22,7 +22,7 @@ export function repositoryTabs<T extends WorktreeRepository>(tabs: T[], selected
 
 export function availableWorktrees<T extends WorktreeRepository>(repo: T, tabs: T[], order: string[] = []): Worktree[] {
   const members = tabs.filter(tab => worktreeGroupKey(tab) === worktreeGroupKey(repo));
-  const listed = (repo.worktrees ?? []).filter(entry => !entry.bare && !entry.prunable);
+  const listed = (repo.worktrees ?? []).filter(entry => !entry.bare);
   const paths = new Map(listed.map(entry => [repositoryKey(entry.path), entry]));
   for (const tab of members) {
     const key = repositoryKey(tab.path);
@@ -30,6 +30,7 @@ export function availableWorktrees<T extends WorktreeRepository>(repo: T, tabs: 
     if (repo.worktrees?.length && !paths.has(key)) continue;
     // Open checkouts retain their live branch information; an unavailable checkout can still be closed.
     const listed = paths.get(key);
+    if (listed?.prunable) continue;
     paths.set(key, { ...(listed ?? { head: null, bare: false, prunable: false }), path: tab.path, branch: tab.branch,
       mergedInto: listed?.branch === tab.branch && (tab.head === undefined || tab.head === listed.head) ? listed?.mergedInto : null });
   }

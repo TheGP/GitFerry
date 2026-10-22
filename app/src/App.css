@@ -29,6 +29,7 @@ button { cursor: pointer; }
 .worktree-tab.active { color: var(--theme-text); background: var(--theme-toolbar); box-shadow: inset 0 -2px var(--theme-accent); }
 .worktree-tab svg { width: 13px; height: 13px; flex: none; }
 .worktree-merged { display: inline-flex; flex: none; color: #72c995; }
+.worktree-unavailable { flex: none; font-size: 13px; color: var(--theme-muted); }
 .worktree-tab.removing { color: var(--theme-muted); background: var(--theme-heading); box-shadow: none; cursor: wait; }
 .worktree-removing { display: inline-flex; flex: none; align-items: center; gap: 6px; color: var(--theme-secondary); }
 .worktree-removing::before { content: ""; width: 11px; height: 11px; border: 2px solid var(--theme-border); border-top-color: currentColor; border-radius: 50%; animation: worktree-removing-spin .8s linear infinite; }

@@ -19,9 +19,10 @@ test("repository selection restores remembered worktree and uses first checkout 
   assert.equal(repositoryTabs([primary, topic, other], other.path, { [key]: topic.path })[0].branch, "topic");
   assert.equal(repositoryTabs([primary, topic], null, { [key]: "removed" })[0].branch, "main");
 });
-test("lists unopened worktrees, updates opened branches, skips bare and prunable entries", () => {
+test("lists unopened and unavailable worktrees, updates opened branches and skips bare entries", () => {
   const repo = { ...primary, worktrees: [...primary.worktrees, { path: "C:/bare", branch: "", head: null, bare: true, prunable: false }, { path: "C:/gone", branch: "old", head: null, bare: false, prunable: true }] };
-  assert.deepEqual(availableWorktrees(repo, [{ ...repo, branch: "renamed" }]).map(tree => [tree.path, tree.branch]), [[primary.path, "renamed"], [topic.path, "topic"]]);
+  assert.deepEqual(availableWorktrees(repo, [{ ...repo, branch: "renamed" }]).map(tree => [tree.path, tree.branch]), [[primary.path, "renamed"], [topic.path, "topic"], ["C:/gone", "old"]]);
+  assert.equal(availableWorktrees(repo, [{ ...repo, path: "C:/gone", branch: "stale cache" }])[2].branch, "old", "Unavailable entries keep authoritative registration details");
 });
 test("repository reordering moves all its linked tabs together", () => {
   assert.deepEqual(reorderRepositoryTabs([primary, other, topic], primary.path, 1).map(tab => tab.path), [other.path, primary.path, topic.path]);

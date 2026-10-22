@@ -1,9 +1,16 @@
 // Latest entry wins by id; deleted entries remove a note. Legacy quote-only notes remain supported.
 export const notesFile = ".gitferry/notes.jsonl";
-export type Note = { id: string; file: string; quote: string; note: string; target?: "working" | "staged" | "untracked"; side?: "old" | "new"; startLine?: number; before?: string; after?: string };
+export type Note = { id: string; file: string; quote: string; note: string; target?: string; side?: "old" | "new"; startLine?: number; before?: string; after?: string };
 export type NoteEntry = Note | { id: string; deleted: true };
 export type NoteRow = { line: string; kind: string; hunkIndex: number; oldNumber?: number | null; newNumber?: number | null };
 const normalizePath = (file: string) => file.replace(/\\/g, "/").replace(/^\.\//, "");
+export const isCommitTarget = (target: string) => /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(target);
+export const isNoteTarget = (target: unknown): target is string => typeof target === "string" && (
+  ["working", "staged", "untracked"].includes(target) || isCommitTarget(target)
+  || target.split("..").length === 2 && target.split("..").every(isCommitTarget));
+export const noteMatchesTarget = (note: Note, target?: string) => note.target
+  ? note.target.toLowerCase() === target?.toLowerCase()
+  : !target || ["working", "staged", "untracked"].includes(target) || target.includes("..");
 
 export function validateNote(entry: unknown): NoteEntry {
   if (!entry || typeof entry !== "object") throw new Error("Expected a note object");
@@ -13,12 +20,12 @@ export function validateNote(entry: unknown): NoteEntry {
   if (typeof file !== "string" || !file.trim() || file.length > 4096 || file.includes("\0")) throw new Error("Invalid note file");
   if (typeof quote !== "string" || !quote.trim() || quote.length > 4096 || /[\r\n\0]/.test(quote)) throw new Error("Quote must be one nonempty code line");
   if (typeof note !== "string" || !note.trim() || note.length > 16000 || note.includes("\0")) throw new Error("Invalid note text");
-  if (target != null && (typeof target !== "string" || !["working", "staged", "untracked"].includes(target))) throw new Error("Invalid note target");
+  if (target != null && !isNoteTarget(target)) throw new Error("Invalid note target; use working, staged, untracked, a full commit SHA or baseSHA..headSHA");
   if (side != null && side !== "old" && side !== "new") throw new Error("Invalid note side");
   if (startLine != null && (!Number.isSafeInteger(startLine) || Number(startLine) < 1)) throw new Error("Invalid note line");
   for (const context of [before, after]) if (context != null && (typeof context !== "string" || context.length > 4096 || /[\r\n\0]/.test(context))) throw new Error("Context must be one code line");
   return { id, file: normalizePath(file), quote: quote.trim(), note: note.trim(),
-    ...(target != null ? { target: target as Note["target"] } : {}), ...(side != null ? { side } : {}),
+    ...(typeof target === "string" ? { target: target.toLowerCase() } : {}), ...(side != null ? { side } : {}),
     ...(startLine != null ? { startLine: Number(startLine) } : {}), ...(before != null ? { before: String(before) } : {}), ...(after != null ? { after: String(after) } : {}) };
 }
 
@@ -60,7 +67,7 @@ export function resolveNote(note: Note, rows: NoteRow[], strictLine = false): { 
 
 export function matchNotesResult(notes: Note[], file: string, rows: NoteRow[], target?: string) {
   const matched = new Map<number, Note[]>(), errors: string[] = [];
-  for (const note of notes.filter(note => note.file === normalizePath(file) && (!note.target || !target || note.target === target))) {
+  for (const note of notes.filter(note => note.file === normalizePath(file) && (target === undefined || noteMatchesTarget(note, target)))) {
     const result = resolveNote(note, rows);
     if (result.error) errors.push(result.error);
     if (result.row >= 0) matched.set(result.row, [...matched.get(result.row) ?? [], note]);

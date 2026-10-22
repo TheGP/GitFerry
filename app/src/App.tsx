@@ -11,7 +11,8 @@ import { formatCommitDate } from "./commitDate";
 import { actionStatus, describeError, operationName } from "./statusMessages";
 import { version } from "../package.json";
 import { createHunkNotes, HunkNotes, refreshHunkNotes } from "./HunkNote";
-import { parseNotesResult, resolveNote, validateNote } from "./hunkNotes";
+import { isCommitTarget, isNoteTarget, parseNotesResult, resolveNote, validateNote, type Note } from "./hunkNotes";
+import { inAppViewport, noteVisibility } from "./noteVisibility";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
 import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection } from "./mcpNavigation";
@@ -42,7 +43,7 @@ type BlameResult = { lines: BlameLine[]; hasMore: boolean };
 type RebaseCommit = { hash: string; subject: string; message: string };
 type RebaseStep = RebaseCommit & { action: "pick" | "reword" | "edit" | "squash" | "fixup" | "drop"; editedMessage?: string };
 type RefNode = { label: string; path: string; ref?: Ref; children: RefNode[]; count: number; containsHead: boolean };
-type Operation = { kind: "remove_worktree"; value: { path: string; expected_head: string | null; branch: string; confirmed: boolean } } | { kind: "reword_commit"; value: { hash: string; message: string; branch: string; expected_head: string } } | { kind: "stage_all" | "fetch" | "pull" | "pull_merge" | "pull_rebase" | "push" | "force_push_with_lease" | "abort_operation" | "continue_operation" | "amend_no_edit" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_files" | "unstage_files" | "discard_files" | "delete_untracked"; value: { paths: string[] } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean; diff: string } } | { kind: "discard_hunk"; value: { path: string; index: number; diff: string } } | { kind: "stage_lines" | "unstage_lines" | "discard_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "pull_branch" | "checkout" | "create_branch" | "delete_branch" | "force_delete_branch" | "merge" | "rebase"; value: { branch: string } } | { kind: "track_remote_branch" | "push_branch" | "delete_remote_branch"; value: { remote: string; branch: string } } | { kind: "rename_branch"; value: { branch: string; new_name: string } } | { kind: "interactive_rebase"; value: { branch: string; onto: string; steps: { hash: string; action: RebaseStep["action"]; message?: string }[] } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash" | "cherry_pick" | "revert" | "detach"; value: { hash: string } } | { kind: "reset"; value: { hash: string; mode: "soft" | "mixed" | "hard" } } | { kind: "create_tag"; value: { name: string; hash: string } } | { kind: "delete_tag"; value: { name: string } } | { kind: "push_tag" | "delete_remote_tag"; value: { remote: string; name: string } } | { kind: "resolve_file"; value: { path: string; side: "ours" | "theirs" } };
+type Operation = { kind: "remove_worktree" | "forget_worktree"; value: { path: string; expected_head: string | null; branch: string; confirmed: boolean } } | { kind: "reword_commit"; value: { hash: string; message: string; branch: string; expected_head: string } } | { kind: "stage_all" | "fetch" | "pull" | "pull_merge" | "pull_rebase" | "push" | "force_push_with_lease" | "abort_operation" | "continue_operation" | "amend_no_edit" } | { kind: "stage_file" | "unstage_file" | "discard_file"; value: { path: string } } | { kind: "stage_files" | "unstage_files" | "discard_files" | "delete_untracked"; value: { paths: string[] } } | { kind: "stage_hunk"; value: { path: string; index: number; reverse: boolean; diff: string } } | { kind: "discard_hunk"; value: { path: string; index: number; diff: string } } | { kind: "stage_lines" | "unstage_lines" | "discard_lines"; value: { path: string; lines: number[]; diff: string } } | { kind: "commit"; value: { message: string; amend: boolean } } | { kind: "pull_branch" | "checkout" | "create_branch" | "delete_branch" | "force_delete_branch" | "merge" | "rebase"; value: { branch: string } } | { kind: "track_remote_branch" | "push_branch" | "delete_remote_branch"; value: { remote: string; branch: string } } | { kind: "rename_branch"; value: { branch: string; new_name: string } } | { kind: "interactive_rebase"; value: { branch: string; onto: string; steps: { hash: string; action: RebaseStep["action"]; message?: string }[] } } | { kind: "stash"; value: { message: string } } | { kind: "apply_stash" | "pop_stash" | "cherry_pick" | "revert" | "detach"; value: { hash: string } } | { kind: "reset"; value: { hash: string; mode: "soft" | "mixed" | "hard" } } | { kind: "create_tag"; value: { name: string; hash: string } } | { kind: "delete_tag"; value: { name: string } } | { kind: "push_tag" | "delete_remote_tag"; value: { remote: string; name: string } } | { kind: "resolve_file"; value: { path: string; side: "ours" | "theirs" } };
 type ActionDialogField = { key: string; label: string; value: string; options?: string[]; placeholder?: string; required?: boolean; multiline?: boolean };
 type ActionDialog = { title: string; description?: string; submitLabel: string; danger?: boolean; fields: ActionDialogField[]; onSubmit: (values: Record<string, string>) => void };
 const recentKey = "gitferry.recent";
@@ -280,7 +281,7 @@ function DiffText(props: { value: Diff; item: Choice; working: boolean; ignoreWh
     }
     return links;
   });
-  const hunkNotes = createHunkNotes(() => props.repoPath, () => props.item.path, () => numberedDiffRows(lines(), props.item.target), () => (props.working && ["working", "staged", "untracked"].includes(props.item.target)) || isComparisonTarget(props.item.target), () => props.item.target);
+  const hunkNotes = createHunkNotes(() => props.repoPath, () => props.item.path, () => numberedDiffRows(lines(), props.item.target), () => isNoteTarget(props.item.target), () => props.item.target);
   const [selectedLines, setSelectedLines] = createSignal<number[]>([]);
   const [selectedHunk, setSelectedHunk] = createSignal(0);
   createEffect(() => props.onSelection?.({ rows: selectedLines(), hunkIndex: hunkCount() ? selectedHunk() : null }));
@@ -1343,7 +1344,7 @@ function App() {
     commitScroll.scrollTop = 0; setScrollTop(0);
     await runComparison(path, base.name, ref.name);
   }
-  const branchTarget = (refs: Ref[], name: string) => refs.find(item => (item.kind === "branch" || item.kind === "remote") && item.name === name)?.target ?? "";
+  const branchTarget = (refs: Ref[], name: string) => isCommitTarget(name) ? name : refs.find(item => (item.kind === "branch" || item.kind === "remote") && item.name === name)?.target ?? "";
   // Latest comparison request per repository, so a slower earlier result cannot overwrite a newer one.
   const comparisonRequests = new Map<string, string>();
   // Branches are resolved by name each time, so a comparison follows commits made since it was opened.
@@ -1782,7 +1783,7 @@ function App() {
     try {
       const output = await invoke<string>("repo_action", { path, operation, cancelToken: token });
       setNotice(`${completedNotice(status.completed)}${output.trim() ? `\n\n${output.trim()}` : ""}`);
-      if (operation.kind === "remove_worktree") {
+      if (operation.kind === "remove_worktree" || operation.kind === "forget_worktree") {
         const target = operation.value.path, owner = tabs().find(tab => tab.path === path);
         const group = owner && worktreeGroupKey(owner);
         closeTab(target);
@@ -1818,7 +1819,7 @@ function App() {
     } catch (cause) {
       setBranchMenu(false); setRefMenu(null); setPullMenu(false); setPushMenu(false); setStashMenu(false);
       if (activePath() === path && ["merge", "rebase", "interactive_rebase", "pull_merge", "pull_rebase", "cherry_pick", "revert", "continue_operation"].includes(operation.kind)) selectWorking();
-      if (operation.kind === "remove_worktree") {
+      if (operation.kind === "remove_worktree" || operation.kind === "forget_worktree") {
         const source = tabs().find(tab => tab.path === path);
         const survivor = source && tabs().find(tab => worktreeGroupKey(tab) === worktreeGroupKey(source)
           && repositoryKey(tab.path) !== repositoryKey(operation.value.path));
@@ -2008,6 +2009,37 @@ function App() {
 
   // Share the normal navigation and Git commands with MCP, rather than operating a second UI model.
   const mcpRows = (value: Diff, target: string) => numberedDiffRows(parseDiffLines(value), target);
+  function savedNoteStatuses(notes: Note[]) {
+    const views = [...detailsScroll.querySelectorAll<HTMLElement>(".diff-content")].flatMap(element => {
+      const view = diffViews.get(element)?.();
+      return view ? [{ element, file: view.item.path, target: view.item.target, rows: mcpRows(view.value, view.item.target) }] : [];
+    });
+    const surface = !choice() ? "summary" : fileView() === "diff" ? "file_diff" : "other";
+    return notes.map(note => noteVisibility(note, views, { targets: files().map(item => item.target), surface, dialogOpen: Boolean(actionDialog() || showOpen() || showSettings() || paletteOpen()) }));
+  }
+  async function mcpViewWithNotes(ids?: string[]) {
+    const path = activePath();
+    if (!path) return { ...mcpView(), notes: [], notesTruncated: false, notesError: null };
+    try {
+      const result = await invoke<{ content: string }>("repo_read_notes", { path });
+      if (activePath() !== path) throw new Error("The repository changed while reading notes; retry");
+      const parsed = parseNotesResult(result.content);
+      const notes = ids ? parsed.notes.filter(note => ids.includes(note.id)) : parsed.notes;
+      return { ...mcpView(), notes: savedNoteStatuses(notes.slice(0, 200)), notesTruncated: notes.length > 200, notesError: parsed.errors.length ? parsed.errors.join("; ") : null,
+        missingNoteIds: ids?.filter(id => !parsed.notes.some(note => note.id === id)) ?? [] };
+    } catch (cause) { return { ...mcpView(), notes: [], notesTruncated: false, notesError: String(cause) }; }
+  }
+  function currentComparisonTarget(path: string) {
+    const compare = comparisons()[path];
+    if (!compare?.result || compare.error) throw new Error("Open a ready comparison first, or specify baseSHA..headSHA from get_view");
+    return `${compare.result.mergeBase}..${compare.headHash}`;
+  }
+  async function pinnedComparison(path: string, target: string): Promise<Comparison> {
+    const [base, head] = target.split("..");
+    const result = await invoke<CompareResult>("repo_compare", { path, base, head });
+    if (result.mergeBase !== base) throw new Error("Use the comparison's merge-base..head target from get_view; the requested base is not an ancestor of the head");
+    return { base, head, baseHash: base, headHash: head, result, error: "", automatic: false };
+  }
   function mcpView() {
     const editor = sideEditor();
     const nativeSelection = window.getSelection();
@@ -2033,8 +2065,20 @@ function App() {
         const row = numbered[Number(element.dataset.rowIndex)];
         return row ? [{ ...row, file: view.item.path, target: view.item.target }] : [];
       }) } : null;
+    const annotationElement = document.querySelector<HTMLElement>(".editor-annotation");
+    const annotationPlacement = editor?.annotation && editor.repo === activePath() ? {
+      surface: "side_editor", persistent: false, shownInSummary: false, rendered: Boolean(annotationElement),
+      visible: inAppViewport(annotationElement) && !actionDialog() && !showSettings() && !showOpen() && !paletteOpen(),
+      comments: [editor.annotation.comment, ...(editor.annotation.ranges ?? []).map(range => range.comment)].filter((comment): comment is string => Boolean(comment)).map(comment => {
+        const elements = [...annotationElement?.querySelectorAll<HTMLElement>("p") ?? []].filter(element => element.textContent === comment);
+        return { comment, rendered: elements.length > 0, visible: elements.some(inAppViewport) && !actionDialog() && !showSettings() && !showOpen() && !paletteOpen() };
+      }),
+    } : null;
+    if (annotationPlacement?.comments.length) annotationPlacement.visible &&= annotationPlacement.comments.every(comment => comment.visible);
     return {
       tabId: activePath(), repository: activePath(), branch: repo()?.branch ?? null, head: repo()?.head ?? null,
+      surface: choice() ? fileView() === "diff" ? "file_diff" : fileView() : "summary", appFocused: document.hasFocus(), visibilityBasis: "app_viewport",
+      comparison: selected() === "compare" && comparison()?.result ? { base: comparison()!.base, head: comparison()!.head, from: comparison()!.result!.mergeBase, to: comparison()!.headHash, target: currentComparisonTarget(activePath()!) } : null,
       commit: selected(), file: item?.path ?? null, target: item?.target ?? null, fileView: fileView(),
       selection: { hunkIndex: selection.hunkIndex, lines: selection.rows.map(index => rows[index]).filter(Boolean), textSelection },
       highlights: [...aiRows].map(index => ({ rowIndex: index, ...rows[index] })),
@@ -2042,6 +2086,7 @@ function App() {
         file: editor.path, revision: editor.commit ?? "working", revisionLabel: editor.revisionLabel ?? null,
         readOnly: Boolean(editor.commit) || editor.readOnly === true, line: editor.line,
         annotation: editor.annotation ?? null,
+        annotationPlacement,
       } : null,
     };
   }
@@ -2065,9 +2110,9 @@ function App() {
       if (navigation && (request !== initialRequest || activePath() !== initialPath)) throw new Error("The user changed the view during this request; retry");
       if (navigation && (actionDialog() || actionBusy() || busy() || removingWorktree() || sideEditorDirty() || activeFileDraft()?.text !== activeFileDraft()?.original)) throw new Error("Finish or cancel the open dialog or operation, or save/cancel the editor changes before AI navigation");
     };
-    await valid(["open_repository", "close_repository", "show_branch", "reveal_change", "reveal_file"].includes(message.tool));
+    await valid(["open_repository", "close_repository", "show_branch", "reveal_change", "reveal_file", "reveal_note"].includes(message.tool));
     if (["close_repository", "reorder_repositories"].includes(message.tool) && tabDrag()) throw new Error("Finish dragging the repository tabs before changing them through MCP");
-    if (message.tool === "get_view") return mcpView();
+    if (message.tool === "get_view") return mcpViewWithNotes(a.noteIds);
     if (message.tool === "reorder_repositories") {
       const order = a.repositories;
       if (!Array.isArray(order) || order.length !== tabs().length) throw new Error("repositories must contain every open tab exactly once; call list_repositories again");
@@ -2113,16 +2158,18 @@ function App() {
     const path = tab.path;
     if (message.tool === "write_notes") {
       if (!a.notes?.length || a.notes.length > 100) throw new Error("Specify 1-100 notes");
-      const entries = a.notes.map(validateNote);
+      const entries = a.notes.map(entry => validateNote(!("deleted" in entry) && entry.target === "compare" ? { ...entry, target: currentComparisonTarget(path) } : entry));
       if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error("Note ids must be unique within a request");
       const original = await invoke<{ content: string }>("repo_read_notes", { path });
       const parsed = parseNotesResult(original.content);
       if (parsed.errors.length) throw new Error(`Repair existing notes before writing: ${parsed.errors.join("; ")}`);
       const matches: { id: string; file?: string; target?: string; side?: string; line?: number; deleted?: boolean }[] = [];
       const diffs = new Map<string, Diff>();
+      const checkedComparisons = new Set<string>();
       for (const entry of entries) {
         if ("deleted" in entry) { matches.push({ id: entry.id, deleted: true }); continue; }
-        if (!entry.target) throw new Error(`Note ${entry.id}: specify target working, staged or untracked`);
+        if (!entry.target) throw new Error(`Note ${entry.id}: specify a diff target`);
+        if (isComparisonTarget(entry.target) && !checkedComparisons.has(entry.target)) { await pinnedComparison(path, entry.target); checkedComparisons.add(entry.target); }
         const key = `${entry.target}\0${entry.file}`;
         let value = diffs.get(key);
         if (!value) {
@@ -2158,8 +2205,63 @@ function App() {
       content += entries.map(entry => JSON.stringify(entry)).join("\n") + "\n";
       const saved = await invoke<{ content: string }>("repo_save_notes", { path, content, expectedContent: original.content });
       if (saved.content !== content) throw new Error("Notes saved, but readback differs; inspect the notes file before retrying");
-      refreshHunkNotes(path);
-      return { repository: path, notes: matches, validated: true, written: true, confirmed: true };
+      await refreshHunkNotes(path);
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      return { repository: path, notes: matches, visibility: activePath() === path ? savedNoteStatuses(entries.filter((entry): entry is Note => !("deleted" in entry))) : [], validated: true, written: true, persistent: true, confirmed: true };
+    }
+    if (message.tool === "reveal_note") {
+      const original = await invoke<{ content: string }>("repo_read_notes", { path });
+      const parsed = parseNotesResult(original.content), note = parsed.notes.find(note => note.id === a.id);
+      if (!note) throw new Error(`Saved note ${a.id} was not found${parsed.errors.length ? `; ${parsed.errors.join("; ")}` : ""}`);
+      if (!note.target) throw new Error("This legacy note has no target. Update it using write_notes with an explicit target before revealing it");
+      const target = note.target, surface = a.view ?? "summary";
+      let fullContext = false;
+      let value = await invoke<Diff>("repo_diff", { path, target, file: note.file, ignoreWhitespace: false, fullContext });
+      let matched = resolveNote(note, mcpRows(value, target));
+      if (matched.row < 0 && !matched.error && surface === "diff") {
+        fullContext = true;
+        value = await invoke<Diff>("repo_diff", { path, target, file: note.file, ignoreWhitespace: false, fullContext });
+        matched = resolveNote(note, mcpRows(value, target));
+      }
+      if (value.truncated) throw new Error("The diff is truncated; note visibility cannot be confirmed");
+      if (matched.row < 0) throw new Error(matched.error ?? (surface === "summary" ? "Note is outside the visible diff context or its quote changed. Retry with view:diff, or update its anchor" : "The saved note no longer matches this diff; update its anchor"));
+      const detail = isCommitTarget(target) ? await invoke<Details>("repo_commit", { path, hash: target }) : null;
+      const compare = isComparisonTarget(target) ? await pinnedComparison(path, target) : null;
+      const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
+      await valid(true);
+      setTabs(items => items.map(item => item.path === path ? mergeRepo(item, current) : item));
+      activateTab(path); setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
+      if (compare) {
+        comparisonRequests.set(path, `saved-note:${message.id}`);
+        updateComparison(path, () => compare); showComparison();
+      } else if (detail) {
+        detailsCache.set(`${path}\u0000${detail.hash}`, detail);
+        setRevealedCommit({ repo: path, commit: { ...detail, decorations: [] } });
+        await selectCommit(detail.hash);
+      } else selectWorking();
+      const navigationRequest = request;
+      const item = files().find(item => item.path === note.file && item.target === target);
+      if (!item) throw new Error("The note's file is not present in this target; reread the comparison");
+      setIgnoreWhitespace(false); setFullFile(fullContext); resetFileInfo();
+      if (surface === "summary") {
+        cacheDiff(diffLoadKey(path, item, false), value);
+        setSummaryDiffs(previous => ({ ...previous, [summaryKey(item)]: true }));
+        setChoice(null); setParkedFile(item); setDiff(null);
+      } else { setChoice(item); setParkedFile(null); setDiff(value); shownDiffRevision = item.revision ?? ""; }
+      await refreshHunkNotes(path);
+      for (let attempt = 0; attempt < 90; attempt++) {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        if (activePath() !== path || request !== navigationRequest) throw new Error("The view changed while revealing the note; retry");
+        const element = [...detailsScroll.querySelectorAll<HTMLElement>(".hunk-note[data-note-id]")].find(element => element.dataset.noteId === note.id && element.querySelector(".hunk-note-text")?.textContent === note.note);
+        if (!element) continue;
+        element.scrollIntoView({ block: "center" });
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        await valid();
+        const status = savedNoteStatuses([note])[0];
+        if (!status?.visible || !status.matched) throw new Error("The note rendered but is not visible in the current view; check get_view");
+        return { ...mcpView(), note: status, persistent: true, written: false, notesError: parsed.errors.length ? parsed.errors.join("; ") : null, confirmed: true };
+      }
+      throw new Error("Could not confirm the rendered saved note; check get_view for load errors");
     }
     if (message.tool === "reveal_file") {
       if (!a.file) throw new Error("file is required");
@@ -2197,7 +2299,9 @@ function App() {
       const input = document.querySelector<HTMLTextAreaElement>(".editor-input");
       const highlighted = [...document.querySelectorAll(".editor-row")].flatMap((row, index) => row.classList.contains("ai-highlight") ? [index] : []);
       if (!input?.readOnly || input.value !== content.replace(/\r\n?/g, "\n") || highlighted.length !== selectedRows.size || highlighted.some(index => !selectedRows.has(index))) throw new Error("GitFerry could not confirm the file and rendered highlights");
-      return { repository: path, branch: current.branch, file: a.file, revision: detail?.hash ?? workingTarget ?? "working", editor: mcpView().editor, confirmed: true };
+      const view = mcpView();
+      return { repository: path, branch: current.branch, file: a.file, revision: detail?.hash ?? workingTarget ?? "working", editor: view.editor,
+        placement: view.editor?.annotationPlacement ?? null, persistent: false, message: "Temporary annotation in the side editor only; not a saved note and not shown in Summary. Use write_notes and reveal_note for saved review comments.", confirmed: true };
     }
     if (message.tool === "list_branches" || message.tool === "show_branch") {
       const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
@@ -2213,17 +2317,18 @@ function App() {
     if (message.tool === "get_commit") return invoke<Details>("repo_commit", { path, hash: a.commit });
     if (message.tool === "file_history") return invoke<FileHistoryResult>("repo_file_history", { path, file: a.file, revision: a.revision ?? "HEAD", offset: a.offset ?? 0 });
     if (message.tool === "blame") return invoke<BlameResult>("repo_blame", { path, file: a.file, revision: a.revision ?? "HEAD", startLine: a.startLine ?? 1 });
-    const commit = a.commit;
+    const commit = a.commit === "compare" ? currentComparisonTarget(path) : a.commit?.toLowerCase();
     if (!commit) throw new Error("commit is required");
     const working = ["working", "staged", "untracked"].includes(commit);
-    const detail = working ? null : await invoke<Details>("repo_commit", { path, hash: commit });
+    const detail = isCommitTarget(commit) ? await invoke<Details>("repo_commit", { path, hash: commit }) : null;
     if (a.parent && !detail?.parents.includes(a.parent)) throw new Error("parent must be a parent of this commit");
     const target = a.parent ? `${a.parent}..${detail!.hash}` : detail?.hash ?? commit;
     const value = a.file ? await invoke<Diff>("repo_diff", { path, target, file: a.file, ignoreWhitespace: false, fullContext: false }) : null;
     const rows = value ? mcpRows(value, target) : [];
-    if (message.tool === "get_diff") return { repository: path, commit, parent: a.parent ?? detail?.parents[0] ?? null, file: a.file, ...value, rows };
+    if (message.tool === "get_diff") return { repository: path, commit, target, parent: a.parent ?? detail?.parents[0] ?? null, file: a.file, ...value, rows };
     if (message.tool !== "reveal_change" && message.tool !== "show_branch") throw new Error("Unknown MCP tool");
     const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
+    const compare = !detail && isComparisonTarget(target) ? await pinnedComparison(path, target) : null;
     if (message.tool === "reveal_change" && a.branch && current.branch !== a.branch) throw new Error(`Repository is on ${current.branch}, expected ${a.branch}. Select the matching worktree tab.`);
     if (value?.truncated && a.highlights?.length) throw new Error("Diff is truncated; exact highlighting cannot be confirmed");
     const selectedRows = highlightRows(rows, a.highlights ?? []);
@@ -2232,7 +2337,10 @@ function App() {
     setTabs(tabs => tabs.map(item => item.path === path ? mergeRepo(item, current) : item));
     activateTab(path);
     setSearchQuery(""); setSearchInput(""); setSearchOpen(false);
-    if (detail) {
+    if (compare) {
+      comparisonRequests.set(path, `revealed-comparison:${message.id}`);
+      updateComparison(path, () => compare); showComparison();
+    } else if (detail) {
       detailsCache.set(`${path}\u0000${detail.hash}`, detail);
       setRevealedCommit({ repo: path, commit: { ...detail, decorations: [] } });
       void selectCommit(detail.hash);
@@ -2252,7 +2360,7 @@ function App() {
     }
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     await valid();
-    if (request !== navigationRequest || activePath() !== path || selected() !== (detail?.hash ?? "working")) throw new Error("The view changed before navigation could be confirmed");
+    if (request !== navigationRequest || activePath() !== path || selected() !== (compare ? "compare" : detail?.hash ?? "working")) throw new Error("The view changed before navigation could be confirmed");
     const commitIndex = displayedCommits().findIndex(item => item.hash === detail?.hash);
     if (commitIndex >= 0) {
       commitScroll.scrollTop = Math.max(0, listHeaderHeight() + commitIndex * rowHeight() - (commitScroll.clientHeight - rowHeight()) / 2);
@@ -2435,9 +2543,10 @@ function App() {
   }
   function confirmWorktreeRemoval(owner: Repo, tree: Worktree) {
     setWorktreeMenu(null);
-    openActionDialog({ title: `Remove worktree ${worktreeLabel(tree)}?`,
-      description: `Delete this checkout folder: ${tree.path}\n${tree.branch === "Detached HEAD" ? "The commits must be reachable from an existing branch or tag." : "The branch is kept."} Worktrees with uncommitted changes or locks cannot be removed.`,
-      submitLabel: "Remove worktree", danger: true, fields: [], onSubmit: () => void removeWorktree(owner, tree) });
+    openActionDialog({ title: `${tree.prunable ? "Forget stale worktree" : "Remove worktree"} ${worktreeLabel(tree)}?`,
+      description: tree.prunable ? `Remove the stale Git registration for: ${tree.path}\nThe remaining folder and files will be kept. The branch is kept and Git metadata is saved for recovery. Locked worktrees and detached commits without a reachable branch or tag cannot be forgotten.`
+        : `Delete this checkout folder: ${tree.path}\n${tree.branch === "Detached HEAD" ? "The commits must be reachable from an existing branch or tag." : "The branch is kept."} Worktrees with uncommitted changes or locks cannot be removed.`,
+      submitLabel: tree.prunable ? "Forget stale worktree" : "Remove worktree", danger: true, fields: [], onSubmit: () => void removeWorktree(owner, tree) });
   }
   async function reconcileWorktrees(current: Repo) {
     if (!current.commonGitDir || !current.worktrees?.length) return;
@@ -2489,7 +2598,7 @@ function App() {
           if (repositoryKey(activePath() ?? "") === target) return;
         } else { setActivePath(null); selectWorking(); }
       }
-      await runAction({ kind: "remove_worktree", value: { path: tree.path, expected_head: tree.head, branch: tree.branch, confirmed: true } }, undefined, owner.path);
+      await runAction({ kind: tree.prunable ? "forget_worktree" : "remove_worktree", value: { path: tree.path, expected_head: tree.head, branch: tree.branch, confirmed: true } }, undefined, owner.path);
       if (!activePath() && tabs().some(tab => repositoryKey(tab.path) === target)) {
         setRemovingWorktree(null); activateTab(tree.path);
       }
@@ -2699,9 +2808,9 @@ function App() {
     </header>
     <Show when={selectedWorktrees().length > 1}><nav ref={worktreeStrip} class={`worktree-tabbar ${tabDrag()?.kind === "worktree" ? "reordering" : ""}`} aria-label="Repository worktrees"><For each={selectedWorktrees()}>{(item, index) => {
       const removing = () => repositoryKey(removingWorktree() ?? "") === repositoryKey(item.path);
-      return <button style={{ transform: tabShift(item.path, index(), "worktree") }} class={`worktree-tab ${repositoryKey(activePath() ?? "") === repositoryKey(item.path) ? "active" : ""} ${removing() ? "removing" : ""} ${tabDrag()?.kind === "worktree" && tabDrag()?.path === item.path ? `dragging ${tabDrag()!.settling ? "settling" : ""}` : ""}`} aria-pressed={repositoryKey(activePath() ?? "") === repositoryKey(item.path)} aria-busy={removing()} title={item.path} disabled={busy() || actionBusy() || Boolean(removingWorktree())} onContextMenu={event => openWorktreeMenu(item, event)} onPointerDown={event => startTabDrag(item.path, event, "worktree")} onClick={() => { if (!suppressTabClick) void activateWorktree(item.path); }}><Icon name="branch" /><span class="worktree-name">{worktreeLabel(item)}</span><Show when={removing()}><span class="worktree-removing" role="status">Removing…</span></Show><Show when={!removing() && !repo()?.loading && !repo()?.loadError && item.mergedInto}>{base => <span class="worktree-merged" role="img" aria-label={`Commits included in ${base()}`} title={`All commits are included in ${base()}${base().includes("/") ? " (last fetched)" : ""}. Uncommitted edits are not included.`}><Icon name="check" /></span>}</Show></button>;
+      return <button style={{ transform: tabShift(item.path, index(), "worktree") }} class={`worktree-tab ${repositoryKey(activePath() ?? "") === repositoryKey(item.path) ? "active" : ""} ${removing() ? "removing" : ""} ${tabDrag()?.kind === "worktree" && tabDrag()?.path === item.path ? `dragging ${tabDrag()!.settling ? "settling" : ""}` : ""}`} aria-pressed={repositoryKey(activePath() ?? "") === repositoryKey(item.path)} aria-busy={removing()} aria-disabled={item.prunable || undefined} title={item.path} disabled={busy() || actionBusy() || Boolean(removingWorktree())} onContextMenu={event => openWorktreeMenu(item, event)} onPointerDown={event => startTabDrag(item.path, event, "worktree")} onClick={() => { if (suppressTabClick) return; if (item.prunable) setError("This worktree is unavailable. Right-click its tab and choose Forget stale worktree to remove its registration while keeping remaining files."); else void activateWorktree(item.path); }}><Icon name="branch" /><span class="worktree-name">{worktreeLabel(item)}</span><Show when={removing()}><span class="worktree-removing" role="status">Removing…</span></Show><Show when={item.prunable && !removing()}><span class="worktree-unavailable">Unavailable</span></Show><Show when={!item.prunable && !removing() && !repo()?.loading && !repo()?.loadError && item.mergedInto}>{base => <span class="worktree-merged" role="img" aria-label={`Commits included in ${base()}`} title={`All commits are included in ${base()}${base().includes("/") ? " (last fetched)" : ""}. Uncommitted edits are not included.`}><Icon name="check" /></span>}</Show></button>;
     }}</For></nav></Show>
-    <Show when={worktreeMenu()}>{menu => <div class="ref-action-popover worktree-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label="Worktree actions"><div class="ref-action-title">{worktreeLabel(menu().tree)}</div><button role="menuitem" class="danger" disabled={repositoryKey(menu().owner.worktrees?.[0]?.path ?? "") === repositoryKey(menu().tree.path)} title={repositoryKey(menu().owner.worktrees?.[0]?.path ?? "") === repositoryKey(menu().tree.path) ? "The primary repository cannot be removed" : "Remove this checkout folder"} onClick={() => confirmWorktreeRemoval(menu().owner, menu().tree)}>Remove worktree…</button><button role="menuitem" onClick={() => { const name = worktreeLabel(menu().tree); setWorktreeMenu(null); copyText(name); }}>Copy worktree name</button></div>}</Show>
+    <Show when={worktreeMenu()}>{menu => <div class="ref-action-popover worktree-action-popover" style={{ left: `${menu().x}px`, top: `${menu().y}px` }} role="menu" aria-label="Worktree actions"><div class="ref-action-title">{worktreeLabel(menu().tree)}</div><button role="menuitem" class="danger" disabled={repositoryKey(menu().owner.worktrees?.[0]?.path ?? "") === repositoryKey(menu().tree.path)} title={repositoryKey(menu().owner.worktrees?.[0]?.path ?? "") === repositoryKey(menu().tree.path) ? "The primary repository cannot be removed" : menu().tree.prunable ? "Remove the stale registration; keep remaining files" : "Remove this checkout folder"} onClick={() => confirmWorktreeRemoval(menu().owner, menu().tree)}>{menu().tree.prunable ? "Forget stale worktree…" : "Remove worktree…"}</button><button role="menuitem" onClick={() => { const name = worktreeLabel(menu().tree); setWorktreeMenu(null); copyText(name); }}>Copy worktree name</button></div>}</Show>
     <div class="toolbar">
       <div class="toolbar-side">
         <button class="toolbar-icon" title="Toggle locations" onClick={() => setLocationsOpen(!locationsOpen())}><Icon name="sidebar" /></button>

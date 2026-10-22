@@ -281,6 +281,23 @@ async function exerciseWorktreeRemoval(page) {
   assert.equal(count(), initial + 2);
   assert.ok(git(folder, "show-ref", "--verify", "refs/heads/remove-topic"));
   assert.ok(fs.existsSync(folder));
+  const broken = path.join(sandbox, "stale-checkout");
+  git(folder, "worktree", "add", "-b", "stale-topic", broken);
+  fs.writeFileSync(path.join(broken, "preserved.txt"), "Keep these leftover files\n");
+  fs.unlinkSync(path.join(broken, ".git"));
+  await shortcut(page, "r");
+  await page.waitForSelector(".worktree-unavailable");
+  const staleIndex = await page.$$eval(".worktree-tab", (tabs, path) => tabs.findIndex(tab => tab.title === path), broken);
+  await click(page, `.worktree-tab:nth-child(${staleIndex + 1})`, { button: "right" });
+  await click(page, ".worktree-action-popover button");
+  await page.waitForSelector(".action-dialog");
+  assert.match(await page.$eval(".action-dialog-body", body => body.textContent), /remaining folder and files will be kept/);
+  await submitActionDialog(page);
+  await page.waitForFunction(() => !document.querySelector(".worktree-unavailable"));
+  await waitForAction(page);
+  assert.equal(fs.readFileSync(path.join(broken, "preserved.txt"), "utf8"), "Keep these leftover files\n");
+  assert.ok(git(folder, "show-ref", "--verify", "refs/heads/stale-topic"));
+  assert.ok(fs.readdirSync(path.join(folder, ".git", "gitferry-removed-worktrees")).length === 1);
   const closed = await mcp(page, "close_repository", { repository: folder });
   assert.equal(closed.error, null);
   console.log("Worktree removal: confirmation cancellation, dirty checkout and unsaved editor refusal, active checkout removal and branch preservation passed");
@@ -335,6 +352,96 @@ async function exerciseNotes(page, repository) {
   await page.waitForFunction(() => !document.querySelector(".hunk-note"));
   git(repository.folder, "restore", "--staged", file);
   fs.unlinkSync(source); fs.unlinkSync(notesPath); fs.rmdirSync(path.dirname(notesPath));
+}
+
+async function exerciseComparisonNotes(page) {
+  const folder = path.join(sandbox, "comparison-notes"), file = "review.txt";
+  fs.mkdirSync(folder);
+  git(folder, "init", "-b", "main");
+  git(folder, "config", "user.name", "GitFerry Test"); git(folder, "config", "user.email", "gitferry@example.test");
+  const lines = Array.from({ length: 220 }, (_, index) => `original line ${index + 1}`);
+  fs.writeFileSync(path.join(folder, file), lines.join("\n") + "\n");
+  git(folder, "add", "."); git(folder, "commit", "-m", "Review base");
+  const base = git(folder, "rev-parse", "HEAD");
+  git(folder, "switch", "-c", "review-topic");
+  lines[9] = "first reviewed change"; lines[209] = "second reviewed change";
+  for (let index = 10; index < 180; index++) lines[index] = `changed line ${index + 1}`;
+  fs.writeFileSync(path.join(folder, file), lines.join("\n") + "\n");
+  git(folder, "commit", "-am", "Review changes");
+  const head = git(folder, "rev-parse", "HEAD"), target = `${base}..${head}`;
+  const notesPath = path.join(folder, ".gitferry", "notes.jsonl");
+  assert.equal((await mcp(page, "open_repository", { repository: folder })).error, null);
+  let reply = await mcp(page, "reveal_change", { repository: folder, commit: target, file });
+  assert.equal(reply.error, null);
+  assert.equal((await mcp(page, "get_view")).result.comparison.target, target);
+  const note = { id: "comparison-review", file, target: "compare", side: "new", startLine: 210, quote: lines[209], note: "Keep the later block anchored to this exact comparison." };
+  await page.evaluate(() => { window.__originalHasFocus = document.hasFocus; document.hasFocus = () => false; });
+  reply = await mcp(page, "write_notes", { repository: folder, notes: [note] });
+  await page.evaluate(() => { document.hasFocus = window.__originalHasFocus; });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.notes[0].target, target, "The compare alias is saved as immutable SHAs");
+  assert.equal(reply.result.persistent, true);
+  assert.equal(reply.result.visibility[0].saved, true);
+  assert.equal(reply.result.visibility[0].rendered, true);
+  assert.equal(reply.result.visibility[0].visible, false, "Saving does not imply viewport visibility");
+  assert.ok(!fs.readFileSync(notesPath, "utf8").includes("\r"));
+  reply = await mcp(page, "reveal_note", { repository: folder, id: note.id });
+  assert.equal(reply.error, null);
+  assert.equal(reply.result.note.surface, "summary");
+  assert.equal(reply.result.note.visible, true); assert.equal(reply.result.note.matched, true);
+  assert.equal(reply.result.comparison.target, target);
+  let view = (await mcp(page, "get_view", { noteIds: [note.id, "missing"] })).result;
+  assert.equal(view.notes[0].visible, true); assert.deepEqual(view.missingNoteIds, ["missing"]);
+  await click(page, `.summary-diff-card[data-path="${file}"] .file-row`);
+  view = (await mcp(page, "get_view", { noteIds: [note.id] })).result;
+  assert.equal(view.notes[0].saved, true); assert.equal(view.notes[0].rendered, false);
+  assert.equal(view.notes[0].reason, "file_closed_collapsed_or_not_loaded");
+  reply = await mcp(page, "reveal_note", { repository: folder, id: note.id, view: "diff" });
+  assert.equal(reply.error, null); assert.equal(reply.result.note.surface, "file_diff"); assert.equal(reply.result.note.visible, true);
+  reply = await mcp(page, "reveal_file", { repository: folder, revision: head, file, startLine: 10, comment: "Temporary editor explanation" });
+  assert.equal(reply.error, null); assert.equal(reply.result.placement.surface, "side_editor");
+  assert.equal(reply.result.persistent, false); assert.equal(reply.result.placement.shownInSummary, false);
+  assert.equal(reply.result.placement.comments[0].rendered, true);
+  view = (await mcp(page, "get_view", { noteIds: [note.id] })).result;
+  assert.equal(view.editor.annotationPlacement.surface, "side_editor");
+  assert.equal(view.notes[0].reason, "different_target");
+  await click(page, ".editor-tab-close");
+  // Commit notes and full-context-only notes use the same writer and reveal path.
+  const committed = { ...note, id: "commit-review", target: head, startLine: 10, quote: lines[9], note: "This explanation belongs to the committed version." };
+  const context = { ...note, id: "context-review", target, startLine: 198, quote: lines[197], note: "This anchor is outside ordinary hunk context." };
+  reply = await mcp(page, "write_notes", { repository: folder, notes: [committed, context] });
+  assert.equal(reply.error, null);
+  reply = await mcp(page, "reveal_note", { repository: folder, id: committed.id });
+  assert.equal(reply.error, null); assert.equal(reply.result.commit, head); assert.equal(reply.result.note.visible, true);
+  assert.equal((await mcp(page, "get_view", { noteIds: [note.id] })).result.notes[0].reason, "different_target");
+  reply = await mcp(page, "reveal_note", { repository: folder, id: context.id });
+  assert.match(reply.error, /view:diff/);
+  reply = await mcp(page, "reveal_note", { repository: folder, id: context.id, view: "diff" });
+  assert.equal(reply.error, null); assert.equal(reply.result.note.visible, true);
+  const saved = fs.readFileSync(notesPath, "utf8");
+  fs.writeFileSync(notesPath, Buffer.from([0xff]));
+  view = (await mcp(page, "get_view", { noteIds: [note.id] })).result;
+  assert.match(view.notesError, /UTF-8/);
+  fs.writeFileSync(notesPath, saved);
+  // A new branch tip must not make an older review appear to cover new changes.
+  fs.writeFileSync(path.join(folder, "later.txt"), "later change\n");
+  git(folder, "add", "later.txt"); git(folder, "commit", "-m", "Later review change");
+  const next = git(folder, "rev-parse", "HEAD");
+  reply = await mcp(page, "reveal_change", { repository: folder, commit: `${base}..${next}`, file });
+  assert.equal(reply.error, null);
+  assert.equal((await mcp(page, "get_view", { noteIds: [note.id] })).result.notes[0].reason, "different_target");
+  await page.reload({ waitUntil: "domcontentloaded" }); await page.waitForSelector(".workspace");
+  await page.waitForFunction(() => !document.querySelector(".repo-tab.loading"));
+  await page.waitForSelector(".compare-row.selected");
+  await page.waitForFunction(() => document.querySelector(".compare-row.selected small")?.textContent.includes("commit"));
+  reply = await mcp(page, "reveal_note", { repository: folder, id: note.id });
+  assert.equal(reply.error, null); assert.equal(reply.result.comparison.target, target); assert.equal(reply.result.note.visible, true);
+  assert.equal((await mcp(page, "reveal_note", { repository: folder, id: "missing" })).error.includes("not found"), true);
+  assert.equal(git(folder, "branch", "--show-current"), "review-topic");
+  assert.equal(git(folder, "rev-parse", "HEAD"), next);
+  assert.equal(git(folder, "diff"), ""); assert.equal(git(folder, "diff", "--cached"), "");
+  assert.equal((await mcp(page, "close_repository", { repository: folder })).error, null);
+  console.log("Comparison notes: pinned scopes, Summary/diff navigation, visibility, persistence, full context and read errors passed");
 }
 
 async function exerciseMcp(page, repository, restore) {
@@ -1184,6 +1291,13 @@ async function main() {
     console.log(`Commit message UI checks passed; screenshot: ${path.join(screenshots, "edit-commit-message.png")}`);
     return;
   }
+  if (process.env.GITFERRY_NOTES_ONLY) {
+    await exerciseComparisonNotes(page);
+    await mcp(page, "open_repository", { repository: mcpRepo.folder });
+    await exerciseNotes(page, mcpRepo);
+    assert.deepEqual(pageErrors, [], "Note navigation must have no uncaught errors");
+    return;
+  }
   if (process.env.GITFERRY_WORKTREE_REMOVE_ONLY) {
     await exerciseWorktreeRemoval(page);
     assert.deepEqual(pageErrors, [], "Worktree removal must have no uncaught errors");
@@ -1222,6 +1336,7 @@ async function main() {
     return;
   }
   await exerciseWorktreeRemoval(page);
+  await exerciseComparisonNotes(page);
   await exerciseMcp(page, mcpRepo, small);
   if (process.env.GITFERRY_MCP_ONLY) {
     assert.deepEqual(pageErrors, [], "browser must have no uncaught errors");
@@ -1937,7 +2052,7 @@ main().catch(async error => {
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
+  for (const name of ["comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

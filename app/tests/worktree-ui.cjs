@@ -31,7 +31,7 @@ async function main() {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.exposeFunction("__testInvoke", async (command, args) => {
-    if (command === "repo_action" && args.operation.kind === "remove_worktree") {
+    if (command === "repo_action" && ["remove_worktree", "forget_worktree"].includes(args.operation.kind)) {
       assert.equal(args.operation.value.confirmed, true);
       assert.equal(args.operation.value.expected_head, "1".repeat(40));
       assert.notEqual(args.operation.value.path, primary);
@@ -178,6 +178,26 @@ async function main() {
   await page.reload();
   await page.waitForFunction(() => !document.querySelector(".repo-tab.loading"));
   assert.equal(await page.$$eval(".worktree-tab", tabs => tabs.length), 0, "The deleted checkout cannot return from the session cache");
+  partialCleanup = false;
+  const broken = "C:/trees/broken";
+  worktrees.push({ ...worktrees[0], path: broken, branch: "stale-topic", prunable: true });
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForSelector(".worktree-unavailable");
+  await page.locator(`.worktree-tab[title='${broken}']`).click();
+  assert.equal(await page.$eval(".worktree-tab.active", tab => tab.title), primary, "An unavailable checkout must not activate");
+  await page.click(`.worktree-tab[title='${broken}']`, { button: "right" });
+  assert.match(await page.$eval(".worktree-action-popover", menu => menu.textContent), /Forget stale worktree/);
+  await page.locator(".worktree-action-popover button").click();
+  await page.waitForSelector(".action-dialog");
+  assert.match(await page.$eval(".action-dialog-body", body => body.textContent), /remaining folder and files will be kept.*metadata is saved/s);
+  await page.screenshot({ path: path.join(os.tmpdir(), "gitferry-forget-stale-worktree.png") });
+  await page.keyboard.press("Escape");
+  assert.ok(await page.$(`.worktree-tab[title='${broken}']`), "Cancellation keeps the stale registration visible");
+  await page.click(`.worktree-tab[title='${broken}']`, { button: "right" });
+  await page.locator(".worktree-action-popover button").click();
+  await page.locator(".action-dialog-submit").click();
+  await page.waitForFunction(() => !document.querySelector(".worktree-unavailable"));
+  assert.equal(removals.at(-1), broken);
   await page.locator(".repo-tab:first-child .tab-close").click();
   await page.waitForFunction(() => document.querySelectorAll(".repo-tab").length === 1);
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("gitferry.openTabs"))), [independent]);

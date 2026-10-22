@@ -221,6 +221,13 @@ pub struct RebaseStep {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum RepoAction {
+    ForgetWorktree {
+        path: String,
+        expected_head: Option<String>,
+        branch: String,
+        #[serde(default)]
+        confirmed: bool,
+    },
     RemoveWorktree {
         path: String,
         expected_head: Option<String>,

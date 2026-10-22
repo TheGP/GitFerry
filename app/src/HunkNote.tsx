@@ -5,8 +5,8 @@ import "./hunkNotes.css";
 
 // The repo watcher reloads diffs only when their text changes, so a notes-only change needs its own poll.
 // Every open diff of a repository shares one poll.
-const shared = new Map<string, { notes: Accessor<Note[]>; error: Accessor<string>; load: () => void; users: number; timer: number }>();
-export function refreshHunkNotes(path: string) { shared.get(path)?.load(); }
+const shared = new Map<string, { notes: Accessor<Note[]>; error: Accessor<string>; load: (force?: boolean) => Promise<void>; users: number; timer: number }>();
+export function refreshHunkNotes(path: string) { return shared.get(path)?.load(true) ?? Promise.resolve(); }
 
 function acquire(repoPath: string) {
   let entry = shared.get(repoPath);
@@ -14,18 +14,19 @@ function acquire(repoPath: string) {
     const [notes, setNotes] = createSignal<Note[]>([]);
     const [error, setError] = createSignal("");
     let text: string | null = null;
-    let loading = false;
-    const load = () => {
-      if (loading || text !== null && !document.hasFocus()) return;
-      loading = true;
-      void invoke<{ content: string }>("repo_read_notes", { path: repoPath })
+    let pending: Promise<void> | null = null;
+    const load = (force = false): Promise<void> => {
+      if (pending) return force ? pending.then(() => load(true)) : pending;
+      if (!force && text !== null && !document.hasFocus()) return Promise.resolve();
+      pending = invoke<{ content: string }>("repo_read_notes", { path: repoPath })
         .then(result => {
           const parsed = parseNotesResult(result.content);
           if (result.content !== text) { text = result.content; setNotes(parsed.notes); }
           setError([...parsed.errors.slice(0, 3), ...(parsed.errors.length > 3 ? [`${parsed.errors.length - 3} more invalid note entries`] : [])].join("\n"));
         })
-        .catch(cause => setError(`Could not load change notes: ${String(cause)}`))
-        .finally(() => { loading = false; });
+        .catch(cause => { setError(`Could not load change notes: ${String(cause)}`); })
+        .finally(() => { pending = null; });
+      return pending;
     };
     load();
     entry = { notes, error, load, users: 0, timer: window.setInterval(load, 3000) };
@@ -58,5 +59,5 @@ export function createHunkNotes(repoPath: () => string, file: () => string, rows
 // column plus the line's own indentation keep the text aligned with its code.
 export function HunkNotes(props: { notes: Note[] | undefined; row: NoteRow }) {
   const indent = () => /^\s*/.exec(rowCode(props.row))?.[0] ?? "";
-  return <Show when={props.notes?.length}><div class="hunk-notes"><For each={props.notes}>{note => <div class="hunk-note" title={`Anchored at: ${note.quote}`}><span class="line-number" /><span class="hunk-note-indent">{indent()}</span><span class="hunk-note-text">{note.note}</span></div>}</For></div></Show>;
+  return <Show when={props.notes?.length}><div class="hunk-notes"><For each={props.notes}>{note => <div class="hunk-note" data-note-id={note.id} title={`Saved note · ${note.id} · Anchored at: ${note.quote}`}><span class="line-number" /><span class="hunk-note-indent">{indent()}</span><span class="hunk-note-text">{note.note}</span></div>}</For></div></Show>;
 }

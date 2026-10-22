@@ -1,5 +1,6 @@
 const actionMessages = {
   remove_worktree: ["Remove worktree", "Removing worktree…", "Worktree removed"],
+  forget_worktree: ["Forget stale worktree", "Removing stale worktree registration…", "Stale worktree registration removed"],
   fetch: ["Fetch", "Fetching…", "Fetch complete"],
   pull: ["Pull", "Pulling…", "Pull complete"],
   pull_branch: ["Pull branch", "Pulling branch…", "Branch updated"],

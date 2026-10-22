@@ -23,11 +23,13 @@ Prefer GitFerry's `write_notes` MCP tool when the repository is open. Read `list
 {"repository":"C:/work/my-repo","notes":[{"id":"first-scroll-loop","file":"src/view.ts","target":"staged","side":"new","startLine":42,"quote":"await scrollToNext();","note":"Wait for the viewport update before reading the next batch."}]}
 ```
 
-- `target` is `working`, `staged` or `untracked`; use index line numbers for staged notes. Deletions use `side: "old"`.
+- `target` is `working`, `staged`, `untracked`, a full commit SHA, or `baseSHA..headSHA`. For the open comparison, use `get_view.comparison.target` or `target: "compare"`; the tool saves exact merge-base/head SHAs so later branch changes do not inherit the review. Use index line numbers for staged notes. Deletions use `side: "old"`.
 - Use separate notes for separate logical changed blocks. Anchor each to its actual behavior, not an import or an unrelated test.
 - Repeated quotes need `startLine` and `side`, or exact `before`/`after` adjacent code lines. Ambiguous or missing anchors fail the whole batch.
 - `validateOnly: true` checks without writing. Require `confirmed: true` and `written: true` when saving; inspect every returned file/target/side/line.
-- Reveal each affected file with `reveal_change` and check the visible note placement before reporting success. Validation proves the anchor, not that an unopened file was rendered.
+- After saving, call `reveal_note(repository, id)` for each note. It opens the saved target in Summary, expands the file, scrolls to the note, and returns `note.matched`, `rendered` and `visible`. Require all three plus `confirmed: true`. For an anchor outside ordinary hunk context, use `view: "diff"`.
+- Recheck `get_view(noteIds: [id])` before claiming current visibility; it distinguishes saved, matched, rendered and visible, with hidden reasons and `notesError`. Visibility is inside the app viewport; `appFocused` reports focus. A saved note may be collapsed, outside the viewport or in a different comparison.
+- `reveal_file` comments are temporary side-editor annotations, never saved Summary notes. Do not substitute them or manual JSONL writes when a saved comparison note is requested. If the running app lacks the tool/schema, report that it needs updating.
 - The tool appends records, normalizes notes to LF, and refuses concurrent updates or malformed existing records. Same id updates a note; `{"id":"first-scroll-loop","deleted":true}` removes it.
 
 Fallback if MCP is unavailable: use a UTF-8 writer that preserves existing records and writes LF (avoid PowerShell `Add-Content`/`Out-File` defaults). Validate every JSONL record and quote location, then verify the visible result. Never treat a read error as an empty file. Do not include `.gitferry/` in commits.

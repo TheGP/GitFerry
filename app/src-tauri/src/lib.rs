@@ -597,7 +597,7 @@ async fn repo_action(
     tauri::async_runtime::spawn_blocking(move || {
         if path.starts_with("ssh://") {
             let (host, remote_path) = remote::parse_uri(&path)?;
-            if let RepoAction::RemoveWorktree { path: target, .. } = &mut operation {
+            if let RepoAction::RemoveWorktree { path: target, .. } | RepoAction::ForgetWorktree { path: target, .. } = &mut operation {
                 let (target_host, target_path) = remote::parse_uri(target)?;
                 if target_host != host { return Err("The worktree must be on the same SSH host".into()); }
                 *target = target_path.to_string();

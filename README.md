@@ -35,7 +35,7 @@ The format is a small JSON Lines file at `.gitferry/notes.jsonl`:
 {"id":"cancel-sync","file":"src/sync.ts","quote":"if (signal?.aborted || attempt === retryDelays.length) throw error;","note":"Stop on cancellation or after three retries. A closed workspace must not keep reconnecting."}
 ```
 
-The quote anchors the note to the code, so it follows line shifts. Notes work in working-tree, staged, and branch-comparison diffs. Keep the notes file out of commits. [Format and agent setup →](docs/ai-navigation.md#ai-change-notes)
+The quote anchors the note to the code, so it follows line shifts. Notes work in working-tree, staged, committed, and branch-comparison diffs. Agents can save a note, reveal it in Summary, and verify that it is visible. Comparison notes stay pinned to the reviewed commits. Keep the notes file out of commits. [Format and agent setup →](docs/ai-navigation.md#ai-change-notes)
 
 ## “Show me the lines”
 

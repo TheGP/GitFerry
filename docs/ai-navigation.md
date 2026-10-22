@@ -6,7 +6,7 @@
 
 In Settings, enable **MCP for AI navigation**, then **Copy MCP configuration** into your AI client's MCP configuration. The app must stay running. The server listens on `127.0.0.1` (default port `39847`); choose a different port for another GitFerry instance. Its bearer token is saved in the OS credential store and is not included in repository files or saved UI settings. The endpoint requires that token and rejects browser Origins.
 
-The server exposes `get_view`, `list_repositories`, `open_repository`, `close_repository`, `reorder_repositories`, `list_branches`, `show_branch`, `search_commits`, `find_changes`, `get_commit`, `get_diff`, `file_history`, `blame`, `reveal_change`, and `reveal_file`. Local and SSH repositories use the same Git services as the app; SSH sign-in questions appear in GitFerry.
+The server exposes `get_view`, `list_repositories`, `open_repository`, `close_repository`, `reorder_repositories`, `list_branches`, `show_branch`, `search_commits`, `find_changes`, `get_commit`, `get_diff`, `file_history`, `blame`, `reveal_change`, `reveal_file`, `write_notes`, and `reveal_note`. Local and SSH repositories use the same Git services as the app; SSH sign-in questions appear in GitFerry.
 
 `list_repositories` returns each open tab's canonical path as `tabId`, its checked-out `branch`, `head`, active flag, and selected commit. Recent paths appear separately because their current branch is unknown until opened. Pass the matching tab's path as `repository`. `open_repository` reuses existing tabs; its optional `branch` checks the checked-out branch and reports a mismatch rather than changing it. `show_branch` browses a branch's tip without checkout.
 
@@ -52,13 +52,19 @@ The [GitFerry MCP skill](skills/gitferry-mcp/SKILL.md) teaches agents to choose 
 
 Linked worktrees share a repository tab. The second row shows branch names (detached checkouts show their short commit ID). Hover to see the folder path, and drag tabs to reorder them. Select a checkout in this row; GitFerry remembers the last choice across repository switches and restarts. MCP continues addressing individual checkouts by their canonical paths. `reorder_repositories` requires every open checkout; first occurrences determine repository-group order, while the worktree row keeps its own saved drag order.
 
-`write_notes` validates and saves authorized notes through MCP. Pass `repository` and 1–100 `notes` entries with `id`, `file`, `quote`, `note`, and `target` (`working`, `staged`, `untracked`). Optional `side`, `startLine`, `before` and `after` disambiguate repeated lines. The response reports every matched file, target, side and line. `validateOnly: true` checks without writing; same-id entries update notes and `{id,deleted:true}` removes them. Saving appends records with LF endings, checks for concurrent updates, and uses atomic replacement. It never edits source or stages files. Reveal affected diffs to verify visible placement afterward.
+`write_notes` validates and saves authorized notes through MCP. Pass `repository` and 1–100 `notes` entries with `id`, `file`, `quote`, `note`, and `target`: `working`, `staged`, `untracked`, a full commit SHA, or `baseSHA..headSHA`. For an open comparison, use `get_view.comparison.target` or `target: "compare"`. The alias is resolved to exact merge-base/head SHAs before saving, so the note cannot silently appear to review a later branch tip. `get_diff` and `reveal_change` also accept these comparison targets as `commit`.
+
+Optional `side`, `startLine`, `before` and `after` disambiguate repeated lines. The response reports every matched file, target, side and line, plus visibility states. `validateOnly: true` checks without writing; same-id entries update notes and `{id,deleted:true}` removes them. Saving appends LF records, checks for concurrent updates, and uses atomic replacement. It never edits source or stages files.
+
+After saving, call `reveal_note({"repository":"<tabId>","id":"retry-abort"})`. It opens the saved comparison/commit or working target without checkout, expands the file in Summary, scrolls to the note, and confirms `note.matched`, `note.rendered`, and `note.visible`. Use `view: "diff"` for an anchor outside normal hunk context. Recheck with `get_view({"noteIds":["retry-abort"]})`: it separates saved, matched, rendered, and visible states, reports hidden reasons and missing IDs, and surfaces `notesError`. Visibility means inside the app viewport, including scroll clipping; `appFocused` reports focus, not whether another window covers GitFerry.
+
+`reveal_file` comments are temporary annotations in the **side editor**, never saved Summary notes. Its response explicitly reports `placement.surface`, `persistent: false`, `shownInSummary: false`, and per-comment rendered/visible states; `get_view.editor.annotationPlacement` reads them back. Use `write_notes` followed by `reveal_note` for a persistent review explanation.
 
 Notes accept LF and CRLF, including mixed endings. Read/parse errors are displayed; a failed refresh retains loaded notes. Ambiguous quotes produce an error rather than attaching to the first occurrence. Legacy quote-only entries remain supported.
 
-SSH hosts need an updated bundled agent for validated note writing and worktree discovery. Older agents retain their existing note reader; mixed-ending files still report an error until the agent is updated. Local builds here include refreshed Linux agents; macOS agent bundles require a macOS build.
+SSH hosts need an updated bundled agent for validated note writing and worktree discovery. Older agents retain their existing note reader; mixed-ending files still report an error until the agent is updated. Releases bundle agents for Linux and macOS on x64 and ARM64.
 
-AI coding agents can explain why they changed something, and GitFerry shows each explanation directly above the code it describes in working-tree, staged, and branch-comparison diffs.
+AI coding agents can explain why they changed something, and GitFerry shows each explanation directly above the code it describes in working-tree, staged, committed, and branch-comparison diffs.
 
 Notes live in `.gitferry/notes.jsonl` at the repository root, one JSON object per line:
 

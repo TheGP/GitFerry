@@ -76,3 +76,24 @@ test("staged notes never attach to newer working content", () => {
   assert.throws(() => validateNote({ ...note, quote: "two\nlines" }), /one nonempty/);
   assert.throws(() => validateNote({ ...note, target: ["working"] }), /Invalid note target/);
 });
+
+test("committed and comparison notes stay pinned to their exact target", () => {
+  const base = "a".repeat(40), head = "b".repeat(40), next = "c".repeat(40);
+  const rows = [hunk(0), added(0, "run();")];
+  for (const target of [head, `${base}..${head}`]) {
+    const note = validateNote({ id: "pinned", file: "a.ts", quote: "run();", note: "why", target: target.toUpperCase() });
+    assert.ok(!("deleted" in note));
+    assert.equal(note.target, target);
+    assert.equal(matchNotesResult([note], "a.ts", rows, target).matched.size, 1);
+    for (const other of ["working", "staged", next, `${base}..${next}`, `${next}..${head}`]) {
+      assert.equal(matchNotesResult([note], "a.ts", rows, other).matched.size, 0);
+    }
+  }
+  for (const target of ["compare", "HEAD", "main..topic", "abc123", `${base}...${head}`]) {
+    assert.throws(() => validateNote({ id: "bad", file: "a.ts", quote: "run();", note: "why", target }), /Invalid note target/);
+  }
+  const legacy = parseNotes('{"id":"legacy","file":"a.ts","quote":"run();","note":"why"}');
+  assert.equal(matchNotesResult(legacy, "a.ts", rows, "working").matched.size, 1);
+  assert.equal(matchNotesResult(legacy, "a.ts", rows, `${base}..${head}`).matched.size, 1);
+  assert.equal(matchNotesResult(legacy, "a.ts", rows, head).matched.size, 0);
+});
