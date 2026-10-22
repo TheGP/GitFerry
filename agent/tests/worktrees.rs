@@ -263,6 +263,7 @@ fn forgetting_stale_registration_keeps_files_branch_index_and_other_worktrees() 
     std::fs::write(linked.join("tracked.txt"), "staged work\n").unwrap();
     git(&linked, &["add", "tracked.txt"]);
     let index = std::fs::read(admin.join("index")).unwrap();
+    let gitdir = std::fs::read(admin.join("gitdir")).unwrap();
     std::fs::write(linked.join("keep.txt"), "remaining user data\n").unwrap();
     std::fs::remove_file(linked.join(".git")).unwrap();
     std::fs::remove_file(other.join(".git")).unwrap();
@@ -308,7 +309,7 @@ fn forgetting_stale_registration_keeps_files_branch_index_and_other_worktrees() 
     assert_eq!(std::fs::read_to_string(linked.join("keep.txt")).unwrap(), "remaining user data\n");
     let backup = std::fs::read_dir(primary.join(".git/gitferry-removed-worktrees")).unwrap().next().unwrap().unwrap().path();
     assert_eq!(std::fs::read(backup.join("index")).unwrap(), index);
-    assert_eq!(std::fs::read_to_string(backup.join("gitdir")).unwrap(), format!("{}/.git\n", linked.to_string_lossy().replace('\\', "/")));
+    assert_eq!(std::fs::read(backup.join("gitdir")).unwrap(), gitdir);
     assert_eq!(snapshot().worktrees.len(), 2);
     assert!(snapshot().worktrees.iter().any(|tree| tree.branch == "other" && tree.prunable));
     git(&primary, &["show-ref", "--verify", "refs/heads/topic"]);
