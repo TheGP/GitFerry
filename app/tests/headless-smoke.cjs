@@ -464,7 +464,7 @@ async function exerciseMcp(page, repository, restore) {
     assert.deepEqual(reply.result.commits.map(commit => commit.hash), [repository.cause]);
     assert.equal(reply.result.hasMore, false);
   }
-  await shortcut(page, "f"); await page.waitForSelector(".search-box input");
+  await click(page, "button[title='Search commits']");
   await page.locator(".search-box input").fill(repository.cause.slice(0, 8));
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => document.querySelectorAll(".commit-row.search-result").length === 1);
