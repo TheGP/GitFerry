@@ -1,6 +1,6 @@
 [package]
 name = "gitferry"
-version = "0.3.5"
+version = "0.3.6"
 description = "A fast Git client for local and SSH repositories"
 edition = "2021"
 

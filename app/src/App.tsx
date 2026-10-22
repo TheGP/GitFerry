@@ -2158,7 +2158,7 @@ function App() {
     const path = tab.path;
     if (message.tool === "write_notes") {
       if (!a.notes?.length || a.notes.length > 100) throw new Error("Specify 1-100 notes");
-      const entries = a.notes.map(entry => validateNote(!("deleted" in entry) && entry.target === "compare" ? { ...entry, target: currentComparisonTarget(path) } : entry));
+      const entries = a.notes.map(entry => validateNote("target" in entry && entry.target === "compare" && !("deleted" in entry && entry.deleted === true) ? { ...entry, target: currentComparisonTarget(path) } : entry));
       if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error("Note ids must be unique within a request");
       const original = await invoke<{ content: string }>("repo_read_notes", { path });
       const parsed = parseNotesResult(original.content);

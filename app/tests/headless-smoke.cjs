@@ -191,6 +191,11 @@ function makeMcpRepo() {
 }
 
 async function mcp(page, tool, args = {}) {
+  // Rust serializes absent Option fields as null before dispatching the frontend event.
+  if (tool === "write_notes" && args.notes) args = { ...args, notes: args.notes.map(note => ({
+    file: null, quote: null, note: null, target: null, side: null, startLine: null,
+    before: null, after: null, deleted: null, ...note,
+  })) };
   return page.evaluate(({ tool, args }) => new Promise(resolve => {
     const id = ++window.__mcpId;
     window.__mcpWaiters.set(id, resolve);
