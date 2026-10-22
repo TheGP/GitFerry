@@ -42,9 +42,12 @@ function release(repoPath: string) {
 }
 
 export function createHunkNotes(repoPath: () => string, file: () => string, rows: () => NoteRow[], enabled: () => boolean, target: () => string) {
+  // Diff props can change during status refreshes without changing the repository.
+  // Keep the reader alive so a subsequent read error retains its loaded notes.
+  const sourcePath = createMemo(() => enabled() && isTauri() ? repoPath() : null);
   const source = createMemo(() => {
-    if (!enabled() || !isTauri()) return null;
-    const path = repoPath();
+    const path = sourcePath();
+    if (!path) return null;
     const entry = acquire(path);
     onCleanup(() => release(path));
     return entry;

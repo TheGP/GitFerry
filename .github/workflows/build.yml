@@ -40,6 +40,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test repository operations
         run: cargo test --locked -p gitferry-agent --lib --test repository --test read_parity --test worktrees
+      - name: Test browser UI
+        working-directory: app
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: |
+          cargo build --locked --manifest-path ../Cargo.toml -p gitferry-agent
+          node tests/worktree-ui.cjs
+          node tests/headless-smoke.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: |
+            /tmp/gitferry-headless-*/screenshots/**
+            /tmp/gitferry-worktree-tabs.png
+          if-no-files-found: ignore
 
   agents:
     if: github.event_name == 'workflow_dispatch'
