@@ -816,7 +816,7 @@ fn log(
     let count_arg = format!("--max-count={count}");
     let skip_arg = format!("--skip={offset}");
     let mut args = match filter {
-        Some(("hash", hash)) => vec!["log", "--no-walk", hash],
+        Some(("hash", hash)) => vec!["log", hash],
         _ => vec!["log", "HEAD", "--all"],
     };
     if !needs_filtering {
@@ -826,6 +826,8 @@ fn log(
         count_arg.as_str(),
         "--format=%H%x00%P%x00%s%x00%an%x00%at%x00%D%x1e",
     ]);
+    // --skip/--max-count enable revision walking; override them after those options.
+    if matches!(filter, Some(("hash", _))) { args.push("--no-walk"); }
     let pathspec;
     if let Some((kind, term)) = filter {
         match kind {
