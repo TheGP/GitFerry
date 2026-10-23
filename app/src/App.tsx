@@ -553,6 +553,10 @@ function Icon(props: { name: IconName }) {
 }
 
 // Reuse unchanged objects from the previous snapshot so refreshes only re-render what changed.
+function isMissingRepository(cause: unknown): boolean {
+  return /not a git repository|Cannot open repository path:[\s\S]*(?:no such file|cannot find.*specified|does not exist)/i.test(String(cause));
+}
+
 function reuseEqual<T>(previous: T[], next: T[], key: (item: T) => string): T[] {
   const old = new Map(previous.map(item => [key(item), item]));
   const merged = next.map(item => {
@@ -1231,7 +1235,41 @@ function App() {
       refreshWorkingDiff(path);
       if (activePath() === path) setError("");
       return true;
-    } catch (cause) { if (activePath() === path) setError(String(cause), "Refreshing repository"); return false; }
+    } catch (cause) {
+      if (!await recoverMissingWorktree(path, cause) && activePath() === path) setError(String(cause), "Refreshing repository");
+      return false;
+    }
+  }
+  async function recoverMissingWorktree(path: string, cause: unknown): Promise<boolean> {
+    if (!isMissingRepository(cause)) return false;
+    const current = tabs().find(tab => tab.path === path);
+    if (!current) return false;
+    const draft = fileDraft(), editing = sideEditor();
+    if (draft?.repo === path && draft.text !== draft.original || editing?.repo === path && sideEditorDirty()) {
+      if (activePath() === path) setError("This checkout folder is missing. Your unsaved edits remain open; copy them to a safe location before closing this tab.", "Worktree unavailable", path);
+      return true;
+    }
+    setTabs(items => items.map(tab => tab.path === path ? { ...tab, loading: false, loadError: `This checkout is unavailable. Select another worktree or reopen its folder.\n${String(cause)}` } : tab));
+    if (activePath() !== path) return true;
+    const group = worktreeGroupKey(current);
+    const candidates = [...(current.worktrees ?? []).filter(tree => !tree.bare && !tree.prunable).map(tree => tree.path),
+      ...tabs().filter(tab => worktreeGroupKey(tab) === group && !tab.loadError).map(tab => tab.path)];
+    for (const candidate of new Set(candidates)) {
+      if (repositoryKey(candidate) === repositoryKey(path)) continue;
+      let update: Repo;
+      try { update = await invoke<Repo>("repo_snapshot", { path: candidate, offset: 0 }); }
+      catch { continue; }
+      if (activePath() !== path) return true;
+      if (worktreeGroupKey(update) !== group) continue;
+      setTabs(items => items.some(tab => repositoryKey(tab.path) === repositoryKey(update.path))
+        ? items.map(tab => repositoryKey(tab.path) === repositoryKey(update.path) ? mergeRepo(tab, update) : tab) : [...items, update]);
+      activateTab(update.path); selectWorking();
+      await reconcileWorktrees(update);
+      setNotice(`The previous checkout is unavailable. Opened ${update.branch} instead; no branch was changed.`);
+      return true;
+    }
+    saveTabs();
+    return true;
   }
   async function recoverError() {
     const path = errorPath(), revision = errorRevision;
@@ -1264,7 +1302,9 @@ function App() {
         setTabs(items => items.map(item => item.path === path ? { ...item, status: reuseEqual(item.status, update.status, entry => entry.path) } : item));
         refreshWorkingDiff(path);
       }
-    } catch (cause) { if (activePath() === path) setError(String(cause), "Reading repository status"); }
+    } catch (cause) {
+      if (!await recoverMissingWorktree(path, cause) && activePath() === path) setError(String(cause), "Reading repository status");
+    }
     finally { stateBusy = false; }
   }
   async function loadMore() {
@@ -1781,6 +1821,30 @@ function App() {
     const completedNotice = (message: string) => activePath() === path ? message : `${repository}: ${message}`;
     batch(() => { setRunningAction({ ...status, path, repository }); setActionBusy(true); setError(""); setNotice(""); setProgress(""); setCancelToken(token); setCancelRequested(false); });
     try {
+      if (operation.kind === "checkout") {
+        const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
+        if (activePath() !== path) return;
+        const owner = current.worktrees?.find(tree => tree.branch === operation.value.branch && !tree.bare && !tree.prunable
+          && repositoryKey(tree.path) !== repositoryKey(path));
+        if (owner) {
+          let update: Repo;
+          try { update = await invoke<Repo>("repo_snapshot", { path: owner.path, offset: 0 }); }
+          catch (cause) {
+            await refresh(path);
+            if (activePath() === path) setError(`Could not open the worktree for ${operation.value.branch}: ${owner.path}\n${String(cause)}`, status.label, path);
+            return;
+          }
+          if (activePath() !== path) return;
+          if (update.branch !== operation.value.branch || worktreeGroupKey(update) !== worktreeGroupKey(current)) throw new Error("The branch checkout changed. Refresh and select it again.");
+          setTabs(items => items.some(tab => repositoryKey(tab.path) === repositoryKey(update.path))
+            ? items.map(tab => repositoryKey(tab.path) === repositoryKey(update.path) ? mergeRepo(tab, update) : tab) : [...items, update]);
+          activateTab(update.path); selectWorking();
+          await reconcileWorktrees(update);
+          setBranchMenu(false); setRefMenu(null);
+          setNotice(`Opened ${update.branch} in its existing worktree. No branch was changed.`);
+          return;
+        }
+      }
       const output = await invoke<string>("repo_action", { path, operation, cancelToken: token });
       setNotice(`${completedNotice(status.completed)}${output.trim() ? `\n\n${output.trim()}` : ""}`);
       if (operation.kind === "remove_worktree" || operation.kind === "forget_worktree") {
@@ -1818,6 +1882,7 @@ function App() {
       if (activePath() === path && searchQuery()) await performSearch(searchQuery());
     } catch (cause) {
       setBranchMenu(false); setRefMenu(null); setPullMenu(false); setPushMenu(false); setStashMenu(false);
+      if (await recoverMissingWorktree(path, cause)) return;
       if (activePath() === path && ["merge", "rebase", "interactive_rebase", "pull_merge", "pull_rebase", "cherry_pick", "revert", "continue_operation"].includes(operation.kind)) selectWorking();
       if (operation.kind === "remove_worktree" || operation.kind === "forget_worktree") {
         const source = tabs().find(tab => tab.path === path);
@@ -2559,7 +2624,7 @@ function App() {
       // not a live tab omitted by an older listing or a temporary permission/connection error.
       try { await invoke<RepoState>("repo_state", { path: tab.path }); continue; }
       catch (cause) {
-        if (!/not a git repository|Cannot open repository path:[\s\S]*(?:no such file|cannot find.*specified|does not exist)/i.test(String(cause))) continue;
+        if (!isMissingRepository(cause)) continue;
       }
       const draft = fileDraft(), editing = sideEditor();
       if (draft?.repo === tab.path && draft.text !== draft.original || editing?.repo === tab.path && sideEditorDirty()) continue;

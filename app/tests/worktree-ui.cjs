@@ -11,12 +11,17 @@ const worktrees = [primary, topic, unopened].map((path, index) => ({ path, branc
 worktrees[2].branch = "Detached HEAD";
 worktrees[1].mergedInto = "origin/main";
 let topicStatus = [];
-const snapshot = repo => ({ path: repo, name: repo.split("/").pop(), repositoryName: "app", branch: worktrees.find(tree => tree.path === repo)?.branch ?? "independent", commonGitDir: repo === independent ? `${independent}/.git` : `${primary}/.git`, worktrees: repo === independent ? [{ ...worktrees[0], path: independent, branch: "independent" }] : worktrees, head: "1".repeat(40), status: repo === topic ? topicStatus : [], refs: [], remotes: [], commits: [], hasMore: false });
+const snapshot = repo => ({ path: repo, name: repo.split("/").pop(), repositoryName: "app", branch: worktrees.find(tree => tree.path === repo)?.branch ?? "independent", commonGitDir: repo === independent ? `${independent}/.git` : `${primary}/.git`, worktrees: repo === independent ? [{ ...worktrees[0], path: independent, branch: "independent" }] : worktrees, head: "1".repeat(40), status: statusByPath.get(repo) ?? (repo === topic ? topicStatus : []), refs: [], remotes: [], commits: [], hasMore: false });
 let vite, browser;
 let releaseSnapshots = null;
 const removals = [];
 let partialCleanup = false;
 let pendingRemoval = null;
+const missingPaths = new Set(), deniedPaths = new Set();
+const statusByPath = new Map();
+const checkouts = [];
+let showBranchRefs = false;
+let destinationGate = null, failNextSnapshot = null;
 
 async function main() {
   const app = path.resolve(__dirname, "..");
@@ -32,6 +37,14 @@ async function main() {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.exposeFunction("__testInvoke", async (command, args) => {
+    if (["repo_snapshot", "repo_state", "repo_action"].includes(command)) {
+      if (missingPaths.has(args.path)) throw new Error("Cannot open repository path: The system cannot find the file specified. (os error 2)");
+      if (deniedPaths.has(args.path)) throw new Error("Cannot open repository path: Permission denied (os error 13)");
+    }
+    if (command === "repo_action" && args.operation.kind === "checkout") {
+      checkouts.push(args);
+      return "";
+    }
     if (command === "repo_action" && ["remove_worktree", "forget_worktree"].includes(args.operation.kind)) {
       assert.equal(args.operation.value.confirmed, true);
       assert.equal(args.operation.value.expected_head, "1".repeat(40));
@@ -44,7 +57,11 @@ async function main() {
     }
     if (command === "repo_snapshot") {
       if (releaseSnapshots) await releaseSnapshots.promise;
-      return snapshot(args.path);
+      if (destinationGate?.path === args.path) { destinationGate.started = true; await destinationGate.promise; }
+      if (failNextSnapshot === args.path) { failNextSnapshot = null; throw new Error("Cannot open repository path: The system cannot find the file specified. (os error 2)"); }
+      const result = snapshot(args.path);
+      if (showBranchRefs) result.refs = [{ name: "main", kind: "branch", target: "1".repeat(40), isHead: result.branch === "main" }];
+      return result;
     }
     if (command === "repo_state") {
       if (args.path !== independent && !worktrees.some(tree => tree.path === args.path)) throw new Error("fatal: not a git repository");
@@ -53,7 +70,8 @@ async function main() {
     if (command === "repo_watch") return new Promise(() => {});
     if (command === "repo_notes" || command === "repo_read_notes") return { content: "" };
     if (command === "ssh_current_prompt") return null;
-    if (command === "repo_diff") return { text: "", truncated: false };
+    if (command === "repo_read_file") return { content: "original\n" };
+    if (command === "repo_diff") return { text: statusByPath.has(args.path) ? "diff --git a/draft.txt b/draft.txt\n--- a/draft.txt\n+++ b/draft.txt\n@@ -1 +1 @@\n-before\n+original\n" : "", truncated: false };
     return null;
   });
   await page.evaluateOnNewDocument(({ primary, topic, independent }) => {
@@ -205,6 +223,84 @@ async function main() {
   await page.locator(".action-dialog-submit").click();
   await page.waitForFunction(() => !document.querySelector(".worktree-unavailable"));
   assert.equal(removals.at(-1), broken);
+  const external = "C:/trees/externally-removed";
+  worktrees.push({ ...worktrees[0], path: external, branch: "external-topic" });
+  showBranchRefs = true;
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForSelector(`.worktree-tab[title='${external}']`);
+  await page.locator(`.worktree-tab[title='${external}']`).click();
+  await page.waitForFunction(() => document.querySelector(".branch-chip")?.title === "external-topic");
+  await page.locator(".branch-chip").click();
+  await page.locator(".branch-menu-row > button:first-child::-p-text(main)").click();
+  await page.waitForFunction(() => document.querySelector(".worktree-tab.active")?.title === "C:/repos/app");
+  assert.deepEqual(checkouts, [], "Selecting an occupied branch opens its checkout without running git switch");
+  assert.equal(worktrees.find(tree => tree.path === external).branch, "external-topic", "Opening main must not change another worktree's branch");
+  await page.locator(`.worktree-tab[title='${external}']`).click();
+  await page.waitForFunction(() => document.querySelector(".worktree-tab.active")?.title === "C:/trees/externally-removed");
+  failNextSnapshot = primary;
+  await page.locator(".branch-chip").click();
+  await page.locator(".branch-menu-row > button:first-child::-p-text(main)").click();
+  await page.waitForFunction(() => document.body.textContent.includes("Could not open the worktree"));
+  assert.equal(await page.$eval(".worktree-tab.active", tab => tab.title), external);
+  assert.equal(await page.$(".repo-startup"), null, "A missing destination must not invalidate the healthy source checkout");
+  await page.locator("button[title='Dismiss error']").click();
+  let releaseDestination;
+  destinationGate = { path: primary, started: false, promise: new Promise(resolve => { releaseDestination = resolve; }) };
+  await page.locator(".branch-chip").click();
+  await page.locator(".branch-menu-row > button:first-child::-p-text(main)").click();
+  for (let attempt = 0; !destinationGate.started && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(destinationGate.started, true);
+  await page.locator(".repo-tab:nth-child(2) .tab-main").click();
+  await page.waitForFunction(() => localStorage.getItem("gitferry.activeTab") === "C:/elsewhere/app");
+  destinationGate = null; releaseDestination();
+  await page.waitForFunction(() => !document.querySelector(".statusbar")?.textContent.includes("Switching branch"));
+  assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.activeTab")), independent, "Delayed branch navigation cannot override the user's new repository selection");
+  await page.locator(".repo-tab:first-child .tab-main").click();
+  await page.waitForFunction(() => document.querySelector(".worktree-tab.active")?.title === "C:/trees/externally-removed");
+  deniedPaths.add(external);
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.body.textContent.includes("Permission denied"));
+  assert.equal(await page.$eval(".worktree-tab.active", tab => tab.title), external, "A permission error must not close or replace a live worktree");
+  deniedPaths.delete(external);
+  missingPaths.add(external);
+  worktrees.splice(worktrees.findIndex(tree => tree.path === external), 1);
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelector(".branch-chip")?.title === "main" && !document.querySelector(".worktree-tabbar"));
+  assert.ok(!JSON.parse(await page.evaluate(() => localStorage.getItem("gitferry.openTabs"))).includes(external), "An externally removed checkout cannot remain active or return after restart");
+  assert.deepEqual(checkouts, [], "Recovery must not check out a branch or retry an action in another checkout");
+  for (const mode of ["inline", "side"]) {
+    const draftPath = `C:/trees/draft-${mode}`, tree = { ...worktrees[0], path: draftPath, branch: `draft-${mode}` };
+    worktrees.push(tree);
+    statusByPath.set(draftPath, [{ path: "draft.txt", index: " ", worktree: "M", indexRevision: "", worktreeRevision: "1:9" }]);
+    await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+    await page.waitForSelector(`.worktree-tab[title='${draftPath}']`);
+    await page.locator(`.worktree-tab[title='${draftPath}']`).click();
+    await page.waitForSelector(".summary-diff-card");
+    if (mode === "inline") {
+      await page.locator(".summary-open-tab").click();
+      await page.locator(".file-view-switch button::-p-text(Edit)").click();
+    } else {
+      await page.waitForSelector(".summary-diff-card .diff-line.added .line-text");
+      await page.$eval(".summary-diff-card .diff-line.added .line-text", line => line.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    }
+    const input = mode === "inline" ? ".file-edit-textarea" : ".editor-input";
+    await page.locator(input).fill(`unsaved ${mode} text`);
+    missingPaths.add(draftPath);
+    worktrees.splice(worktrees.findIndex(entry => entry.path === draftPath), 1);
+    await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+    await page.waitForFunction(() => document.body.textContent.includes("Your unsaved edits remain open"));
+    assert.equal(await page.$eval(input, element => element.value), `unsaved ${mode} text`);
+    assert.equal(await page.$eval(input, element => element.getBoundingClientRect().height > 0), true, "Unsaved text must remain visible and copyable after its checkout disappears");
+    assert.equal(await page.$(".repo-startup"), null);
+    missingPaths.delete(draftPath); worktrees.push(tree);
+    await page.locator(mode === "inline" ? ".file-edit-toolbar button::-p-text(Cancel)" : ".editor-tab-close").click();
+    await page.locator(".action-dialog-submit").click();
+    await page.waitForFunction(selector => !document.querySelector(selector), {}, input);
+    missingPaths.add(draftPath); worktrees.splice(worktrees.findIndex(entry => entry.path === draftPath), 1);
+    await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+    await page.waitForFunction(() => document.querySelector(".branch-chip")?.title === "main" && !document.querySelector(".worktree-tabbar"));
+  }
+  console.log("Worktree recovery: occupied main branch navigation, external deletion, permission errors, navigation races and unsaved editors passed");
   await page.locator(".repo-tab:first-child .tab-close").click();
   await page.waitForFunction(() => document.querySelectorAll(".repo-tab").length === 1);
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("gitferry.openTabs"))), [independent]);
