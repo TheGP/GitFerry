@@ -1830,6 +1830,7 @@ function App() {
           let update: Repo;
           try { update = await invoke<Repo>("repo_snapshot", { path: owner.path, offset: 0 }); }
           catch (cause) {
+            setBranchMenu(false); setRefMenu(null);
             await refresh(path);
             if (activePath() === path) setError(`Could not open the worktree for ${operation.value.branch}: ${owner.path}\n${String(cause)}`, status.label, path);
             return;
