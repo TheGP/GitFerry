@@ -187,6 +187,8 @@ button { cursor: pointer; }
 .file-status.added { color: var(--status-added); }
 .file-status.deleted { color: var(--status-deleted); }
 .file-path { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+/* Clip long paths at the start; the inner bdi preserves the path reading order. */
+.file-path, .diff-heading-path { direction: rtl; text-align: left; }
 .file-tag { color: #8cc9a7; font-size: 13px; letter-spacing: .6px; }
 .file-chevron { width: 18px; height: 18px; flex: none; display: grid; place-items: center; color: #7c8d97; }
 .file-chevron .chevron-icon { width: 12px; height: 12px; }
