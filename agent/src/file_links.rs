@@ -23,7 +23,10 @@ pub fn working_file(file: &str, repository: Option<&str>) -> Result<WorkingFile,
     })?;
     let path = std::str::from_utf8(&output.stdout)
         .map_err(|_| "Repository paths must be valid Unicode")?;
-    let path = path.strip_suffix('\n').unwrap_or(path);
+    let path = path
+        .strip_suffix("\r\n")
+        .or_else(|| path.strip_suffix('\n'))
+        .unwrap_or(path);
     let root = Path::new(path)
         .canonicalize()
         .map_err(|error| error.to_string())?;

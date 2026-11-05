@@ -329,7 +329,7 @@ fn repo_root(path: &str) -> Result<PathBuf, String> {
         .canonicalize()
         .map_err(|error| format!("Cannot open repository path: {error}"))?;
     let output = git(&candidate, &["rev-parse", "--show-toplevel"])?;
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let root = String::from_utf8_lossy(&output.stdout).trim_end_matches(['\r', '\n']).to_string();
     if root.is_empty() {
         return Err("This path is not a Git working tree".to_string());
     }

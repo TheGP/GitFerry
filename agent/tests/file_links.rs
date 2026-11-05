@@ -35,6 +35,17 @@ fn assert_root(actual: &str, expected: &Path) {
     );
 }
 
+#[cfg(not(windows))]
+#[test]
+fn preserves_spaces_at_the_end_of_a_repository_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = repository(temp.path(), "repo with trailing space ");
+    std::fs::write(root.join("file.txt"), "working\n").unwrap();
+    let location = working_file(root.join("file.txt").to_str().unwrap(), None).unwrap();
+    assert_root(&location.repository, &root);
+    assert_eq!(location.content, "working\n");
+}
+
 #[test]
 fn opens_clean_modified_and_untracked_text_without_changing_git_or_files() {
     let temp = tempfile::tempdir().unwrap();

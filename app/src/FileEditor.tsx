@@ -90,6 +90,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   const crumbs = () => props.target.path.split(/[\\/]/);
   let loadId = 0;
   let loadedIdentity = "";
+  let revealedNonce = -1;
   onCleanup(() => { loadId++; });
 
   async function load(keepView: boolean) {
@@ -105,6 +106,9 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       const top = scroller.scrollTop;
       const caret = [input.selectionStart, input.selectionEnd] as const;
       setDoc(docOf(content));
+      // A status refresh can finish before the first navigation frame. Complete that request
+      // against the refreshed document instead of preserving the previous file's caret.
+      if (revealedNonce !== props.target.nonce) { reveal(); return; }
       input.setSelectionRange(...caret);
       scroller.scrollTop = top;
     } catch (cause) { if (id === loadId) setError(String(cause)); }
@@ -141,6 +145,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       // Opening from a diff double-click keeps the word selected there for copying.
       if (props.target.focus !== false) input.focus({ preventScroll: true });
       input.setSelectionRange(offset, offset);
+      revealedNonce = nonce;
       updateCaret();
     });
   }
