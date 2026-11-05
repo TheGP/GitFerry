@@ -21,6 +21,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     runs-on: ubuntu-24.04
@@ -90,10 +94,10 @@ jobs:
           - os: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             name: gitferry-agent-linux-arm64
-          - os: macos-latest
+          - os: macos-15
             target: x86_64-apple-darwin
             name: gitferry-agent-macos-x64
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
             name: gitferry-agent-macos-arm64
     steps:
@@ -127,7 +131,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.desktop_target == 'windows' && '["windows-latest"]' || '["windows-latest","macos-latest","ubuntu-24.04"]') }}
+        os: ${{ fromJSON(inputs.desktop_target == 'windows' && '["windows-latest"]' || '["windows-latest","macos-15","ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -196,7 +200,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

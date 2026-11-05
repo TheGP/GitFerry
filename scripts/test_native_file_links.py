@@ -79,7 +79,9 @@ def main():
                 shutil.copy2(installer, destination)
         return
     windows = sys.platform == "win32"
-    root = Path(tempfile.mkdtemp(prefix="gitferry-native-links-"))
+    # TemporaryDirectory handles Git's read-only object files on Windows during cleanup.
+    fixtures = tempfile.TemporaryDirectory(prefix="gitferry-native-links-")
+    root = Path(fixtures.name)
     app = None
 
     def pids():
@@ -219,7 +221,7 @@ def main():
         print("Native OS links passed with MCP disabled: cold start, restart, warm/repeated clicks, clean/modified/untracked files, spaces/Unicode/encoded characters, nested repos/worktrees, invalid targets and unchanged Git/file state")
     finally:
         stop()
-        shutil.rmtree(root)
+        fixtures.cleanup()
 
 
 if __name__ == "__main__":
