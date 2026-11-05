@@ -2271,6 +2271,10 @@ async function main() {
 
 main().catch(async error => {
   console.error(error);
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const message = String(error.stack ?? error).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+    console.log(`::error title=Browser regression::${message}`);
+  }
   console.error(JSON.stringify({ sandbox, recentActions: actionRequests.slice(-10) }, null, 2));
   const pages = await browser?.pages();
   await pages?.at(-1)?.screenshot({ path: path.join(screenshots, "failure.png") }).catch(() => {});
