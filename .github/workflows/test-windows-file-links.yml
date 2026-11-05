@@ -1,0 +1,51 @@
+name: Test Windows file-link installer
+
+on:
+  push:
+    paths:
+      - scripts/test_native_file_links.py
+      - .github/workflows/test-windows-file-links.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-file-links-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installed_app:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Find an installer with identical application sources
+        id: bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.name == "native-file-links-windows-latest" and .expired == false) | [.workflow_run.id, .workflow_run.head_sha] | @tsv' > "$RUNNER_TEMP/native-bundles.tsv"
+          while IFS=$'\t' read -r run source; do
+            if git diff --quiet "$source" HEAD -- Cargo.toml Cargo.lock app agent proto; then
+              echo "run=$run" >> "$GITHUB_OUTPUT"
+              echo "Testing unchanged application sources from $source (run $run)"
+              exit 0
+            fi
+          done < "$RUNNER_TEMP/native-bundles.tsv"
+          echo "::error::Build this application's sources before rerunning its installer test."
+          exit 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-file-links-windows-latest
+          path: native-link-bundle
+          run-id: ${{ steps.bundle.outputs.run }}
+          github-token: ${{ github.token }}
+      - name: Unpack the built installer
+        run: python scripts/test_native_file_links.py --unpack
+      - name: Test OS file-link handlers with MCP disabled
+        run: python scripts/test_native_file_links.py
