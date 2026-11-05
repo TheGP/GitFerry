@@ -101,9 +101,9 @@ export function selectPageMatch(match: PageMatch) {
 }
 
 export function revealPageMatch(match: PageMatch) {
-  selectPageMatch(match);
   const input = match.surface.input;
   if (input) {
+    selectPageMatch(match);
     if (!input.closest(".editor-body")) {
       const rect = rawRects(match)[0], box = input.getBoundingClientRect();
       if (rect) {
@@ -112,6 +112,8 @@ export function revealPageMatch(match: PageMatch) {
       }
     }
   }
+  // Selecting a DOM Range can move browser focus away from the find input while it is being
+  // typed. The overlay marks ordinary text; close() installs its copyable selection afterwards.
   for (let parent = match.surface.anchor.parentElement; parent; parent = parent.parentElement) {
     const style = getComputedStyle(parent), rect = rawRects(match)[0], box = parent.getBoundingClientRect();
     if (!rect) break;

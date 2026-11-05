@@ -1027,6 +1027,13 @@ async function exerciseFindInView(page) {
   assert.equal(fs.readFileSync(file, "utf8"), text);
   assert.equal(git(root, "rev-parse", "HEAD"), originalHead);
   assert.deepEqual(fs.readFileSync(path.join(root, ".git/index")), originalIndex);
+  await page.evaluate(() => { const input = document.createElement("input"); input.type = "password"; input.id = "password-find-probe"; input.value = "privatePasswordFindProbe"; document.body.append(input); input.focus(); input.select(); });
+  await page.keyboard.down("Meta"); await page.keyboard.press("f"); await page.keyboard.up("Meta");
+  assert.notEqual(await page.$eval('.find-bar input', input => input.value), "privatePasswordFindProbe", "Password selections must never seed Find");
+  await page.locator('.find-bar input').fill("privatePasswordFindProbe");
+  assert.equal(await page.$eval('.find-count', item => item.textContent), "No matches", "Password values must never be indexed");
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => document.querySelector('#password-find-probe').remove());
   await page.screenshot({ path: path.join(screenshots, "find-in-view.png") });
   console.log("Find in view: Ctrl/Cmd+F, native word selection, syntax spans, wrapping, next/previous, unsaved buffers, plain editors, and no Git/file writes passed");
 }

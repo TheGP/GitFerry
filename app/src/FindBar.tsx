@@ -33,7 +33,7 @@ export function FindBar() {
     if (!open()) {
       origin = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       originOffset = origin instanceof HTMLTextAreaElement ? origin.selectionStart : 0;
-      const selection = origin instanceof HTMLTextAreaElement ? origin.value.slice(origin.selectionStart, origin.selectionEnd) : window.getSelection()?.toString() ?? "";
+      const selection = origin instanceof HTMLTextAreaElement ? origin.value.slice(origin.selectionStart, origin.selectionEnd) : origin instanceof HTMLInputElement ? "" : window.getSelection()?.toString() ?? "";
       if (selection && !/[\r\n]/.test(selection) && selection.length <= 512) setQuery(selection);
       setOpen(true); refresh(true);
     }
