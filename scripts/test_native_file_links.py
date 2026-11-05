@@ -19,9 +19,14 @@ import time
 import traceback
 from urllib.parse import urlencode, quote
 
+# Windows runners otherwise use the ANSI code page for redirected Python output. Both Git
+# paths and failure annotations contain Unicode, including filenames used by this smoke test.
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 
 def run(*args, **kwargs):
-    return subprocess.check_output(args, text=True, **kwargs).strip()
+    return subprocess.check_output(args, text=True, encoding="utf-8", **kwargs).strip()
 
 
 def git(root, *args):
