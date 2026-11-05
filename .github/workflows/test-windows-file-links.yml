@@ -1,10 +1,6 @@
 name: Test Windows file-link installer
 
 on:
-  push:
-    paths:
-      - scripts/test_native_file_links.py
-      - .github/workflows/test-windows-file-links.yml
   workflow_dispatch:
 
 permissions:

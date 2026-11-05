@@ -55,6 +55,8 @@ The SSH agent binaries are bundled in `app/src-tauri/resources/`. Pushes and pul
 
 Run the Build GitFerry workflow manually for the full Windows, macOS, and Linux desktop matrix, or select its `agents_only` input to rebuild only the SSH agents.
 
+The Test Windows file-link installer workflow reruns the native smoke test without recompiling. It selects an existing installer only when its application sources match the checked-out revision; build that revision first if no matching installer is available. Normal builds and releases also run the installed-app tests.
+
 Pushing a `vX.Y.Z` tag matching the versions in `app/package.json` and `app/src-tauri/tauri.conf.json` runs [release.yml](../.github/workflows/release.yml). It builds Windows x64 (NSIS), macOS Apple Silicon and Intel (DMG), and Linux x64 (Debian package and AppImage). The release starts as a draft and is published only after all builds succeed.
 
 The macOS bundles use ad-hoc signing and are not notarized; Windows installers are not certificate signed.
