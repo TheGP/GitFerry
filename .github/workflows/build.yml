@@ -173,9 +173,15 @@ jobs:
           else
             pnpm tauri build --bundles app --ci
           fi
-      - name: Test OS file-link handlers with MCP disabled
+      - name: Prepare native file-link test bundle
         if: runner.os == 'Windows' || runner.os == 'macOS'
-        run: python scripts/test_native_file_links.py
+        run: python scripts/test_native_file_links.py --prepare
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        with:
+          name: native-file-links-${{ matrix.os }}
+          path: native-link-bundle
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
         with:
@@ -184,3 +190,21 @@ jobs:
             target/release/gitferry.exe
             app/src-tauri/resources/gitferry-agent-*
           if-no-files-found: error
+
+  native_links:
+    needs: desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-file-links-${{ matrix.os }}
+          path: native-link-bundle
+      - name: Unpack native file-link test bundle
+        run: python scripts/test_native_file_links.py --unpack
+      - name: Test OS file-link handlers with MCP disabled
+        run: python scripts/test_native_file_links.py

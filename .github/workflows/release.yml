@@ -174,12 +174,36 @@ jobs:
           releaseName: GitFerry ${{ github.ref_name }}
           releaseDraft: true
           args: ${{ matrix.args }}
-      - name: Test OS file-link handlers with MCP disabled
+      - name: Prepare native file-link test bundle
         if: runner.os == 'Windows' || runner.os == 'macOS'
+        run: python scripts/test_native_file_links.py --prepare
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        with:
+          name: native-file-links-${{ matrix.os }}
+          path: native-link-bundle
+          if-no-files-found: error
+
+  native_links:
+    needs: desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-file-links-${{ matrix.os }}
+          path: native-link-bundle
+      - name: Unpack native file-link test bundle
+        run: python scripts/test_native_file_links.py --unpack
+      - name: Test OS file-link handlers with MCP disabled
         run: python scripts/test_native_file_links.py
 
   publish:
-    needs: [desktop, ui]
+    needs: [desktop, ui, native_links]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

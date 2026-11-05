@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from urllib.parse import urlencode, quote
 
 
@@ -41,6 +42,29 @@ def main():
         raise SystemExit("This smoke test installs GitFerry and resets its settings. Run only in a disposable GitHub Actions profile.")
     if sys.platform not in ("darwin", "win32"):
         raise SystemExit("Native URL smoke tests require macOS or Windows")
+    bundle = Path("native-link-bundle")
+    if sys.argv[1:] == ["--prepare"]:
+        bundle.mkdir(exist_ok=True)
+        if sys.platform == "darwin":
+            apps = [Path(path) for path in glob.glob("target/**/release/bundle/macos/GitFerry.app", recursive=True)]
+            assert apps, "No bundled macOS app"
+            subprocess.run(["ditto", "-c", "-k", "--keepParent", str(max(apps, key=lambda path: path.stat().st_mtime)), str(bundle / "GitFerry.zip")], check=True)
+        else:
+            installers = glob.glob("target/release/bundle/nsis/*setup.exe")
+            assert installers, "No bundled Windows installer"
+            shutil.copy2(installers[0], bundle)
+        return
+    if sys.argv[1:] == ["--unpack"]:
+        if sys.platform == "darwin":
+            destination = Path("target/release/bundle/macos")
+            destination.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["ditto", "-x", "-k", str(bundle / "GitFerry.zip"), str(destination)], check=True)
+        else:
+            destination = Path("target/release/bundle/nsis")
+            destination.mkdir(parents=True, exist_ok=True)
+            for installer in bundle.glob("*setup.exe"):
+                shutil.copy2(installer, destination)
+        return
     windows = sys.platform == "win32"
     root = Path(tempfile.mkdtemp(prefix="gitferry-native-links-"))
     app = None
@@ -176,4 +200,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        # Console logs require a signed-in GitHub session; annotations expose actionable test
+        # failures through the public check API without weakening the test or adding app probes.
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            message = traceback.format_exc().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            print("::error title=Native file-link smoke test::" + message, flush=True)
+        raise
