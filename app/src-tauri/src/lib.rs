@@ -10,6 +10,7 @@ use tauri::{Emitter, Manager};
 
 mod askpass;
 mod editor;
+mod file_links;
 mod mcp;
 mod remote;
 
@@ -679,17 +680,35 @@ fn ssh_forget_credential(askpass: tauri::State<std::sync::Arc<askpass::Askpass>>
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(file_links::FileLinks::default())
+        // This plugin must be registered first so subsequent launches hand their URL to this UI.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            file_links::receive(app, args);
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             app.manage(mcp::McpState::default());
             let askpass = askpass::Askpass::start(app.handle().clone())?;
             app.manage(remote::RemoteManager::new(Some(askpass.clone())));
             app.manage(askpass);
+            #[cfg(windows)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(error) = app.deep_link().register_all() {
+                    file_links::report_error(app.handle(), format!("Could not register gitferry:// file links: {error}"));
+                }
+            }
+            // macOS delivers its launch URLs as RunEvent::Opened, including cold launches.
+            #[cfg(not(target_os = "macos"))]
+            file_links::receive(app.handle(), std::env::args().skip(1));
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             repo_snapshot,
+            file_links::take_file_links,
+            file_links::resolve_file_link,
             mcp::mcp_start,
             mcp::mcp_stop,
             mcp::mcp_reply,
@@ -719,6 +738,14 @@ pub fn run() {
             ssh_saved_credentials,
             ssh_forget_credential
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running GitFerry");
+        .build(tauri::generate_context!())
+        .expect("error while building GitFerry")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                file_links::receive(app, urls.into_iter().map(|url| url.to_string()));
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }

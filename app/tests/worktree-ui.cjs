@@ -37,6 +37,7 @@ async function main() {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.exposeFunction("__testInvoke", async (command, args) => {
+    if (command === "take_file_links") return { links: [], dropped: 0 };
     if (["repo_snapshot", "repo_state", "repo_action"].includes(command)) {
       if (missingPaths.has(args.path)) throw new Error("Cannot open repository path: The system cannot find the file specified. (os error 2)");
       if (deniedPaths.has(args.path)) throw new Error("Cannot open repository path: Permission denied (os error 13)");

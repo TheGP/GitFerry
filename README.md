@@ -47,6 +47,8 @@ Connect an AI assistant through MCP and ask it to show its evidence in GitFerry.
 
 Enable **MCP for AI navigation** in Settings and copy the configuration into your AI client. [Setup, tools, and examples →](docs/ai-navigation.md#mcp-ai-navigation)
 
+Remote Codex and other apps can open working files with `gitferry://open?file=<encoded absolute path>&line=77&column=1`, including clean and untracked files. This works without MCP setup. [Native file links and integration examples →](docs/file-links.md)
+
 ## Make the next commit yours
 
 All changed files open in one scrollable Summary. Click line numbers to toggle a selection, then stage or unstage that selection, a hunk, or the whole file.

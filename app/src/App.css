@@ -837,3 +837,5 @@ button.row-action.armed, button.row-action.armed:hover:not(:disabled), .line-sel
 .error-details-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .error-details-actions button { padding: 5px 10px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; }
 .error-details-actions button:hover { background: var(--theme-hover); }
+
+.file-link-waiting { flex: none; padding: 8px 14px; background: var(--theme-accent-soft); color: var(--theme-text); font-size: 13px; }

@@ -17,6 +17,9 @@ use std::sync::{
 #[doc(hidden)]
 pub mod gix_reads;
 
+mod file_links;
+pub use file_links::working_file;
+
 const MAX_DIFF_BYTES: usize = 512 * 1024;
 const MAX_EDIT_BYTES: usize = 1024 * 1024;
 
@@ -84,6 +87,7 @@ pub fn handle(request: Request) -> Response {
         } => diff_with_context(&path, &target, &file, ignore_whitespace, full_context)
             .map(Response::Diff),
         Request::ReadFile { path, file } => read_file(&path, &file).map(Response::EditableFile),
+        Request::WorkingFile { file, repository } => working_file(&file, repository.as_deref()).map(Response::WorkingFile),
         Request::ReadNotes { path } => read_notes(&path).map(Response::EditableFile),
         Request::SaveNotes { path, content, expected_content } => save_notes(&path, &content, &expected_content).map(Response::EditableFile),
         Request::SaveFile {
@@ -535,6 +539,10 @@ fn text(bytes: &[u8]) -> String {
 
 fn display_path(path: &Path) -> String {
     let path = path.to_string_lossy();
+    #[cfg(windows)]
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{path}");
+    }
     #[cfg(windows)]
     let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
     path.to_string()

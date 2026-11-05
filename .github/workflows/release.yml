@@ -39,7 +39,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Test repository reads and actions
-        run: cargo test --locked -p gitferry-agent --lib --test repository --test read_parity --test worktrees
+        run: cargo test --locked -p gitferry-agent --lib --test repository --test read_parity --test worktrees --test file_links
       - name: Configure static linker
         if: runner.os == 'Linux'
         run: |
@@ -86,6 +86,7 @@ jobs:
           pnpm test:unit
           node tests/worktree-ui.cjs
           node tests/headless-smoke.cjs
+          GITFERRY_FILE_LINKS_ONLY=1 node tests/headless-smoke.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -159,6 +160,10 @@ jobs:
         run: |
           pnpm exec tsc --noEmit
           pnpm test:unit
+      - name: Test native link parsing and repository resolution
+        run: |
+          cargo test --locked -p gitferry --lib
+          cargo test --locked -p gitferry-agent --lib --test file_links
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -169,6 +174,9 @@ jobs:
           releaseName: GitFerry ${{ github.ref_name }}
           releaseDraft: true
           args: ${{ matrix.args }}
+      - name: Test OS file-link handlers with MCP disabled
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        run: python scripts/test_native_file_links.py
 
   publish:
     needs: [desktop, ui]

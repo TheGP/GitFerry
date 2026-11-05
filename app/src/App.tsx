@@ -14,6 +14,7 @@ import { createHunkNotes, HunkNotes, refreshHunkNotes } from "./HunkNote";
 import { isCommitTarget, isNoteTarget, parseNotesResult, resolveNote, validateNote, type Note } from "./hunkNotes";
 import { inAppViewport, noteVisibility } from "./noteVisibility";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
+import { createFileLinkQueue, filePosition, type FileLinkBatch, type ResolvedFileLink } from "./fileLinks";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
 import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection } from "./mcpNavigation";
 import "./App.css";
@@ -97,7 +98,7 @@ function savedSideEditor(): EditorTarget | null {
   try {
     const saved = JSON.parse(localStorage.getItem(sideEditorKey) ?? "null");
     if (!saved || typeof saved.repo !== "string" || typeof saved.path !== "string") return null;
-    return { repo: saved.repo, path: saved.path, commit: typeof saved.commit === "string" ? saved.commit : undefined, line: Number(saved.line) || 0, marks: null, nonce: 0, readOnly: saved.readOnly === true, revisionLabel: typeof saved.revisionLabel === "string" ? saved.revisionLabel : undefined };
+    return { repo: saved.repo, path: saved.path, commit: typeof saved.commit === "string" ? saved.commit : undefined, line: Number(saved.line) || 0, column: Number.isSafeInteger(saved.column) && saved.column > 0 ? saved.column : undefined, marks: null, nonce: 0, readOnly: saved.readOnly === true, revisionLabel: typeof saved.revisionLabel === "string" ? saved.revisionLabel : undefined };
   } catch { return null; }
 }
 function savedSession(): { tabs: Repo[]; activePath: string | null } {
@@ -655,7 +656,7 @@ function App() {
   if (!sideEditor()) forgetWindowGrowth();
   createEffect(() => {
     const target = sideEditor();
-    if (target) localStorage.setItem(sideEditorKey, JSON.stringify({ repo: target.repo, path: target.path, commit: target.commit, line: target.line, readOnly: target.readOnly, revisionLabel: target.revisionLabel }));
+    if (target) localStorage.setItem(sideEditorKey, JSON.stringify({ repo: target.repo, path: target.path, commit: target.commit, line: target.line, column: target.column, readOnly: target.readOnly, revisionLabel: target.revisionLabel }));
     else localStorage.removeItem(sideEditorKey);
   });
   const [sideEditorDirty, setSideEditorDirty] = createSignal(false);
@@ -2787,7 +2788,56 @@ function App() {
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop);
   }
   createEffect(on(() => [activePath(), selected(), choice()?.path, choice()?.target], () => setDiffSelection({ rows: [], hunkIndex: null })));
+  const [fileLinksReady, setFileLinksReady] = createSignal(false);
+  const [waitingFileLinks, setWaitingFileLinks] = createSignal(0);
+  const sameLinkedEditor = (link: ResolvedFileLink) => {
+    const target = sideEditor();
+    return Boolean(target && !target.commit && !target.readOnly && repositoryKey(target.repo) === repositoryKey(link.repository) && target.path === link.file);
+  };
+  const fileLinkBlocked = (link: ResolvedFileLink) => Boolean(actionDialog() || actionBusy() || busy() || removingWorktree()
+    || fileDraft()?.text !== fileDraft()?.original || sideEditorDirty() && !sameLinkedEditor(link));
+  const linkedContent = (link: ResolvedFileLink) => sameLinkedEditor(link) && sideEditorDirty()
+    ? document.querySelector<HTMLTextAreaElement>(".editor-input")?.value ?? link.content : link.content;
+  async function openLinkedFile(link: ResolvedFileLink): Promise<boolean> {
+    filePosition(linkedContent(link), link.line, link.column);
+    const current = await invoke<Repo>("repo_snapshot", { path: link.repository, offset: 0 });
+    // Edits or a dialog may have appeared while the repository was loading.
+    if (fileLinkBlocked(link)) return false;
+    filePosition(linkedContent(link), link.line, link.column);
+    const preserveBuffer = sameLinkedEditor(link) && sideEditorDirty();
+    setTabs(items => items.some(item => repositoryKey(item.path) === repositoryKey(current.path))
+      ? items.map(item => repositoryKey(item.path) === repositoryKey(current.path) ? mergeRepo(item, current) : item) : [...items, current]);
+    activateTab(current.path); selectWorking();
+    setSearchQuery(""); setSearchInput(""); setSearchOpen(false); setShowOpen(false); closeFileFinder(); setError("");
+    saveRecent(current.path); saveTabs();
+    await showSideEditor({ repo: current.path, path: link.file, line: link.line, column: link.column, flash: true,
+      preserveBuffer, content: link.content, marks: null, nonce: ++sideEditorNonce, focus: true });
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    return true;
+  }
+  const fileLinkQueue = createFileLinkQueue({
+    take: () => invoke<FileLinkBatch>("take_file_links"),
+    resolve: url => invoke<ResolvedFileLink>("resolve_file_link", { url }),
+    open: openLinkedFile,
+    blocked: fileLinkBlocked,
+    error: message => setError(message, "Opening file link"),
+    waiting: setWaitingFileLinks,
+  });
+  createEffect(() => {
+    if (!fileLinksReady()) return;
+    sideEditorDirty(); fileDraft(); actionDialog(); actionBusy(); busy(); removingWorktree();
+    untrack(() => void fileLinkQueue.wake());
+  });
+
   onMount(() => {
+    let disposed = false;
+    let unlistenFileLinks: (() => void) | undefined;
+    if (isTauri()) void listen("file-links-pending", () => { if (fileLinksReady()) void fileLinkQueue.wake(); }).then(unlisten => {
+      if (disposed) { unlisten(); return; }
+      unlistenFileLinks = unlisten;
+      setFileLinksReady(true);
+    }).catch(cause => setError(String(cause), "Listening for file links"));
+    onCleanup(() => { disposed = true; unlistenFileLinks?.(); fileLinkQueue.stop(); });
     let unlistenMcp: (() => void) | undefined;
     if (isTauri()) void listen<McpRequest>("mcp-request", event => {
       void handleMcp(event.payload).then(result => invoke("mcp_reply", { id: event.payload.id, result, error: null }),
@@ -2878,6 +2928,7 @@ function App() {
 
   return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); if (!event.target.closest(".file-action-popover")) setFileMenu(null); if (!event.target.closest(".worktree-action-popover")) setWorktreeMenu(null); } }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
+    <Show when={waitingFileLinks()}><div class="file-link-waiting" role="status">{waitingFileLinks()} file link{waitingFileLinks() === 1 ? " is" : "s are"} waiting. Save or cancel your editor changes, or finish the current operation, to continue.</div></Show>
     <header class="tabbar">
       <div class={`tab-strip ${tabDrag()?.kind === "repository" ? "reordering" : ""}`} ref={tabStrip} onScroll={updateTabScroll} onWheel={event => { if (tabOverflow() && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.preventDefault(); tabStrip.scrollLeft += event.deltaY; } }}>
       <For each={groupedTabs()}>{(item, index) => <div style={{ transform: tabShift(item.path, index()) }} class={`repo-tab ${repositoryActive(item) ? "active" : ""} ${item.loading ? "loading" : ""} ${item.loadError ? "unavailable" : ""} ${tabDrag()?.kind === "repository" && tabDrag()?.path === item.path ? `dragging ${tabDrag()!.settling ? "settling" : ""}` : ""}`} onPointerDown={event => startTabDrag(item.path, event)}>

@@ -49,6 +49,8 @@ The output prints the screenshot folder. Inspect its four PNG files before copyi
 
 ## GitHub releases
 
+Dependency review for native file links (2026-11-05): the Rust audit identified a build-time environment leak in `libz-sys`; its lockfile entry is patched to 1.1.31. The existing pnpm audit also reports advisories in Seroval's SSR/deserialization code and development tooling (`vite`, `source-map-js`, and Puppeteer's `zod`). The native opening path and shipped browser entry points do not call those affected SSR/deserialization or development-server APIs. Those broader dependency updates are deferred to a separate maintenance change; review again by 2026-11-19. This is a reachability assessment, not a clean dependency audit.
+
 The SSH agent binaries are bundled in `app/src-tauri/resources/`. Pushes and pull requests run frontend checks and agent tests on Linux.
 
 Run the Build GitFerry workflow manually for the full Windows, macOS, and Linux desktop matrix, or select its `agents_only` input to rebuild only the SSH agents.

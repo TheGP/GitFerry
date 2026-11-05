@@ -2,13 +2,14 @@ import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show
 import type { FileRange } from "./mcpNavigation";
 import { highlightFileLines } from "./diffHighlight";
 import { describeError } from "./statusMessages";
+import { filePosition } from "./fileLinks";
 import "./fileEditor.css";
 
 /** A hunk's changes in the new file, as 1-based lines: added lines, and lines that removed lines sat directly above. */
 export type HunkMarks = { added: number[]; removed: number[] };
 /** What to open: a file, the line to put the caret on and optionally the hunk to highlight. Without `commit` it is the
  * editable working-tree file; with it, the file as of that diff target (a commit or a comparison), read-only. An empty path is an empty editor. */
-export type EditorTarget = { repo: string; path: string; commit?: string; line: number; marks: HunkMarks | null; nonce: number; focus?: boolean; readOnly?: boolean; revisionLabel?: string; content?: string; annotation?: { startLine: number; endLine: number; comment?: string | null; ranges?: FileRange[] } };
+export type EditorTarget = { repo: string; path: string; commit?: string; line: number; column?: number; flash?: boolean; preserveBuffer?: boolean; marks: HunkMarks | null; nonce: number; focus?: boolean; readOnly?: boolean; revisionLabel?: string; content?: string; annotation?: { startLine: number; endLine: number; comment?: string | null; ranges?: FileRange[] } };
 type EditorDoc = { source: string; original: string; text: string; newline: "\n" | "\r\n" | "\r" };
 
 const newlineOf = (content: string): EditorDoc["newline"] => content.includes("\r\n") ? "\r\n" : content.includes("\r") ? "\r" : "\n";
@@ -56,6 +57,9 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal("");
   const [caretLine, setCaretLine] = createSignal(0);
+  const [navigationLine, setNavigationLine] = createSignal<number | null>(null);
+  let navigationTimer: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(navigationTimer));
   const [marks, setMarks] = createSignal<{ added: Set<number>; removed: Set<number> } | null>(null);
   const dirty = createMemo(() => { const current = doc(); return Boolean(current && current.text !== current.original); });
   createEffect(() => props.onDirty(dirty()));
@@ -85,6 +89,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   });
   const crumbs = () => props.target.path.split(/[\\/]/);
   let loadId = 0;
+  let loadedIdentity = "";
   onCleanup(() => { loadId++; });
 
   async function load(keepView: boolean) {
@@ -110,12 +115,17 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     const text = doc()?.text;
     if (text === undefined) return;
     // Line 0 asks for the first conflict (or the top of the file).
-    const line = Math.max(1, Math.min(requestedLine || (conflicts()[0]?.start ?? 0) + 1, lines().length));
+    const line = props.target.column !== undefined ? requestedLine : Math.max(1, Math.min(requestedLine || (conflicts()[0]?.start ?? 0) + 1, lines().length));
+    let offset: number;
+    try { offset = filePosition(text, line, props.target.column ?? 1); }
+    catch (cause) { setError(String(cause)); return; }
     const target = props.target.marks;
     // A removal at the very end of the file marks the last line.
     setMarks(target && { added: new Set(target.added), removed: new Set(target.removed.map(item => Math.min(item, lines().length))) });
     const firstLine = target ? Math.min(...target.added, ...target.removed) : Infinity;
+    const nonce = props.target.nonce, documentId = loadId;
     requestAnimationFrame(() => {
+      if (props.target.nonce !== nonce || loadId !== documentId) return;
       const row = rowsElement.children[line - 1] as HTMLElement | undefined;
       const first = Number.isFinite(firstLine) ? rowsElement.children[firstLine - 1] as HTMLElement | undefined : undefined;
       if (row) {
@@ -123,15 +133,24 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
         const anchor = first && row.offsetTop - first.offsetTop < scroller.clientHeight * 0.6 ? first : row;
         scroller.scrollTop = Math.max(0, anchor.offsetTop - scroller.clientHeight / 4);
       }
-      let offset = 0;
-      for (let index = 1; index < line; index++) offset = text.indexOf("\n", offset) + 1;
+      if (props.target.flash) {
+        clearTimeout(navigationTimer);
+        setNavigationLine(line);
+        navigationTimer = setTimeout(() => setNavigationLine(null), 1500);
+      }
       // Opening from a diff double-click keeps the word selected there for copying.
       if (props.target.focus !== false) input.focus({ preventScroll: true });
       input.setSelectionRange(offset, offset);
       updateCaret();
     });
   }
-  createEffect(on(() => `${props.target.repo}\u0000${props.target.path}\u0000${props.target.commit ?? ""}\u0000${props.target.content === undefined ? "" : props.target.nonce}`, () => { setDoc(null); setMarks(null); void load(false); }));
+  createEffect(on(() => `${props.target.repo}\u0000${props.target.path}\u0000${props.target.commit ?? ""}\u0000${props.target.content === undefined ? "" : props.target.nonce}`, () => {
+    const identity = `${props.target.repo}\u0000${props.target.path}\u0000${props.target.commit ?? ""}`;
+    if (props.target.preserveBuffer && loadedIdentity === identity && doc()) return;
+    loadedIdentity = identity;
+    clearTimeout(navigationTimer); setNavigationLine(null);
+    setDoc(null); setMarks(null); void load(false);
+  }));
   createEffect(on(() => props.target.nonce, () => { if (doc()) reveal(); }, { defer: true }));
   // The file changed on disk (a discard, a checkout, another editor): pick it up unless there are unsaved edits.
   createEffect(on(() => props.revision, () => { if (doc() && !readOnly() && !dirty() && !saving()) void load(true); }, { defer: true }));
@@ -240,7 +259,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       <div class="editor-scroll" ref={scroller} style={{ display: shown() ? undefined : "none" }}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>
           <div class="editor-body" style={{ "--editor-gutter": gutter() }}>
-            <div class="editor-rows" ref={rowsElement}><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""} ${isHighlighted(index) ? "ai-highlight" : ""} ${conflictClasses()[index] ?? ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /><Show when={!readOnly() && conflictAt().get(index)}>{conflict => <span class="editor-conflict-actions"><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "current")}>Accept current</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "incoming")}>Accept incoming</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "both")}>Accept both</button></span>}</Show></div>}</Index></div>
+            <div class="editor-rows" ref={rowsElement}><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""} ${isHighlighted(index) ? "ai-highlight" : ""} ${navigationLine() === index + 1 ? "navigation-highlight" : ""} ${conflictClasses()[index] ?? ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /><Show when={!readOnly() && conflictAt().get(index)}>{conflict => <span class="editor-conflict-actions"><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "current")}>Accept current</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "incoming")}>Accept incoming</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "both")}>Accept both</button></span>}</Show></div>}</Index></div>
             <textarea class="editor-input" ref={input} aria-label={`Edit ${props.target.path}`} spellcheck={false} autocapitalize="off" autocomplete="off" wrap="soft" rows={1} cols={1} readOnly={saving() || readOnly()} value={doc()?.text ?? ""} onInput={event => {
               const text = event.currentTarget.value;
               const before = lines().length;

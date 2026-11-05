@@ -920,7 +920,101 @@ function rpc(method, params) {
   });
 }
 
+const incomingFileLinks = [];
+let fileLinkId = 0;
+let fileLinkFixture;
+function fileLinkUrl(file, line = 1, column = 1, repository) {
+  const params = new URLSearchParams({ file, line: String(line), column: String(column) });
+  if (repository) params.set("repository", repository);
+  return `gitferry://open?${params}`;
+}
+async function deliverFileLink(page, url) {
+  incomingFileLinks.push({ id: ++fileLinkId, url, error: null });
+  await page.evaluate(() => window.__eventCallbacks["file-links-pending"]?.({ payload: null }));
+}
+function makeFileLinkFixture() {
+  const root = makeRepo("file-links");
+  const clean = "clean #+% 文件.txt";
+  const content = Array.from({ length: 120 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
+  fs.writeFileSync(path.join(root, clean), content);
+  git(root, "add", "--", clean); git(root, "commit", "-m", "Clean file for links");
+  fs.writeFileSync(path.join(root, "new.txt"), "😀x\nsecond\n");
+  const nested = path.join(root, "nested"); fs.mkdirSync(nested);
+  git(nested, "init", "-b", "nested"); fs.writeFileSync(path.join(nested, "nested.txt"), "nested untracked\n");
+  const linked = path.join(sandbox, "file-links-topic");
+  git(root, "worktree", "add", "-b", "topic", linked);
+  return { root, clean, content, nested, linked };
+}
+async function exerciseFileLinks(page) {
+  const { root, clean, content, nested, linked } = fileLinkFixture;
+  const head = git(root, "rev-parse", "HEAD"), index = fs.readFileSync(path.join(root, ".git", "index"));
+  const waitEditor = async (repo, file, text) => {
+    await page.waitForFunction(({ repo, file, text }) => {
+      const target = JSON.parse(localStorage.getItem("gitferry.sideEditor") ?? "null");
+      return target?.repo.replaceAll("\\", "/").toLowerCase() === repo.replaceAll("\\", "/").toLowerCase()
+        && target.path === file && document.querySelector(".editor-input")?.value === text;
+    }, {}, { repo, file, text });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  };
+  await waitEditor(root, clean, content);
+  assert.notEqual(await page.evaluate(() => localStorage.getItem("gitferry.mcpEnabled")), "true");
+  assert.equal(await page.$eval(".editor-input", input => input.readOnly), false);
+  assert.equal(await page.$eval(".editor-input", input => input.selectionStart), content.indexOf("line 77\n"));
+  const visible = await page.$eval(".editor-row.navigation-highlight", row => {
+    const rect = row.getBoundingClientRect(), view = document.querySelector(".editor-scroll").getBoundingClientRect();
+    return rect.top >= view.top && rect.bottom <= view.bottom;
+  });
+  assert.equal(visible, true, "Cold-start link must reveal its requested line");
+  assert.equal(await page.$(".editor-annotation"), null, "Ordinary opening does not create AI annotations");
+  await deliverFileLink(page, fileLinkUrl(path.join(root, "base.txt"), 2, 2));
+  await waitEditor(root, "base.txt", "one\ntwo changed\nthree\n");
+  assert.equal(await page.$eval(".editor-input", input => input.selectionStart), 5);
+  await deliverFileLink(page, fileLinkUrl(path.join(root, "new.txt"), 1, 2));
+  await waitEditor(root, "new.txt", "😀x\nsecond\n");
+  assert.equal(await page.$eval(".editor-input", input => input.selectionStart), 2);
+  await page.waitForFunction(() => !document.querySelector(".editor-row.navigation-highlight"));
+  await deliverFileLink(page, fileLinkUrl(path.join(root, "new.txt"), 1, 2));
+  await page.waitForSelector(".editor-row.navigation-highlight");
+  await page.locator(".editor-input").fill("unsaved\nsecond line\n");
+  await page.waitForSelector(".editor-tab-close.dirty");
+  await deliverFileLink(page, fileLinkUrl(path.join(root, "new.txt"), 2, 3));
+  await page.waitForFunction(() => document.querySelector(".editor-input")?.selectionStart === 10);
+  assert.equal(await page.$eval(".editor-input", input => input.value), "unsaved\nsecond line\n", "Same-file links retain unsaved text");
+  assert.equal(fs.readFileSync(path.join(root, "new.txt"), "utf8"), "😀x\nsecond\n");
+  await deliverFileLink(page, fileLinkUrl(path.join(root, clean)));
+  await page.waitForSelector(".file-link-waiting");
+  assert.equal(await page.$eval(".editor-input", input => input.value), "unsaved\nsecond line\n");
+  await page.locator(".editor-save").click();
+  await waitEditor(root, clean, content);
+  await page.waitForFunction(() => !document.querySelector(".file-link-waiting"));
+  assert.equal(fs.readFileSync(path.join(root, "new.txt"), "utf8"), "unsaved\nsecond line\n", "Only the explicit Save writes content");
+  await deliverFileLink(page, fileLinkUrl(path.join(root, "missing.txt")));
+  await page.waitForFunction(() => document.querySelector(".status-chip-text")?.textContent.includes("Cannot open file"));
+  await deliverFileLink(page, fileLinkUrl(path.join(root, clean), 999));
+  await page.waitForFunction(() => document.querySelector(".status-chip-text")?.textContent.includes("Line 999"));
+  await deliverFileLink(page, fileLinkUrl(path.join(root, clean), 1, 999));
+  await page.waitForFunction(() => document.querySelector(".status-chip-text")?.textContent.includes("Column 999"));
+  await deliverFileLink(page, fileLinkUrl(path.join(nested, "nested.txt")));
+  await waitEditor(nested, "nested.txt", "nested untracked\n");
+  await deliverFileLink(page, fileLinkUrl(path.join(linked, clean), 2, 1));
+  await waitEditor(linked, clean, content);
+  assert.equal(await page.$eval(".worktree-tab.active", tab => tab.title), linked);
+  assert.equal(git(root, "rev-parse", "HEAD"), head);
+  assert.deepEqual(fs.readFileSync(path.join(root, ".git", "index")), index);
+  assert.equal(git(root, "branch", "--show-current"), "main");
+  assert.equal(git(linked, "branch", "--show-current"), "topic");
+  await page.screenshot({ path: path.join(screenshots, "native-file-links.png") });
+  console.log("File links: cold backlog, warm/repeated clicks, clean/modified/untracked files, Unicode columns, unsaved buffers, errors, nested repositories and linked worktrees passed with MCP disabled");
+}
+
 async function bridge(command, args) {
+  if (command === "take_file_links") return { links: incomingFileLinks.splice(0), dropped: 0 };
+  if (command === "resolve_file_link") {
+    const params = new URL(args.url).searchParams;
+    const response = await rpc("working_file", { file: params.get("file"), repository: params.get("repository") });
+    if (response.kind === "error") throw new Error(response.value);
+    return { ...response.value, line: Number(params.get("line") ?? 1), column: Number(params.get("column") ?? 1) };
+  }
   if (command.startsWith("plugin:event|")) return 1;
   if (command === "ssh_current_prompt") return null;
   if (command === "ssh_saved_credentials") return [];
@@ -1302,9 +1396,18 @@ async function main() {
   const pageErrors = [];
   page.on("pageerror", error => pageErrors.push(error.message));
   page.on("dialog", dialog => { pageErrors.push(`Unexpected browser dialog: ${dialog.type()}`); void dialog.dismiss(); });
+  if (process.env.GITFERRY_FILE_LINKS_ONLY) {
+    fileLinkFixture = makeFileLinkFixture();
+    incomingFileLinks.push({ id: ++fileLinkId, url: fileLinkUrl(path.join(fileLinkFixture.root, fileLinkFixture.clean), 77), error: null });
+  }
   await page.goto("http://127.0.0.1:1420/");
   // The app renders only after restoring saved settings, so shortcuts pressed earlier are lost.
   await page.waitForSelector(".statusbar");
+  if (process.env.GITFERRY_FILE_LINKS_ONLY) {
+    await exerciseFileLinks(page);
+    assert.deepEqual(pageErrors, [], "File-link navigation must have no uncaught errors");
+    return;
+  }
   if (process.env.GITFERRY_MOVES_ONLY) {
     await exerciseMovedCode(page);
     assert.deepEqual(pageErrors, [], "Moved code navigation must have no uncaught errors");
@@ -2077,7 +2180,7 @@ main().catch(async error => {
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
+  for (const name of ["file-links-topic", "file-links", "comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

@@ -36,6 +36,7 @@
 .editor-input::selection { background: color-mix(in srgb, var(--theme-accent) 40%, transparent); color: transparent; }
 .editor-row.caret { background: color-mix(in srgb, var(--theme-text) 6%, transparent); }
 .editor-row.caret .editor-line-number { color: var(--theme-text); }
+.editor-row.navigation-highlight { background: var(--theme-accent-soft); box-shadow: inset 3px 0 var(--theme-accent); }
 /* The double-clicked hunk uses the diff's own colors: added lines green, a red rule where lines were removed. */
 .editor-row.added { background: var(--diff-added-bg); }
 .editor-row.added .editor-line-number { color: var(--theme-text); box-shadow: inset 3px 0 0 var(--diff-added-word); }

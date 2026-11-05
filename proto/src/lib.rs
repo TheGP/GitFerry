@@ -159,6 +159,15 @@ pub struct EditableFile {
     pub content: String,
 }
 
+/// A working file resolved to its nearest repository or linked checkout, without changing Git state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingFile {
+    pub repository: String,
+    pub file: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedFile {
@@ -462,6 +471,10 @@ pub enum Request {
         path: String,
         file: String,
     },
+    WorkingFile {
+        file: String,
+        repository: Option<String>,
+    },
     ReadNotes { path: String },
     SaveNotes { path: String, content: String, expected_content: String },
     SaveFile {
@@ -497,6 +510,7 @@ pub enum Response {
     TrackedFiles(Vec<String>),
     Diff(DiffResult),
     EditableFile(EditableFile),
+    WorkingFile(WorkingFile),
     SavedFile(SavedFile),
     Progress(String),
     Action(String),

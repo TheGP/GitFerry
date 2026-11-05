@@ -24,8 +24,22 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-24.04
+    outputs:
+      native_links: ${{ steps.native_links.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect native file-link changes
+        id: native_links
+        env:
+          BASE_SHA: ${{ github.event.before || github.event.pull_request.base.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ] || ! git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- agent/src/file_links.rs app/src-tauri/src/file_links.rs app/src-tauri/src/lib.rs app/src-tauri/Cargo.toml app/src-tauri/tauri.conf.json app/src/fileLinks.ts app/src/App.tsx app/src/FileEditor.tsx proto/src/lib.rs scripts/test_native_file_links.py; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -44,7 +58,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Test repository operations
-        run: cargo test --locked -p gitferry-agent --lib --test repository --test read_parity --test worktrees
+        run: cargo test --locked -p gitferry-agent --lib --test repository --test read_parity --test worktrees --test file_links
       - name: Test browser UI
         working-directory: app
         env:
@@ -53,6 +67,7 @@ jobs:
           cargo build --locked --manifest-path ../Cargo.toml -p gitferry-agent
           node tests/worktree-ui.cjs
           node tests/headless-smoke.cjs
+          GITFERRY_FILE_LINKS_ONLY=1 node tests/headless-smoke.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -63,7 +78,8 @@ jobs:
           if-no-files-found: ignore
 
   agents:
-    if: github.event_name == 'workflow_dispatch'
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' || needs.checks.outputs.native_links == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -139,9 +155,27 @@ jobs:
       - name: Typecheck
         working-directory: app
         run: pnpm exec tsc --noEmit
+      - name: Test native link parsing and repository resolution
+        run: |
+          cargo test --locked -p gitferry --lib
+          cargo test --locked -p gitferry-agent --lib --test file_links
       - name: Build desktop app
+        if: runner.os == 'Linux'
         working-directory: app
         run: pnpm tauri build --no-bundle --ci
+      - name: Build native file-link bundles
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        working-directory: app
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            pnpm tauri build --bundles nsis --ci
+          else
+            pnpm tauri build --bundles app --ci
+          fi
+      - name: Test OS file-link handlers with MCP disabled
+        if: runner.os == 'Windows' || runner.os == 'macOS'
+        run: python scripts/test_native_file_links.py
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
         with:
