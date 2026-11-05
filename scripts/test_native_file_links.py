@@ -95,7 +95,10 @@ def main():
         installers = glob.glob("target/release/bundle/nsis/*setup.exe")
         assert installers, "No bundled Windows installer"
         destination = root / "installed"
-        subprocess.run([installers[0], "/S", "/D=" + str(destination)], check=True, timeout=90)
+        # NSIS scans its entire command line for /R. A forward-slash /release in argv[0]
+        # can accidentally request an app launch, so use an absolute native Windows path.
+        installer = Path(installers[0]).resolve()
+        subprocess.run([str(installer), "/S", "/D=" + str(destination)], check=True, timeout=90)
         app = destination / "gitferry.exe"
         assert app.is_file(), "NSIS did not install GitFerry"
         import winreg
@@ -159,7 +162,12 @@ def main():
                         and not target.get("commit") and not target.get("readOnly"))
             except (OSError, ValueError, KeyError):
                 return False
-        wait(check, "native link reaches " + file)
+        try:
+            wait(check, "native link reaches " + file)
+        except AssertionError as error:
+            saved = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+            state = {key: saved.get(key) for key in ("gitferry.sideEditor", "gitferry.openTabs", "gitferry.mcpEnabled")}
+            raise AssertionError(f"{error}; processes={pids()}; settings={state}") from error
         wait(lambda: bool(pids()), "native app running")
 
     try:
@@ -170,12 +178,14 @@ def main():
         for file, line, column in [("modified.txt", 1, 3), ("untracked.txt", 1, 2), (clean, 78, 2), (clean, 77, 1)]:
             send(repo / file, line, column)
             opened(repo, file, line, column)
-            assert pids() == original_pids, "Warm link launched another app instance"
+            # Windows launches a forwarding process for each click. Wait for that process to
+            # exit instead of racing its shutdown immediately after the original UI responds.
+            wait(lambda: pids() == original_pids, "warm forwarding process exits", timeout=10)
         send(repo / clean, 77, 1)
         send(repo / clean, 77, 1)
         time.sleep(0.8)
         opened(repo, clean, 77, 1)
-        assert pids() == original_pids
+        wait(lambda: pids() == original_pids, "repeated forwarding processes exit", timeout=10)
         send(nested / "new.txt")
         opened(nested, "new.txt")
         send(linked / clean, 3, 2, linked)
