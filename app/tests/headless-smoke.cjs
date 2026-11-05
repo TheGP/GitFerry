@@ -1023,6 +1023,7 @@ async function exerciseFindInView(page) {
   await page.locator('.find-bar input').fill("wrappedFindNeedle");
   await page.waitForSelector('.find-highlight');
   assert.ok(await page.$eval('.file-edit-textarea', input => input.scrollTop > 0), "Plain editor matches must also scroll into view");
+  assert.ok(await page.$eval('.file-edit-textarea', input => input.scrollLeft > 0), "Unwrapped editor matches must scroll horizontally into view");
   await page.keyboard.press("Escape");
   assert.equal(fs.readFileSync(file, "utf8"), text);
   assert.equal(git(root, "rev-parse", "HEAD"), originalHead);

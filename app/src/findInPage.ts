@@ -74,7 +74,7 @@ function inputRects(input: HTMLTextAreaElement, start: number, end: number): DOM
   const mirror = document.createElement("div"), style = getComputedStyle(input), box = input.getBoundingClientRect();
   mirror.dataset.findIgnore = "";
   for (const property of ["box-sizing", "font", "line-height", "letter-spacing", "word-spacing", "text-indent", "text-align", "tab-size", "direction", "padding", "border-width", "border-style", "word-break", "overflow-wrap"]) mirror.style.setProperty(property, style.getPropertyValue(property));
-  Object.assign(mirror.style, { position: "fixed", visibility: "hidden", pointerEvents: "none", width: `${box.width}px`, left: `${box.left - input.scrollLeft}px`, top: `${box.top - input.scrollTop}px`, whiteSpace: input.wrap === "off" ? "pre" : "pre-wrap" });
+  Object.assign(mirror.style, { position: "fixed", visibility: "hidden", pointerEvents: "none", width: `${box.width}px`, left: `${box.left - input.scrollLeft}px`, top: `${box.top - input.scrollTop}px`, whiteSpace: input.wrap === "off" ? "pre" : style.whiteSpace });
   const node = document.createTextNode(input.value);
   mirror.append(node); document.body.append(mirror);
   try { return textRects([node], start, end); }
