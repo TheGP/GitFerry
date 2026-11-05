@@ -946,6 +946,91 @@ function makeFileLinkFixture() {
   git(root, "worktree", "add", "-b", "topic", linked);
   return { root, clean, content, nested, linked };
 }
+async function exerciseFindInView(page) {
+  const root = makeRepo("find-in-view"), file = path.join(root, "search.ts");
+  fs.writeFileSync(file, "export function previousName() {}\n");
+  git(root, "add", "search.ts"); git(root, "commit", "-m", "Search fixture");
+  const text = ['export function findNeedleAlpha() { return "[a+b]"; }', ...Array.from({ length: 110 }, (_, index) => `// filler ${index}`), "z".repeat(4000) + "wrappedFindNeedle", "findNeedleAlpha();", ""].join("\n");
+  fs.writeFileSync(file, text);
+  const originalHead = git(root, "rev-parse", "HEAD"), originalIndex = fs.readFileSync(path.join(root, ".git/index"));
+  await openRepo(page, root);
+  await page.waitForSelector('.summary-diff-card[data-path="search.ts"] .diff-content');
+  await deliverFileLink(page, fileLinkUrl(file));
+  await page.waitForFunction(value => document.querySelector(".editor-input")?.value === value, {}, text);
+  // Hit the transparent textarea with real mouse events, using the syntax layer's glyph position.
+  const point = await page.evaluate(() => {
+    const code = document.querySelector(".editor-code"), walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const index = node.textContent.indexOf("findNeedleAlpha");
+      if (index < 0) continue;
+      const range = document.createRange(); range.setStart(node, index + 3); range.setEnd(node, index + 4);
+      const rect = range.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    }
+    throw new Error("Missing function name");
+  });
+  await page.mouse.click(point.x, point.y, { count: 2 });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const selected = () => page.$eval(".editor-input", input => input.value.slice(input.selectionStart, input.selectionEnd));
+  assert.equal(await selected(), "findNeedleAlpha", "Double-clicked editor words must stay selected");
+  assert.notEqual(await page.$eval(".editor-input", input => getComputedStyle(input, "::selection").backgroundColor), "rgba(0, 0, 0, 0)");
+  await page.keyboard.down("Control"); await page.keyboard.press("f"); await page.keyboard.up("Control");
+  await page.waitForSelector('.find-bar input');
+  assert.equal(await page.$eval('.find-bar input', input => input.value), "findNeedleAlpha", "Find starts with the selected word");
+  assert.match(await page.$eval('.find-count', item => item.textContent), /\d+ of [2-9]/);
+  const before = await page.$eval('.find-count', item => item.textContent);
+  await page.keyboard.press("Enter");
+  assert.notEqual(await page.$eval('.find-count', item => item.textContent), before);
+  await page.keyboard.down("Shift"); await page.keyboard.press("Enter"); await page.keyboard.up("Shift");
+  assert.equal(await page.$eval('.find-count', item => item.textContent), before);
+  await page.locator('.find-bar input').fill("function findNeedleAlpha");
+  assert.notEqual(await page.$eval('.find-count', item => item.textContent), "No matches", "Find spans syntax token boundaries");
+  await page.locator('.find-bar input').fill("wrappedFindNeedle");
+  await page.waitForSelector('.find-highlight');
+  assert.equal(await selected(), "wrappedFindNeedle");
+  assert.ok(await page.evaluate(() => {
+    const viewport = document.querySelector('.editor-scroll').getBoundingClientRect();
+    const hit = document.querySelector('.find-highlight').getBoundingClientRect();
+    return hit.top >= viewport.top && hit.bottom <= viewport.bottom;
+  }), "A match far along a wrapped line must scroll into view");
+  await page.locator('.find-bar input').fill("[a+b]");
+  assert.notEqual(await page.$eval('.find-count', item => item.textContent), "No matches");
+  await page.locator('.find-bar input').fill("noSuchFunctionAnywhere987");
+  assert.equal(await page.$eval('.find-count', item => item.textContent), "No matches");
+  await page.keyboard.press("Escape");
+  assert.ok(await page.$('.editor-input'), "Escape closes Find before the editor");
+  assert.equal(await page.$('.find-bar'), null);
+  await page.locator('.editor-input').fill(text + "unsavedFindMarker();\n");
+  await page.keyboard.down("Meta"); await page.keyboard.press("f"); await page.keyboard.up("Meta");
+  await page.waitForSelector('.find-bar input');
+  await page.locator('.find-bar input').fill("unsavedFindMarker");
+  assert.equal(await page.$eval('.find-count', item => item.textContent), "1 of 1", "Find includes the current unsaved buffer without duplicate syntax-layer matches");
+  assert.equal(await selected(), "unsavedFindMarker");
+  assert.equal(fs.readFileSync(file, "utf8"), text, "Find must not save edits");
+  assert.ok(await page.$('.editor-tab-close.dirty'));
+  await page.keyboard.press("Escape");
+  await click(page, 'button[aria-label="Close editor"]'); await submitActionDialog(page);
+  await openSummaryFile(page, "search.ts", "UNSTAGED");
+  await page.waitForSelector('.diff-content');
+  await page.keyboard.down("Meta"); await page.keyboard.press("f"); await page.keyboard.up("Meta");
+  await page.locator('.find-bar input').fill("function findNeedleAlpha");
+  assert.equal(await page.$eval('.find-count', item => item.textContent), "1 of 1", "Find searches normal diff text across syntax spans");
+  await page.keyboard.press("Escape");
+  assert.equal(await page.evaluate(() => window.getSelection()?.toString()), "function findNeedleAlpha", "Closing Find leaves ordinary text selected for copying");
+  await selectFileView(page, "Edit");
+  await page.waitForSelector('.file-edit-textarea');
+  await page.focus('.file-edit-textarea');
+  await page.keyboard.down("Meta"); await page.keyboard.press("f"); await page.keyboard.up("Meta");
+  await page.locator('.find-bar input').fill("wrappedFindNeedle");
+  await page.waitForSelector('.find-highlight');
+  assert.ok(await page.$eval('.file-edit-textarea', input => input.scrollTop > 0), "Plain editor matches must also scroll into view");
+  await page.keyboard.press("Escape");
+  assert.equal(fs.readFileSync(file, "utf8"), text);
+  assert.equal(git(root, "rev-parse", "HEAD"), originalHead);
+  assert.deepEqual(fs.readFileSync(path.join(root, ".git/index")), originalIndex);
+  await page.screenshot({ path: path.join(screenshots, "find-in-view.png") });
+  console.log("Find in view: Ctrl/Cmd+F, native word selection, syntax spans, wrapping, next/previous, unsaved buffers, plain editors, and no Git/file writes passed");
+}
+
 async function exerciseFileLinks(page) {
   const { root, clean, content, nested, linked } = fileLinkFixture;
   const head = git(root, "rev-parse", "HEAD"), index = fs.readFileSync(path.join(root, ".git", "index"));
@@ -1416,6 +1501,11 @@ async function main() {
   if (process.env.GITFERRY_FILE_LINKS_ONLY) {
     await exerciseFileLinks(page);
     assert.deepEqual(pageErrors, [], "File-link navigation must have no uncaught errors");
+    return;
+  }
+  if (process.env.GITFERRY_FIND_ONLY) {
+    await exerciseFindInView(page);
+    assert.deepEqual(pageErrors, [], "Find and selection must have no uncaught errors");
     return;
   }
   if (process.env.GITFERRY_MOVES_ONLY) {
@@ -2190,7 +2280,7 @@ main().catch(async error => {
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["file-links-topic", "file-links", "comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
+  for (const name of ["find-in-view", "file-links-topic", "file-links", "comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

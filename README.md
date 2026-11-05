@@ -80,10 +80,13 @@ Edit working files and save with **Ctrl+S**. Saving a staged file also stages th
 | **Enter** | Expand or collapse the selected file |
 | **Ctrl+Enter** | Commit staged changes |
 | **Ctrl+S** | Save an edited file |
+| **Ctrl+F** | Find displayed text, including diffs and unsaved editor contents |
+| **Enter / Shift+Enter** with Find open | Next / previous match |
+| **Ctrl+G / Shift+Ctrl+G** with Find open | Next / previous match |
 | **Ctrl+P** | Open the command palette |
 | **Ctrl+O** | Open a repository |
 
-*Use Cmd for commit, save, palette, and open shortcuts on macOS.*
+*Use Cmd for commit, save, find, palette, and open shortcuts on macOS. Escape closes Find and keeps the matched text selected for copying.*
 
 ## Get GitFerry
 

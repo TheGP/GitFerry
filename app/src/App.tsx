@@ -14,6 +14,7 @@ import { createHunkNotes, HunkNotes, refreshHunkNotes } from "./HunkNote";
 import { isCommitTarget, isNoteTarget, parseNotesResult, resolveNote, validateNote, type Note } from "./hunkNotes";
 import { inAppViewport, noteVisibility } from "./noteVisibility";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
+import { FindBar } from "./FindBar";
 import { createFileLinkQueue, filePosition, type FileLinkBatch, type ResolvedFileLink } from "./fileLinks";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
 import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection } from "./mcpNavigation";
@@ -2928,6 +2929,7 @@ function App() {
 
   return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); if (!event.target.closest(".file-action-popover")) setFileMenu(null); if (!event.target.closest(".worktree-action-popover")) setWorktreeMenu(null); } }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
+    <FindBar />
     <Show when={waitingFileLinks()}><div class="file-link-waiting" role="status">{waitingFileLinks()} file link{waitingFileLinks() === 1 ? " is" : "s are"} waiting. Save or cancel your editor changes, or finish the current operation, to continue.</div></Show>
     <header class="tabbar">
       <div class={`tab-strip ${tabDrag()?.kind === "repository" ? "reordering" : ""}`} ref={tabStrip} onScroll={updateTabScroll} onWheel={event => { if (tabOverflow() && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { event.preventDefault(); tabStrip.scrollLeft += event.deltaY; } }}>
