@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show } from "solid-js";
-import type { FileRange } from "./mcpNavigation";
+import { repositoryKey, type FileRange } from "./mcpNavigation";
 import { highlightFileLines } from "./diffHighlight";
 import { describeError } from "./statusMessages";
 import { filePosition } from "./fileLinks";
@@ -169,7 +169,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     });
   }
   createEffect(on(() => `${props.target.repo}\u0000${props.target.path}\u0000${props.target.commit ?? ""}\u0000${props.target.content === undefined ? "" : props.target.nonce}`, () => {
-    const identity = `${props.target.repo}\u0000${props.target.path}\u0000${props.target.commit ?? ""}`;
+    const identity = `${repositoryKey(props.target.repo)}\u0000${props.target.path}\u0000${props.target.commit ?? ""}`;
     if (props.target.preserveBuffer && loadedIdentity === identity && doc()) return;
     loadedIdentity = identity;
     clearTimeout(navigationTimer); setNavigationLine(null);
