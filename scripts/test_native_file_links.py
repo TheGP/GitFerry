@@ -51,9 +51,9 @@ def main():
     if sys.argv[1:] == ["--prepare"]:
         bundle.mkdir(exist_ok=True)
         if sys.platform == "darwin":
-            apps = [Path(path) for path in glob.glob("target/**/release/bundle/macos/GitFerry.app", recursive=True)]
-            assert apps, "No bundled macOS app"
-            subprocess.run(["ditto", "-c", "-k", "--keepParent", str(max(apps, key=lambda path: path.stat().st_mtime)), str(bundle / "GitFerry.zip")], check=True)
+            images = [Path(path) for path in glob.glob("target/**/release/bundle/dmg/*.dmg", recursive=True)]
+            assert images, "No bundled macOS disk image"
+            shutil.copy2(max(images, key=lambda path: path.stat().st_mtime), bundle / "GitFerry.dmg")
         else:
             installers = glob.glob("target/release/bundle/nsis/*setup.exe")
             assert installers, "No bundled Windows installer"
@@ -63,7 +63,15 @@ def main():
         if sys.platform == "darwin":
             destination = Path("target/release/bundle/macos")
             destination.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["ditto", "-x", "-k", str(bundle / "GitFerry.zip"), str(destination)], check=True)
+            mount = Path(tempfile.mkdtemp(prefix="gitferry-native-image-"))
+            subprocess.run(["hdiutil", "attach", str(bundle / "GitFerry.dmg"), "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", str(mount)], check=True)
+            try:
+                assert (mount / "GitFerry.app").is_dir(), "The disk image has no GitFerry app"
+                subprocess.run(["ditto", str(mount / "GitFerry.app"), str(destination / "GitFerry.app")], check=True)
+            finally:
+                subprocess.run(["hdiutil", "detach", str(mount)], check=True)
+                if mount.exists():
+                    mount.rmdir()
         else:
             destination = Path("target/release/bundle/nsis")
             destination.mkdir(parents=True, exist_ok=True)

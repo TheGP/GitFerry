@@ -171,7 +171,7 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then
             pnpm tauri build --bundles nsis --ci
           else
-            pnpm tauri build --bundles app --ci
+            pnpm tauri build --bundles dmg --ci
           fi
       - name: Prepare native file-link test bundle
         if: runner.os == 'Windows' || runner.os == 'macOS'
