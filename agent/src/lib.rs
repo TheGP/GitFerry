@@ -336,8 +336,12 @@ fn repo_root(path: &str) -> Result<PathBuf, String> {
     let root = PathBuf::from(root)
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    if let Ok(mut roots) = roots.lock() {
-        roots.insert(path.to_string(), root.clone());
+    // A subdirectory can become a nested repository later. Only cache actual checkout roots;
+    // remembering a subdirectory-to-ancestor mapping would route subsequent links incorrectly.
+    if candidate == root {
+        if let Ok(mut roots) = roots.lock() {
+            roots.insert(path.to_string(), root.clone());
+        }
     }
     Ok(root)
 }

@@ -92,6 +92,7 @@ fn discovers_new_nested_repositories_and_the_exact_linked_worktree() {
             .repository,
         &root,
     );
+    gitferry_agent::snapshot(nested.to_str().unwrap(), 0, 10).unwrap();
     git(&nested, &["init", "-qb", "nested"]);
     assert_root(
         &working_file(file.to_str().unwrap(), None)
