@@ -973,6 +973,10 @@ async function exerciseFindInView(page) {
   const selected = () => page.$eval(".editor-input", input => input.value.slice(input.selectionStart, input.selectionEnd));
   assert.equal(await selected(), "findNeedleAlpha", "Double-clicked editor words must stay selected");
   assert.notEqual(await page.$eval(".editor-input", input => getComputedStyle(input, "::selection").backgroundColor), "rgba(0, 0, 0, 0)");
+  // Exercise the old-WebKit fallback even when CI's Chromium supports color-mix().
+  const unsupportedColors = await page.addStyleTag({ content: fs.readFileSync(path.join(project, "app/src/fileEditor.css"), "utf8").replace(/color-mix\(/g, "unsupported-color-mix(") });
+  assert.notEqual(await page.$eval(".editor-input", input => getComputedStyle(input, "::selection").backgroundColor), "rgba(0, 0, 0, 0)", "Selection must stay visible when color-mix is unsupported");
+  await unsupportedColors.evaluate(style => style.remove());
   await page.keyboard.down("Control"); await page.keyboard.press("f"); await page.keyboard.up("Control");
   await page.waitForSelector('.find-bar input');
   assert.equal(await page.$eval('.find-bar input', input => input.value), "findNeedleAlpha", "Find starts with the selected word");
