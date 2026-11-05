@@ -939,6 +939,7 @@ function makeFileLinkFixture() {
   fs.writeFileSync(path.join(root, clean), content);
   git(root, "add", "--", clean); git(root, "commit", "-m", "Clean file for links");
   fs.writeFileSync(path.join(root, "new.txt"), "😀x\nsecond\n");
+  fs.writeFileSync(path.join(root, "long.txt"), "x".repeat(5000) + "\n");
   const nested = path.join(root, "nested"); fs.mkdirSync(nested);
   git(nested, "init", "-b", "nested"); fs.writeFileSync(path.join(nested, "nested.txt"), "nested untracked\n");
   const linked = path.join(sandbox, "file-links-topic");
@@ -966,6 +967,15 @@ async function exerciseFileLinks(page) {
   });
   assert.equal(visible, true, "Cold-start link must reveal its requested line");
   assert.equal(await page.$(".editor-annotation"), null, "Ordinary opening does not create AI annotations");
+  await deliverFileLink(page, fileLinkUrl(path.join(root, "long.txt"), 1, 4500));
+  await waitEditor(root, "long.txt", "x".repeat(5000) + "\n");
+  const wrappedCaretVisible = await page.evaluate(() => {
+    const range = document.createRange();
+    range.setStart(document.querySelector(".editor-code").firstChild, 4499); range.collapse(true);
+    const caret = range.getBoundingClientRect(), view = document.querySelector(".editor-scroll").getBoundingClientRect();
+    return caret.top >= view.top && caret.bottom <= view.bottom;
+  });
+  assert.equal(wrappedCaretVisible, true, "Columns far along wrapped lines must be visible");
   await deliverFileLink(page, fileLinkUrl(path.join(root, "base.txt"), 2, 2));
   await waitEditor(root, "base.txt", "one\ntwo changed\nthree\n");
   assert.equal(await page.$eval(".editor-input", input => input.selectionStart), 5);

@@ -136,6 +136,25 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
         // Keep the whole hunk in view when it fits, otherwise start at the double-clicked line.
         const anchor = first && row.offsetTop - first.offsetTop < scroller.clientHeight * 0.6 ? first : row;
         scroller.scrollTop = Math.max(0, anchor.offsetTop - scroller.clientHeight / 4);
+        // A requested column can wrap several screens below the beginning of a logical line.
+        // Measure its position in the syntax layer, whose text offsets match the textarea.
+        const code = props.target.column !== undefined ? row.querySelector(".editor-code") : null;
+        if (code) {
+          const start = offset === 0 ? 0 : text.lastIndexOf("\n", offset - 1) + 1;
+          let remaining = offset - start;
+          const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const length = node.textContent?.length ?? 0;
+            if (remaining > length) { remaining -= length; continue; }
+            const range = document.createRange();
+            range.setStart(node, remaining); range.collapse(true);
+            const caret = range.getBoundingClientRect(), viewport = scroller.getBoundingClientRect();
+            if (caret.height && (caret.top < viewport.top || caret.bottom > viewport.bottom)) {
+              scroller.scrollTop = Math.max(0, scroller.scrollTop + caret.top - viewport.top - scroller.clientHeight / 4);
+            }
+            break;
+          }
+        }
       }
       if (props.target.flash) {
         clearTimeout(navigationTimer);
