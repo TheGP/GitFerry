@@ -6,6 +6,7 @@ Uses demo data only, without Git writes, native editors, or MCP configuration.
 from pathlib import Path
 import subprocess
 import time
+import traceback
 import urllib.error
 import urllib.request
 
@@ -54,10 +55,10 @@ def main():
                 page.goto(URL)
                 page.locator(".diff-line.added .line-text").first.wait_for()
                 for _ in range(2):
-                    point = word_point(page, ".diff-line.added .line-text", "isLoading")
+                    point = word_point(page, ".diff-line.added .line-text", "loading")
                     page.mouse.dblclick(**point)
                     page.wait_for_timeout(350)
-                    assert page.evaluate("window.getSelection().toString()") == "isLoading"
+                    assert page.evaluate("window.getSelection().toString()") == "loading"
                     assert page.locator(".editor-input").count() == 0, "Text selection opened the side editor"
                     copied = page.evaluate("""() => {
                       const clipboardData = new DataTransfer();
@@ -65,19 +66,19 @@ def main():
                       window.getSelection().anchorNode.parentElement.dispatchEvent(event);
                       return clipboardData.getData("text/plain");
                     }""")
-                    assert copied == "isLoading", copied
+                    assert copied == "loading", copied
                 page.screenshot(path="/tmp/gitferry-webkit-diff-selection.png")
-                page.locator(".diff-line.added").filter(has_text="isLoading").first.locator(".line-number").dblclick()
+                page.locator(".diff-line.added").filter(has_text="loading").first.locator(".line-number").dblclick()
                 editor = page.locator(".editor-input")
                 editor.wait_for()
                 page.wait_for_timeout(250)
                 for dirty in (False, True):
                     if dirty:
                         editor.fill(editor.input_value() + "\n// unsavedSelectionProbe\n")
-                    point = word_point(page, ".editor-code", "isLoading")
+                    point = word_point(page, ".editor-code", "loading")
                     page.mouse.dblclick(**point)
                     page.wait_for_timeout(350)
-                    assert editor.evaluate("input => input.value.slice(input.selectionStart, input.selectionEnd)") == "isLoading"
+                    assert editor.evaluate("input => input.value.slice(input.selectionStart, input.selectionEnd)") == "loading"
                     colors = editor.evaluate("input => { const s = getComputedStyle(input, '::selection'); return [s.color, s.backgroundColor]; }")
                     assert all(color not in ("transparent", "rgba(0, 0, 0, 0)") for color in colors), colors
                     if dirty:
@@ -96,4 +97,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        message = traceback.format_exc().replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=WebKit selection::{message}")
+        raise
