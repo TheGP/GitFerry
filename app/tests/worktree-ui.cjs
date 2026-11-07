@@ -281,8 +281,8 @@ async function main() {
       await page.locator(".summary-open-tab").click();
       await page.locator(".file-view-switch button::-p-text(Edit)").click();
     } else {
-      await page.waitForSelector(".summary-diff-card .diff-line.added .line-text");
-      await page.$eval(".summary-diff-card .diff-line.added .line-text", line => line.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+      await page.waitForSelector(".summary-diff-card .diff-line.added .line-number");
+      await page.locator(".summary-diff-card .diff-line.added .line-number").click({ count: 2 });
     }
     const input = mode === "inline" ? ".file-edit-textarea" : ".editor-input";
     await page.locator(input).fill(`unsaved ${mode} text`);
