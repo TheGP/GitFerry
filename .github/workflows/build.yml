@@ -73,6 +73,12 @@ jobs:
           node tests/headless-smoke.cjs
           GITFERRY_FILE_LINKS_ONLY=1 node tests/headless-smoke.cjs
           GITFERRY_FIND_ONLY=1 node tests/headless-smoke.cjs
+      - name: Test word selection in WebKit
+        run: |
+          python3 -m venv /tmp/gitferry-webkit-venv
+          /tmp/gitferry-webkit-venv/bin/pip install playwright==1.56.0
+          /tmp/gitferry-webkit-venv/bin/playwright install --with-deps webkit
+          /tmp/gitferry-webkit-venv/bin/python app/tests/webkit-selection.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -80,6 +86,7 @@ jobs:
           path: |
             /tmp/gitferry-headless-*/screenshots/**
             /tmp/gitferry-worktree-tabs.png
+            /tmp/gitferry-webkit-*.png
           if-no-files-found: ignore
 
   agents:

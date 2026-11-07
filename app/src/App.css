@@ -217,7 +217,7 @@ button { cursor: pointer; }
 .diff-content.has-hunks .diff-line.hunk { height: 8px; overflow: hidden; font-size: 0; background: var(--theme-heading); }
 .diff-content.has-hunks .diff-line.hunk .line-number, .diff-content.has-hunks .diff-line.hunk .line-text { visibility: hidden; }
 .diff-content.actionable .diff-line.hunk { cursor: pointer; }
-.diff-content.actionable .diff-line .line-text { cursor: pointer; }
+.diff-line .line-text { cursor: text; -webkit-user-select: text; user-select: text; }
 .line-number { width: 86px; flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 8px 0 2px; text-align: right; color: #657481; font-size: 15px; line-height: inherit; user-select: none; }
 .line-number span { min-width: 0; padding-right: 4px; }
 .line-number.selectable { border: 0; background: transparent; cursor: pointer; }

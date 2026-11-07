@@ -36,9 +36,9 @@
 .editor-code, .editor-input { padding: 0 16px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; tab-size: 4; }
 .editor-code { min-width: 0; color: var(--theme-text); }
 .editor-input { position: absolute; z-index: 1; top: 6px; bottom: 0; left: var(--editor-gutter); width: calc(100% - var(--editor-gutter)); box-sizing: border-box; margin: 0; border: 0; outline: 0; resize: none; overflow: hidden; background: transparent; color: transparent; caret-color: var(--theme-text); font: inherit; line-height: inherit; letter-spacing: inherit; }
-.editor-input::selection { background: rgba(75, 145, 220, .42); color: transparent; }
+.editor-input::selection { background: #365f89; color: #fff; }
 @supports (background: color-mix(in srgb, red, blue)) {
-  .editor-input::selection { background: color-mix(in srgb, var(--theme-accent) 40%, transparent); }
+  .editor-input::selection { background: color-mix(in srgb, var(--theme-accent) 40%, var(--theme-details)); }
 }
 .editor-row.caret { background: color-mix(in srgb, var(--theme-text) 6%, transparent); }
 .editor-row.caret .editor-line-number { color: var(--theme-text); }

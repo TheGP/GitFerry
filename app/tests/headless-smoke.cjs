@@ -46,6 +46,7 @@ async function clickWorktree(page, checkout) {
 }
 
 async function doubleClickDiffWord(page, lineText, word) {
+  const editorBefore = await page.evaluate(() => localStorage.getItem("gitferry.sideEditor"));
   await page.waitForFunction(text => [...document.querySelectorAll(".diff-line .line-text")].some(line => line.textContent === text), {}, lineText);
   const point = await page.evaluate(({ lineText, word }) => {
     const line = [...document.querySelectorAll(".diff-line .line-text")].find(item => item.textContent === lineText);
@@ -64,8 +65,8 @@ async function doubleClickDiffWord(page, lineText, word) {
   }, { lineText, word });
   // Let Chromium select the word itself; an artificial Range would miss the double-click bug.
   await page.mouse.click(point.x, point.y, { count: 2 });
-  await page.waitForFunction(text => document.querySelector(".editor-input")?.value.includes(text), {}, lineText);
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await new Promise(resolve => setTimeout(resolve, 350));
+  assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.sideEditor")), editorBefore, "Selecting diff text must not open or navigate the side editor");
   const selection = await page.evaluate(() => {
     const selected = window.getSelection();
     const anchor = selected?.anchorNode?.parentElement;
@@ -73,7 +74,20 @@ async function doubleClickDiffWord(page, lineText, word) {
     anchor?.dispatchEvent(new ClipboardEvent("copy", { bubbles: true, cancelable: true, clipboardData: clipboard }));
     return { text: selected?.toString(), inDiff: Boolean(anchor?.closest(".diff-content")), editorFocused: document.activeElement?.classList.contains("editor-input"), copied: clipboard.getData("text/plain") };
   });
-  assert.deepEqual(selection, { text: word, inDiff: true, editorFocused: false, copied: word }, "Opening the side editor must preserve the native diff selection and copying");
+  assert.deepEqual(selection, { text: word, inDiff: true, editorFocused: false, copied: word }, "Double-clicked diff words must stay selected and copy without line numbers or diff prefixes");
+}
+
+async function openDiffLineInSideEditor(page, lineText) {
+  const line = await page.evaluate(text => {
+    const row = [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === text);
+    if (!row) throw new Error(`Missing diff line: ${text}`);
+    row.dataset.editorTestTarget = "true";
+    return row.dataset.newLine;
+  }, lineText);
+  await click(page, '.diff-line[data-editor-test-target="true"] .line-number', { count: 2 });
+  await page.evaluate(() => document.querySelector('[data-editor-test-target]')?.removeAttribute("data-editor-test-target"));
+  await page.waitForFunction(text => document.querySelector(".editor-input")?.value.includes(text), {}, lineText);
+  if (line) await page.waitForFunction(line => document.querySelector(".editor-status > span")?.textContent === `Ln ${line}`, {}, line);
 }
 
 async function selectTheme(page, theme) {
@@ -277,7 +291,7 @@ async function exerciseWorktreeRemoval(page) {
   fs.writeFileSync(path.join(linked, "base.txt"), "edited on disk\n");
   await shortcut(page, "r");
   await page.waitForFunction(() => [...document.querySelectorAll('.summary-diff-card[data-path="base.txt"] .line-text')].some(line => line.textContent === "edited on disk"));
-  await click(page, '.summary-diff-card[data-path="base.txt"] .line-text::-p-text(edited on disk)', { count: 2 });
+  await openDiffLineInSideEditor(page, "edited on disk");
   await page.waitForSelector(".editor-input");
   await page.locator(".editor-input").fill("unsaved in editor\n");
   await requestRemoval(); await submitActionDialog(page);
@@ -586,9 +600,13 @@ async function exerciseMcp(page, repository, restore) {
   await doubleClickDiffWord(page, "working cause", "cause");
   await doubleClickDiffWord(page, "working cause", "cause");
   await page.screenshot({ path: path.join(screenshots, "diff-word-selection.png") });
+  assert.equal(await page.$(".editor-input"), null, "Double-clicking Summary code does not open the editor");
+  await openDiffLineInSideEditor(page, "working cause");
+  await doubleClickDiffWord(page, "working cause", "cause");
   await click(page, ".editor-tab-close");
   await click(page, '.summary-diff-card[data-path="code.txt"] .summary-open-tab');
   await doubleClickDiffWord(page, "working cause", "cause");
+  await openDiffLineInSideEditor(page, "working cause");
   await click(page, ".editor-input");
   assert.equal(await page.$eval(".editor-input", input => document.activeElement === input), true, "The editor still accepts focus when clicked");
   await click(page, ".editor-tab-close");
@@ -650,6 +668,8 @@ async function exerciseMcp(page, repository, restore) {
   fs.writeFileSync(path.join(repository.folder, "code.txt"), "first\nworking cause\nlast\n");
   reply = await mcp(page, "reveal_change", { repository: repository.folder, commit: repository.cause, file: "code.txt" });
   assert.equal(reply.error, null);
+  await doubleClickDiffWord(page, "new cause", "cause");
+  await openDiffLineInSideEditor(page, "new cause");
   await doubleClickDiffWord(page, "new cause", "cause");
   assert.equal(await page.$eval(".editor-input", input => input.readOnly), true, "Historical files remain read-only");
   await click(page, ".editor-tab-close");
@@ -974,6 +994,34 @@ async function exerciseFindInView(page) {
   await new Promise(resolve => setTimeout(resolve, 250));
   const selected = () => page.$eval(".editor-input", input => input.value.slice(input.selectionStart, input.selectionEnd));
   assert.equal(await selected(), "findNeedleAlpha", "Double-clicked editor words must stay selected");
+  const readsBefore = await page.evaluate(() => {
+    window.__selectedInput = document.querySelector(".editor-input");
+    window.__selectionResets = 0;
+    window.__selectedInput.setSelectionRange = function (...args) {
+      window.__selectionResets++;
+      return HTMLTextAreaElement.prototype.setSelectionRange.apply(this, args);
+    };
+    return window.__fileReadResponses;
+  });
+  // Watchers can report an mtime change while the file contents stay identical.
+  const touched = new Date(Date.now() + 1000);
+  fs.utimesSync(file, touched, touched);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForFunction(before => window.__fileReadResponses > before, {}, readsBefore);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await selected(), "findNeedleAlpha", "A background reread must preserve the selected editor word");
+  assert.equal(await page.evaluate(() => window.__selectedInput === document.querySelector(".editor-input") && window.__selectionResets === 0), true, "Unchanged rereads must leave the native selection untouched");
+  await page.evaluate(() => {
+    delete window.__selectedInput.setSelectionRange;
+    document.addEventListener("copy", event => {
+      const input = event.target;
+      window.__copiedEditorWord = input.value.slice(input.selectionStart, input.selectionEnd);
+      event.clipboardData.setData("text/plain", window.__copiedEditorWord);
+      event.preventDefault();
+    }, { once: true });
+  });
+  await page.keyboard.down("Control"); await page.keyboard.press("c"); await page.keyboard.up("Control");
+  assert.equal(await page.evaluate(() => window.__copiedEditorWord), "findNeedleAlpha", "The editor selection must still be available to the native copy shortcut");
   assert.notEqual(await page.$eval(".editor-input", input => getComputedStyle(input, "::selection").backgroundColor), "rgba(0, 0, 0, 0)");
   // Exercise the old-WebKit fallback even when CI's Chromium supports color-mix().
   const unsupportedColors = await page.addStyleTag({ content: fs.readFileSync(path.join(project, "app/src/fileEditor.css"), "utf8").replace(/color-mix\(/g, "unsupported-color-mix(") });
@@ -1341,7 +1389,7 @@ async function exerciseCommitMessage(page) {
 async function exerciseSideEditor(page, repository) {
   const base = path.join(repository, "base.txt"), otherFile = path.join(repository, "new.txt");
   const original = fs.readFileSync(base, "utf8"), otherOriginal = fs.readFileSync(otherFile, "utf8");
-  const baseLine = '.summary-diff-card[data-path="base.txt"] .diff-line.added .line-text';
+  const baseLine = '.summary-diff-card[data-path="base.txt"] .diff-line.added .line-number';
   await click(page, baseLine, { count: 2 });
   await page.waitForSelector('.editor-input[aria-label="Edit base.txt"]', { timeout: 5000 }).catch(async error => {
     throw new Error(`${error.message}: editor=${await page.$eval(".editor-pane", pane => pane.textContent).catch(() => "not mounted")} error=${await page.$eval(".error-bar", pane => pane.textContent).catch(() => "none")}`);
@@ -1402,7 +1450,7 @@ async function exerciseSideEditor(page, repository) {
   saveGate = { started: false, promise: new Promise(resolve => { releaseSave = resolve; }) };
   await click(page, ".editor-save");
   await waitUntil(() => saveGate.started, "delayed editor save");
-  await click(page, '.summary-diff-card[data-path="new.txt"] .line-text', { count: 2 });
+  await click(page, '.summary-diff-card[data-path="new.txt"] .line-number', { count: 2 });
   await page.waitForSelector(".action-dialog");
   await submitActionDialog(page);
   await page.waitForSelector('.editor-input[aria-label="Edit new.txt"]');
@@ -1516,6 +1564,7 @@ async function main() {
     window.isTauri = true;
     window.__longTasks = [];
     window.__snapshotResponses = 0;
+    window.__fileReadResponses = 0;
     new PerformanceObserver(list => window.__longTasks.push(...list.getEntries().map(item => Math.round(item.duration)))).observe({ entryTypes: ["longtask"] });
     window.__callbackId = 0;
     window.__callbacks = new Map(); window.__eventCallbacks = {};
@@ -1531,6 +1580,7 @@ async function main() {
         if (command === "mcp_reply") { window.__mcpWaiters.get(args.id)?.(args); window.__mcpWaiters.delete(args.id); return; }
         const result = await window.__gitferryInvoke(command, args);
         if (command === "repo_snapshot") window.__snapshotResponses++;
+        if (command === "repo_read_file") window.__fileReadResponses++;
         return result;
       },
     };

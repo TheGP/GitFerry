@@ -104,6 +104,11 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       // Edits typed while a background reload was in flight win over the reloaded content.
       if (id !== loadId || (keepView && dirty())) return;
       if (!keepView) { setDoc(docOf(content)); reveal(); return; }
+      // A watcher can report a timestamp change without changed text. Leave native selection alone.
+      if (content === doc()?.source) {
+        if (revealedNonce !== props.target.nonce) reveal();
+        return;
+      }
       const top = scroller.scrollTop;
       const caret = [input.selectionStart, input.selectionEnd] as const;
       setDoc(docOf(content));
@@ -162,7 +167,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
         setNavigationLine(line);
         navigationTimer = setTimeout(() => setNavigationLine(null), 1500);
       }
-      // Opening from a diff double-click keeps the word selected there for copying.
+      // Gutter navigation can reveal a line without taking focus from the changes view.
       if (props.target.focus !== false) input.focus({ preventScroll: true });
       input.setSelectionRange(offset, offset);
       revealedNonce = nonce;
@@ -289,7 +294,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     <aside class="editor-pane" style={{ width: `${props.width}px` }} aria-label={shown() ? `Editor for ${props.target.path}` : "Editor"}>
       <div class="editor-tabs"><div class={`editor-tab ${shown() ? "" : "empty"}`} title={shown() ? props.target.path : undefined}><span class="editor-tab-name">{shown() ? fileName() : "No file"}</span><Show when={dirty()} fallback={<button class="editor-tab-close" title="Close editor (Esc)" aria-label="Close editor" onClick={props.onClose}>×</button>}><button class="editor-tab-close dirty" title="Unsaved changes. Close editor" aria-label="Close editor" onClick={props.onClose}><span class="dirty-dot" /></button></Show></div>
         <div class="editor-tabs-actions"><Show when={shown() && !readOnly() && conflicts().length}><button class="editor-conflict-count" title="Go to the next conflict" onClick={nextConflict}>{conflicts().length} conflict{conflicts().length === 1 ? "" : "s"}</button></Show><Show when={shown() && props.conflicted && !readOnly()}><button class="editor-mark-resolved" disabled={saving()} title="Save and stage the file as resolved" onClick={() => void markResolved()}>Mark resolved</button></Show><Show when={shown()}><button class="editor-open-external" disabled={!doc() || saving() || openingExternal()} aria-label={`Open ${fileName()} in ${props.externalEditorLabel}`} title={`Open working-tree file in ${props.externalEditorLabel} at line ${caretLine() + 1}${dirty() ? ". Unsaved edits stay in GitFerry." : ""}`} onClick={() => void openExternal()}>{openingExternal() ? "Opening…" : "Open in editor"}</button><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit ?? "working tree"}`}>{revisionLabel()} · read-only</span></Show></Show></div></div>
-      <Show when={!shown()}><div class="editor-empty">Double-click a line in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
+      <Show when={!shown()}><div class="editor-empty">Double-click a line number in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
       <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
       <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · {annotationRanges().length > 1 ? `${annotationRanges().length} ranges` : `Lines ${annotation().startLine}${annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}`}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show><Show when={annotation().ranges}><For each={annotation().ranges}>{range => <div class="editor-annotation-range"><button title="Go to highlighted lines" onClick={() => reveal(range.startLine)}>Lines {range.startLine}{(range.endLine ?? range.startLine) !== range.startLine ? `–${range.endLine}` : ""}</button><Show when={range.comment}><p>{range.comment}</p></Show></div>}</For></Show></section>}</Show>
       <Show when={shown() && error()}>{message => <div class="editor-error" title={message()}>{describeError(message()).summary}<Show when={describeError(message()).help}>{help => <p>{help()}</p>}</Show></div>}</Show>
