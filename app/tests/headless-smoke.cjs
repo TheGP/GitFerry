@@ -74,6 +74,10 @@ async function doubleClickDiffWord(page, lineText, word) {
     return { text: selected?.toString(), inDiff: Boolean(anchor?.closest(".diff-content")), editorFocused: document.activeElement?.classList.contains("editor-input"), copied: clipboard.getData("text/plain") };
   });
   assert.deepEqual(selection, { text: word, inDiff: true, editorFocused: false, copied: word }, "Double-clicked diff words must stay selected and copy without line numbers or diff prefixes");
+  assert.ok(await page.$eval('.diff-wrap-toggle', toggle => {
+    const box = toggle.getBoundingClientRect(), pane = toggle.closest('.details-pane').getBoundingClientRect();
+    return box.width > 0 && box.left >= pane.left && box.right <= pane.right + 1;
+  }), "Wrap lines must remain reachable when the side editor narrows the diff pane");
 }
 
 async function openDiffLineInSideEditor(page, lineText) {

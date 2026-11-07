@@ -859,3 +859,5 @@ button.row-action.armed, button.row-action.armed:hover:not(:disabled), .line-sel
 .details-pane:not(.wrap-diff-lines) .diff-lines { width: max-content; min-width: 100%; }
 .details-pane:not(.wrap-diff-lines) .line-text { white-space: pre; overflow-wrap: normal; word-break: normal; }
 .diff-wrap-toggle { display: flex; flex: none; align-items: center; gap: 5px; margin-left: auto; padding: 0 10px; color: var(--theme-secondary); font-size: 12px; white-space: nowrap; cursor: pointer; }
+
+.diff-controls { display: flex; flex: none; min-height: 28px; border-bottom: 1px solid var(--theme-border); background: var(--theme-heading); }
