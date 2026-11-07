@@ -2255,7 +2255,7 @@ async function main() {
   await click(page, ".details-tab:first-child");
   await click(page, ".summary-open-tab");
   await page.waitForSelector("button.line-number.selectable");
-  assert.ok(await page.$eval(".details-tab:last-child", tab => tab.classList.contains("active")), "the open-tab button must show the dedicated file tab");
+  assert.ok(await page.$eval(".file-tab", tab => tab.classList.contains("active")), "the open-tab button must show the dedicated file tab");
   assert.equal(await page.$eval(".diff-content", element => Number.parseFloat(getComputedStyle(element).fontSize)), await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--code-size"))), "diff code must use the configured font size");
   const gutterNumbers = await page.evaluate(() => {
     const values = ["diff --git a/lines.txt b/lines.txt", " line 1", "-line 3", "+NEW 3", " line 4", "-line 25", "+NEW 25"];
