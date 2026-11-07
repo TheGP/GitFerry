@@ -57,7 +57,7 @@ All changed files open in one scrollable Summary. Click line numbers to toggle a
 
 Syntax colors, changed-word highlights, adjustable code fonts, and wrapped long lines keep diffs readable. Double-click code to open its full file in the side editor while preserving the text selection.
 
-Edit working files and save with **Ctrl+S**. Saving a staged file also stages the edited contents; historical file versions remain read-only. Prefer your own editor? Configure Antigravity, VS Code, or Sublime Text in Settings and jump to the changed line.
+Edit working files and save with **Ctrl+S**. Saving a staged file also stages the edited contents; historical file versions remain read-only. Prefer your own editor? Configure Antigravity, VS Code, or Sublime Text in Settings. **Open in editor** in the side-editor header opens the working-tree file at the current cursor line; unsaved edits stay in GitFerry.
 
 ## The rest of your Git day
 

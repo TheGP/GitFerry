@@ -1710,6 +1710,10 @@ function App() {
       setFileDraft(null); setFileView("diff"); setFileEditError("");
     }
   }
+  async function openEditorFile(path: string, file: string, line: number) {
+    if (demoMode) { setNotice(`Open ${file}:${line} in ${editorOptions.find(option => option.id === editor())?.label}`); return; }
+    await invoke("open_in_editor", { repo: path, file, line, editor: editor(), executable: editorExecutable() });
+  }
   async function openInEditor(item: Choice, loadedDiff: Diff | null = null) {
     const path = activePath();
     if (!path) return;
@@ -1717,8 +1721,7 @@ function App() {
     try {
       const value = item.target === "tracked" ? null : loadedDiff ?? (demoMode ? demoDiff(item) : await invoke<Diff>("repo_diff", { path, target: item.target, file: item.path, ignoreWhitespace: false }));
       const line = item.target === "untracked" || item.target === "tracked" ? 1 : firstChangedLine(value!);
-      if (demoMode) { setNotice(`Open ${item.path}:${line} in ${editorOptions.find(option => option.id === editor())?.label}`); return; }
-      await invoke("open_in_editor", { repo: path, file: item.path, line, editor: editor(), executable: editorExecutable() });
+      await openEditorFile(path, item.path, line);
     } catch (cause) { setError(String(cause)); }
   }
   function openSideEditor(item: Choice, line: number, marks: HunkMarks | null, focus = true) {
@@ -3072,7 +3075,7 @@ ${details()!.body.trimEnd()}` : ""}</pre><Show when={details()!.canEditMessage &
         </section>
       </Show>
     </Show>
-        <Show when={sideEditor()}>{target => <FileEditor target={target()} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} externalEditorLabel={editorOptions.find(option => option.id === editor())?.label ?? "editor"} onOpenExternal={openEditorFile} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
     </main>
     <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? actionMessage() : repo()?.loading ? `Opening ${repo()?.name}…` : searchBusy() ? "Searching commits…" : busy() ? loadingStatus() : repo()?.loadError ? "Repository unavailable" : "Ready"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
     <Show when={actionDialog()}>{current => <div class="modal-backdrop" onClick={() => setActionDialog(null)}><div class="action-dialog" role="dialog" aria-modal="true" aria-label={current().title} onClick={event => event.stopPropagation()}>
@@ -3122,7 +3125,7 @@ ${details()!.body.trimEnd()}` : ""}</pre><Show when={details()!.canEditMessage &
         <datalist id="code-font-options"><option value="Consolas" /><option value="Cascadia Code" /><option value="Cascadia Mono" /><option value="JetBrains Mono" /><option value="Fira Code" /><option value="Courier New" /></datalist>
         <label>EDITOR<select aria-label="External editor" value={editor()} onChange={event => setEditor(event.currentTarget.value as EditorId)}><For each={editorOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label>
         <label>COMMAND OVERRIDE<input aria-label="Editor command override" value={editorExecutable()} onInput={event => setEditorExecutable(event.currentTarget.value)} placeholder={editor() === "antigravity" ? "antigravity" : editor() === "vscode" ? "code" : "subl"} /></label>
-        <p>Leave the command blank to use the editor CLI from PATH. Enter a full executable path if needed. Open in editor jumps to the first changed line. For SSH repositories, Antigravity and VS Code require Remote SSH access to the same host.</p>
+        <p>Leave the command blank to use the editor CLI from PATH. Enter a full executable path if needed. Open in editor uses the current cursor line in the side editor, or the first changed line from a diff. For SSH repositories, Antigravity and VS Code require Remote SSH access to the same host.</p>
         <Show when={savedSsh().length}><div class="settings-ssh"><span class="settings-ssh-heading">SAVED SSH PASSWORDS</span><For each={savedSsh()}>{key => <div class="settings-ssh-row"><span title={key}>{key.startsWith("passphrase:") ? `Key ${key.slice("passphrase:".length)}` : key.slice(key.indexOf(":") + 1)}</span><button onClick={() => forgetSsh(key)}>Forget</button></div>}</For></div></Show>
       </div><div class="settings-footer"><button onClick={() => setShowSettings(false)}>Done</button></div>
     </div></div></Show>

@@ -19,6 +19,9 @@
 .editor-tabs-actions { margin-left: auto; display: flex; gap: 6px; }
 .editor-save { padding: 4px 11px; border: 1px solid var(--theme-accent); border-radius: 3px; background: var(--theme-accent-soft); color: var(--theme-text); font-size: 12px; }
 .editor-save:disabled { border-color: var(--theme-border); background: var(--theme-raised); opacity: .5; cursor: default; }
+.editor-open-external { padding: 4px 8px; border: 1px solid var(--theme-border); border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); font-size: 12px; white-space: nowrap; }
+.editor-open-external:hover:not(:disabled) { background: var(--theme-hover); }
+.editor-open-external:disabled { opacity: .5; cursor: default; }
 .editor-breadcrumbs { flex: none; padding: 6px 14px; overflow: hidden; border-bottom: 1px solid var(--theme-border); color: var(--theme-muted); font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
 .editor-crumb-separator { margin: 0 6px; opacity: .7; }
 .editor-crumb-file { color: var(--theme-text); }

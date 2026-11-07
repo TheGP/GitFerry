@@ -48,13 +48,14 @@ function insertText(input: HTMLTextAreaElement, text: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-export function FileEditor(props: { target: EditorTarget; revision?: string; width: number; active: boolean; conflicted: boolean; onMarkResolved: (remaining: number) => void; load: (repo: string, path: string, commit?: string) => Promise<string>; save: (repo: string, path: string, content: string, expected: string) => Promise<void>; onDirty: (dirty: boolean) => void; onClose: () => void; onClearAnnotation: () => void; onResize: (event: PointerEvent) => void }) {
+export function FileEditor(props: { target: EditorTarget; revision?: string; width: number; active: boolean; conflicted: boolean; externalEditorLabel: string; onOpenExternal: (repo: string, path: string, line: number) => Promise<void>; onMarkResolved: (remaining: number) => void; load: (repo: string, path: string, commit?: string) => Promise<string>; save: (repo: string, path: string, content: string, expected: string) => Promise<void>; onDirty: (dirty: boolean) => void; onClose: () => void; onClearAnnotation: () => void; onResize: (event: PointerEvent) => void }) {
   let scroller!: HTMLDivElement;
   let rowsElement!: HTMLDivElement;
   let input!: HTMLTextAreaElement;
   const [doc, setDoc] = createSignal<EditorDoc | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
+  const [openingExternal, setOpeningExternal] = createSignal(false);
   const [error, setError] = createSignal("");
   const [caretLine, setCaretLine] = createSignal(0);
   const [navigationLine, setNavigationLine] = createSignal<number | null>(null);
@@ -189,6 +190,18 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   document.addEventListener("selectionchange", onSelectionChange);
   onCleanup(() => document.removeEventListener("selectionchange", onSelectionChange));
 
+  async function openExternal() {
+    if (!shown() || !doc() || openingExternal() || saving()) return;
+    const id = loadId, { repo, path } = props.target;
+    // A selectionchange event can still be pending when the button takes focus.
+    updateCaret();
+    const line = caretLine() + 1;
+    setOpeningExternal(true); setError("");
+    try { await props.onOpenExternal(repo, path, line); }
+    catch (cause) { if (id === loadId) setError(String(cause)); }
+    finally { setOpeningExternal(false); }
+  }
+
   async function save() {
     const current = doc();
     if (!current || !dirty() || saving() || readOnly()) return;
@@ -275,7 +288,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     <div class="splitter editor-splitter" onPointerDown={event => props.onResize(event)} />
     <aside class="editor-pane" style={{ width: `${props.width}px` }} aria-label={shown() ? `Editor for ${props.target.path}` : "Editor"}>
       <div class="editor-tabs"><div class={`editor-tab ${shown() ? "" : "empty"}`} title={shown() ? props.target.path : undefined}><span class="editor-tab-name">{shown() ? fileName() : "No file"}</span><Show when={dirty()} fallback={<button class="editor-tab-close" title="Close editor (Esc)" aria-label="Close editor" onClick={props.onClose}>×</button>}><button class="editor-tab-close dirty" title="Unsaved changes. Close editor" aria-label="Close editor" onClick={props.onClose}><span class="dirty-dot" /></button></Show></div>
-        <div class="editor-tabs-actions"><Show when={shown() && !readOnly() && conflicts().length}><button class="editor-conflict-count" title="Go to the next conflict" onClick={nextConflict}>{conflicts().length} conflict{conflicts().length === 1 ? "" : "s"}</button></Show><Show when={shown() && props.conflicted && !readOnly()}><button class="editor-mark-resolved" disabled={saving()} title="Save and stage the file as resolved" onClick={() => void markResolved()}>Mark resolved</button></Show><Show when={shown()}><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit ?? "working tree"}`}>{revisionLabel()} · read-only</span></Show></Show></div></div>
+        <div class="editor-tabs-actions"><Show when={shown() && !readOnly() && conflicts().length}><button class="editor-conflict-count" title="Go to the next conflict" onClick={nextConflict}>{conflicts().length} conflict{conflicts().length === 1 ? "" : "s"}</button></Show><Show when={shown() && props.conflicted && !readOnly()}><button class="editor-mark-resolved" disabled={saving()} title="Save and stage the file as resolved" onClick={() => void markResolved()}>Mark resolved</button></Show><Show when={shown()}><button class="editor-open-external" disabled={!doc() || saving() || openingExternal()} aria-label={`Open ${fileName()} in ${props.externalEditorLabel}`} title={`Open working-tree file in ${props.externalEditorLabel} at line ${caretLine() + 1}${dirty() ? ". Unsaved edits stay in GitFerry." : ""}`} onClick={() => void openExternal()}>{openingExternal() ? "Opening…" : "Open in editor"}</button><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit ?? "working tree"}`}>{revisionLabel()} · read-only</span></Show></Show></div></div>
       <Show when={!shown()}><div class="editor-empty">Double-click a line in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
       <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
       <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · {annotationRanges().length > 1 ? `${annotationRanges().length} ranges` : `Lines ${annotation().startLine}${annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}`}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show><Show when={annotation().ranges}><For each={annotation().ranges}>{range => <div class="editor-annotation-range"><button title="Go to highlighted lines" onClick={() => reveal(range.startLine)}>Lines {range.startLine}{(range.endLine ?? range.startLine) !== range.startLine ? `–${range.endLine}` : ""}</button><Show when={range.comment}><p>{range.comment}</p></Show></div>}</For></Show></section>}</Show>

@@ -20,6 +20,8 @@ const pending = new Map();
 const progressEvents = [];
 const actionRequests = [];
 const invalidRevisionDiffs = [];
+const externalEditorRequests = [];
+let editorOpenError = null;
 let snapshotGate = null;
 let actionGate = null;
 let saveGate = null;
@@ -1064,6 +1066,9 @@ async function exerciseFileLinks(page) {
   });
   assert.equal(visible, true, "Cold-start link must reveal its requested line");
   assert.equal(await page.$(".editor-annotation"), null, "Ordinary opening does not create AI annotations");
+  await click(page, ".editor-open-external");
+  await waitUntil(() => externalEditorRequests.length === 1, "open unchanged file in external editor");
+  assert.deepEqual(externalEditorRequests[0], { repo: root, file: clean, line: 77, editor: "antigravity", executable: "" });
   await deliverFileLink(page, fileLinkUrl(path.join(root, "long.txt"), 1, 4500));
   await waitEditor(root, "long.txt", "x".repeat(5000) + "\n");
   const wrappedCaretVisible = await page.evaluate(() => {
@@ -1115,6 +1120,11 @@ async function exerciseFileLinks(page) {
 }
 
 async function bridge(command, args) {
+  if (command === "open_in_editor") {
+    externalEditorRequests.push({ ...args });
+    if (editorOpenError) throw new Error(editorOpenError);
+    return null;
+  }
   if (command === "take_file_links") return { links: incomingFileLinks.splice(0), dropped: 0 };
   if (command === "resolve_file_link") {
     const params = new URL(args.url).searchParams;
@@ -1348,10 +1358,35 @@ async function exerciseSideEditor(page, repository) {
   await page.waitForSelector('.summary-diff-card[data-path="base.txt"] .diff-content');
   await page.waitForSelector('.editor-input[aria-label="Edit base.txt"]');
   await page.locator(".editor-input").fill(original + "unsaved draft\n");
+  await click(page, "button[title='Settings']");
+  const oldEditor = await page.$eval('select[aria-label="External editor"]', input => input.value);
+  const oldExecutable = await page.$eval('input[aria-label="Editor command override"]', input => input.value);
+  await page.select('select[aria-label="External editor"]', "vscode");
+  await page.locator('input[aria-label="Editor command override"]').fill("/custom/Code Editor");
+  await click(page, ".settings-footer button");
+  await page.$eval(".editor-input", input => { input.focus(); const offset = input.value.indexOf("three"); input.setSelectionRange(offset, offset); });
+  const previousOpens = externalEditorRequests.length;
+  await click(page, ".editor-open-external");
+  await waitUntil(() => externalEditorRequests.length > previousOpens, "open side-editor file externally");
+  assert.deepEqual(externalEditorRequests.at(-1), { repo: repository, file: "base.txt", line: 3, editor: "vscode", executable: "/custom/Code Editor" });
+  assert.equal(await page.$eval(".editor-input", input => input.value), original + "unsaved draft\n", "External opening must retain the unsaved buffer");
+  assert.equal(fs.readFileSync(base, "utf8"), original, "External opening must not save the file");
+  editorOpenError = "Could not launch test-editor: executable missing";
+  await click(page, ".editor-open-external");
+  await page.waitForFunction(() => document.querySelector(".editor-error")?.textContent.includes("test-editor"));
+  assert.ok(await page.$(".editor-tab-close.dirty"));
+  editorOpenError = null;
+  await click(page, ".editor-open-external");
+  await page.waitForFunction(() => !document.querySelector(".editor-error"));
+  await click(page, "button[title='Settings']");
+  await page.select('select[aria-label="External editor"]', oldEditor);
+  await page.locator('input[aria-label="Editor command override"]').fill(oldExecutable);
+  await click(page, ".settings-footer button");
   await waitUntil(() => snapshotGate.paths.includes(loadingRepo), "loading editor repository");
   await click(page, '.tab-main[title^="editor-loading"]');
   await page.waitForSelector(".repo-startup");
   assert.ok(await page.$(".editor-tab-close.dirty"), "Loading another repository must retain the editor draft");
+  assert.equal(await page.$(".editor-open-external"), null, "The external-open button must stay hidden for inactive files");
   await click(page, '.tab-main[title^="small"]');
   assert.equal(await page.$eval(".editor-input", input => input.value), original + "unsaved draft\n");
   snapshotGate = null; releaseSnapshot();
