@@ -92,6 +92,8 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   let loadId = 0;
   let loadedIdentity = "";
   let revealedNonce = -1;
+  let pendingCaret: number | null = null;
+  let caretInteraction = 0;
   onCleanup(() => { loadId++; });
 
   async function load(keepView: boolean) {
@@ -115,7 +117,8 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       // A status refresh can finish before the first navigation frame. Complete that request
       // against the refreshed document instead of preserving the previous file's caret.
       if (revealedNonce !== props.target.nonce) { reveal(); return; }
-      input.setSelectionRange(...caret);
+      if (document.activeElement === input) input.setSelectionRange(...caret);
+      else pendingCaret = Math.min(pendingCaret ?? caret[0], doc()?.text.length ?? 0);
       scroller.scrollTop = top;
     } catch (cause) { if (id === loadId) setError(String(cause)); }
     finally { if (id === loadId) setLoading(false); }
@@ -133,9 +136,9 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     // A removal at the very end of the file marks the last line.
     setMarks(target && { added: new Set(target.added), removed: new Set(target.removed.map(item => Math.min(item, lines().length))) });
     const firstLine = target ? Math.min(...target.added, ...target.removed) : Infinity;
-    const nonce = props.target.nonce, documentId = loadId;
+    const nonce = props.target.nonce, documentId = loadId, interaction = caretInteraction;
     requestAnimationFrame(() => {
-      if (props.target.nonce !== nonce || loadId !== documentId) return;
+      if (props.target.nonce !== nonce || loadId !== documentId || caretInteraction !== interaction) return;
       const row = rowsElement.children[line - 1] as HTMLElement | undefined;
       const first = Number.isFinite(firstLine) ? rowsElement.children[firstLine - 1] as HTMLElement | undefined : undefined;
       if (row) {
@@ -167,9 +170,14 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
         setNavigationLine(line);
         navigationTimer = setTimeout(() => setNavigationLine(null), 1500);
       }
-      // Gutter navigation can reveal a line without taking focus from the changes view.
-      if (props.target.focus !== false) input.focus({ preventScroll: true });
-      input.setSelectionRange(offset, offset);
+      // WebKit can replace the page selection even when setSelectionRange targets an
+      // unfocused textarea. Defer that native caret change until the user enters the editor.
+      if (props.target.focus === false) pendingCaret = offset;
+      else {
+        pendingCaret = null;
+        input.focus({ preventScroll: true });
+        input.setSelectionRange(offset, offset);
+      }
       revealedNonce = nonce;
       updateCaret();
     });
@@ -188,7 +196,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
   function updateCaret() {
     const text = doc()?.text ?? "";
     let line = 0;
-    for (let index = text.indexOf("\n"); index >= 0 && index < input.selectionStart; index = text.indexOf("\n", index + 1)) line++;
+    for (let index = text.indexOf("\n"); index >= 0 && index < (pendingCaret ?? input.selectionStart); index = text.indexOf("\n", index + 1)) line++;
     setCaretLine(line);
   }
   const onSelectionChange = () => { if (document.activeElement === input) updateCaret(); };
@@ -294,7 +302,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     <aside class="editor-pane" style={{ width: `${props.width}px` }} aria-label={shown() ? `Editor for ${props.target.path}` : "Editor"}>
       <div class="editor-tabs"><div class={`editor-tab ${shown() ? "" : "empty"}`} title={shown() ? props.target.path : undefined}><span class="editor-tab-name">{shown() ? fileName() : "No file"}</span><Show when={dirty()} fallback={<button class="editor-tab-close" title="Close editor (Esc)" aria-label="Close editor" onClick={props.onClose}>×</button>}><button class="editor-tab-close dirty" title="Unsaved changes. Close editor" aria-label="Close editor" onClick={props.onClose}><span class="dirty-dot" /></button></Show></div>
         <div class="editor-tabs-actions"><Show when={shown() && !readOnly() && conflicts().length}><button class="editor-conflict-count" title="Go to the next conflict" onClick={nextConflict}>{conflicts().length} conflict{conflicts().length === 1 ? "" : "s"}</button></Show><Show when={shown() && props.conflicted && !readOnly()}><button class="editor-mark-resolved" disabled={saving()} title="Save and stage the file as resolved" onClick={() => void markResolved()}>Mark resolved</button></Show><Show when={shown()}><button class="editor-open-external" disabled={!doc() || saving() || openingExternal()} aria-label={`Open ${fileName()} in ${props.externalEditorLabel}`} title={`Open working-tree file in ${props.externalEditorLabel} at line ${caretLine() + 1}${dirty() ? ". Unsaved edits stay in GitFerry." : ""}`} onClick={() => void openExternal()}>{openingExternal() ? "Opening…" : "Open in editor"}</button><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit ?? "working tree"}`}>{revisionLabel()} · read-only</span></Show></Show></div></div>
-      <Show when={!shown()}><div class="editor-empty">Double-click a line number in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
+      <Show when={!shown()}><div class="editor-empty">Double-click code in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
       <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
       <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · {annotationRanges().length > 1 ? `${annotationRanges().length} ranges` : `Lines ${annotation().startLine}${annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}`}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show><Show when={annotation().ranges}><For each={annotation().ranges}>{range => <div class="editor-annotation-range"><button title="Go to highlighted lines" onClick={() => reveal(range.startLine)}>Lines {range.startLine}{(range.endLine ?? range.startLine) !== range.startLine ? `–${range.endLine}` : ""}</button><Show when={range.comment}><p>{range.comment}</p></Show></div>}</For></Show></section>}</Show>
       <Show when={shown() && error()}>{message => <div class="editor-error" title={message()}>{describeError(message()).summary}<Show when={describeError(message()).help}>{help => <p>{help()}</p>}</Show></div>}</Show>
@@ -302,14 +310,17 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>
           <div class="editor-body" style={{ "--editor-gutter": gutter() }}>
             <div class="editor-rows" ref={rowsElement}><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""} ${isHighlighted(index) ? "ai-highlight" : ""} ${navigationLine() === index + 1 ? "navigation-highlight" : ""} ${conflictClasses()[index] ?? ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /><Show when={!readOnly() && conflictAt().get(index)}>{conflict => <span class="editor-conflict-actions"><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "current")}>Accept current</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "incoming")}>Accept incoming</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "both")}>Accept both</button></span>}</Show></div>}</Index></div>
-            <textarea class="editor-input" ref={input} aria-label={`Edit ${props.target.path}`} spellcheck={false} autocapitalize="off" autocomplete="off" wrap="soft" rows={1} cols={1} readOnly={saving() || readOnly()} value={doc()?.text ?? ""} onInput={event => {
+            <textarea class="editor-input" ref={input} aria-label={`Edit ${props.target.path}`} spellcheck={false} autocapitalize="off" autocomplete="off" wrap="soft" rows={1} cols={1} readOnly={saving() || readOnly()} onPointerDown={() => { pendingCaret = null; caretInteraction++; revealedNonce = props.target.nonce; }} value={doc()?.text ?? ""} onInput={event => {
               const text = event.currentTarget.value;
               const before = lines().length;
               setDoc(value => value && { ...value, text });
               // Added or removed lines shift the highlighted hunk off its lines.
               if (lines().length !== before) setMarks(null);
               updateCaret();
-            }} onKeyDown={onKeyDown} onFocus={updateCaret} />
+            }} onKeyDown={onKeyDown} onFocus={() => {
+              if (pendingCaret !== null) { input.setSelectionRange(pendingCaret, pendingCaret); pendingCaret = null; }
+              updateCaret();
+            }} />
           </div>
         </Show>
       </div>

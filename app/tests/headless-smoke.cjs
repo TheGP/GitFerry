@@ -46,7 +46,6 @@ async function clickWorktree(page, checkout) {
 }
 
 async function doubleClickDiffWord(page, lineText, word) {
-  const editorBefore = await page.evaluate(() => localStorage.getItem("gitferry.sideEditor"));
   await page.waitForFunction(text => [...document.querySelectorAll(".diff-line .line-text")].some(line => line.textContent === text), {}, lineText);
   const point = await page.evaluate(({ lineText, word }) => {
     const line = [...document.querySelectorAll(".diff-line .line-text")].find(item => item.textContent === lineText);
@@ -65,8 +64,8 @@ async function doubleClickDiffWord(page, lineText, word) {
   }, { lineText, word });
   // Let Chromium select the word itself; an artificial Range would miss the double-click bug.
   await page.mouse.click(point.x, point.y, { count: 2 });
+  await page.waitForFunction(text => document.querySelector(".editor-input")?.value.includes(text), {}, lineText);
   await new Promise(resolve => setTimeout(resolve, 350));
-  assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.sideEditor")), editorBefore, "Selecting diff text must not open or navigate the side editor");
   const selection = await page.evaluate(() => {
     const selected = window.getSelection();
     const anchor = selected?.anchorNode?.parentElement;
@@ -600,7 +599,7 @@ async function exerciseMcp(page, repository, restore) {
   await doubleClickDiffWord(page, "working cause", "cause");
   await doubleClickDiffWord(page, "working cause", "cause");
   await page.screenshot({ path: path.join(screenshots, "diff-word-selection.png") });
-  assert.equal(await page.$(".editor-input"), null, "Double-clicking Summary code does not open the editor");
+  assert.ok(await page.$(".editor-input"), "Double-clicking Summary code must open the side editor and preserve text selection");
   await openDiffLineInSideEditor(page, "working cause");
   await doubleClickDiffWord(page, "working cause", "cause");
   await click(page, ".editor-tab-close");
@@ -977,6 +976,21 @@ async function exerciseFindInView(page) {
   const originalHead = git(root, "rev-parse", "HEAD"), originalIndex = fs.readFileSync(path.join(root, ".git/index"));
   await openRepo(page, root);
   await page.waitForSelector('.summary-diff-card[data-path="search.ts"] .diff-content');
+  await click(page, 'input[aria-label="Wrap diff lines"]');
+  const horizontal = '.summary-diff-card[data-path="search.ts"] .diff-horizontal-scroll';
+  await page.waitForSelector(horizontal, { visible: true });
+  await page.$eval(horizontal, bar => { bar.scrollLeft = bar.scrollWidth; });
+  await page.waitForFunction(() => document.querySelector('.summary-diff-card[data-path="search.ts"] .diff-content')?.scrollLeft > 1000);
+  await page.$eval('.summary-diff-card[data-path="search.ts"] .diff-line:last-child', line => line.scrollIntoView({ block: "center" }));
+  await page.$eval('.details-scroll', pane => { pane.scrollTop = pane.scrollHeight / 2; });
+  assert.ok(await page.$eval(horizontal, bar => {
+    const box = bar.getBoundingClientRect(), pane = bar.closest(".details-scroll").getBoundingClientRect();
+    return box.height > 0 && box.top >= pane.top && box.bottom <= pane.bottom + 1;
+  }), "The horizontal scrollbar must remain reachable halfway through a long file");
+  await page.screenshot({ path: path.join(screenshots, "diff-horizontal-scroll.png") });
+  await click(page, 'input[aria-label="Wrap diff lines"]');
+  await page.waitForFunction(() => document.querySelector('.summary-diff-card[data-path="search.ts"] .diff-content')?.scrollLeft === 0);
+  assert.ok(await page.$eval('.summary-diff-card[data-path="search.ts"] .diff-content', pane => pane.scrollWidth <= pane.clientWidth + 1), "Wrapped long tokens must fit the pane");
   await deliverFileLink(page, fileLinkUrl(file));
   await page.waitForFunction(value => document.querySelector(".editor-input")?.value === value, {}, text);
   // Hit the transparent textarea with real mouse events, using the syntax layer's glyph position.
@@ -1389,7 +1403,7 @@ async function exerciseCommitMessage(page) {
 async function exerciseSideEditor(page, repository) {
   const base = path.join(repository, "base.txt"), otherFile = path.join(repository, "new.txt");
   const original = fs.readFileSync(base, "utf8"), otherOriginal = fs.readFileSync(otherFile, "utf8");
-  const baseLine = '.summary-diff-card[data-path="base.txt"] .diff-line.added .line-number';
+  const baseLine = '.summary-diff-card[data-path="base.txt"] .diff-line.added .line-text';
   await click(page, baseLine, { count: 2 });
   await page.waitForSelector('.editor-input[aria-label="Edit base.txt"]', { timeout: 5000 }).catch(async error => {
     throw new Error(`${error.message}: editor=${await page.$eval(".editor-pane", pane => pane.textContent).catch(() => "not mounted")} error=${await page.$eval(".error-bar", pane => pane.textContent).catch(() => "none")}`);
@@ -1450,7 +1464,7 @@ async function exerciseSideEditor(page, repository) {
   saveGate = { started: false, promise: new Promise(resolve => { releaseSave = resolve; }) };
   await click(page, ".editor-save");
   await waitUntil(() => saveGate.started, "delayed editor save");
-  await click(page, '.summary-diff-card[data-path="new.txt"] .line-number', { count: 2 });
+  await click(page, '.summary-diff-card[data-path="new.txt"] .line-text', { count: 2 });
   await page.waitForSelector(".action-dialog");
   await submitActionDialog(page);
   await page.waitForSelector('.editor-input[aria-label="Edit new.txt"]');

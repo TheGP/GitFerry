@@ -205,7 +205,7 @@ button { cursor: pointer; }
 .file-row[aria-expanded="false"] .file-chevron .chevron-icon { transform: rotate(-90deg); }
 .diff-heading { display: flex; justify-content: space-between; gap: 20px; padding: 11px 31px; background: #242d34; border-top: 1px solid #1a232a; border-bottom: 1px solid #1a232a; color: #cbd8df; font-family: Consolas, monospace; font-size: 13px; }
 .diff-heading .diff-heading-target { color: #7d9fa5; font-family: Inter, "Segoe UI", sans-serif; font-size: 13px; letter-spacing: 1px; }
-.diff-content { overflow-x: hidden; padding: 12px 0 30px; font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace; font-size: 16px; line-height: 23px; }
+.diff-content { overflow-x: auto; scrollbar-width: none; padding: 12px 0 30px; font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace; font-size: 16px; line-height: 23px; }
 .diff-line { display: flex; min-width: 0; width: 100%; color: #b3bec7; }
 .diff-line.added { background: var(--diff-added-bg); color: var(--diff-added-text); }
 .diff-line.deleted { background: var(--diff-deleted-bg); color: var(--diff-deleted-text); }
@@ -224,7 +224,7 @@ button { cursor: pointer; }
 .line-number.selectable:hover { background: var(--theme-accent-soft); color: var(--theme-text); }
 .diff-line.selected { outline: 1px solid var(--theme-accent); outline-offset: -1px; }
 .diff-line.selected .line-number { background: var(--theme-accent); color: var(--theme-chrome); }
-.line-text { flex: 1; min-width: 0; padding-right: 24px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.line-text { flex: 1; min-width: 0; padding-right: 24px; white-space: pre-wrap; overflow-wrap: break-word; overflow-wrap: anywhere; word-break: break-word; }
 .diff-line.added .word-change { background: var(--diff-added-word); border-radius: 2px; }
 .diff-line.deleted .word-change { background: var(--diff-deleted-word); border-radius: 2px; }
 .diff-line .syntax-keyword, .diff-line .syntax-boolean, .editor-code .syntax-keyword, .editor-code .syntax-boolean { color: #db9bd1; }
@@ -580,7 +580,7 @@ button { cursor: pointer; }
 .operation-panel .conflict-row .conflict-file:hover { color: var(--theme-accent-hover); text-decoration: underline; }
 .commit-actions summary { cursor: pointer; font-weight: 700; }
 .commit-action-buttons { margin-top: 10px; }
-.all-diff-card { margin-bottom: 8px; overflow: hidden; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-details); }
+.all-diff-card { margin-bottom: 8px; overflow: visible; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-details); }
 .all-diff-card .file-actions { padding-right: 12px; }
 .all-diff-card .diff-content { padding-bottom: 13px; }
 .code-move-note { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; padding: 7px 12px; border-left: 3px solid var(--theme-accent); background: var(--theme-accent-soft); font-family: Inter, "Segoe UI", Arial, sans-serif; font-size: 13px; line-height: 1.5; color: var(--theme-secondary); user-select: none; }
@@ -846,3 +846,16 @@ button.row-action.armed, button.row-action.armed:hover:not(:disabled), .line-sel
 .error-details-actions button:hover { background: var(--theme-hover); }
 
 .file-link-waiting { flex: none; padding: 8px 14px; background: var(--theme-accent-soft); color: var(--theme-text); font-size: 13px; }
+
+/* The separate sticky scrollbar stays reachable halfway through a long Summary file. */
+.diff-surface { position: relative; min-width: 0; }
+.diff-content::-webkit-scrollbar { height: 0; }
+.diff-horizontal-scroll { position: sticky; bottom: 0; z-index: 5; height: 16px; overflow-x: scroll; overflow-y: hidden; background: var(--theme-details); scrollbar-color: #71818e var(--theme-heading); }
+.diff-horizontal-scroll > div { height: 1px; }
+.diff-horizontal-scroll::-webkit-scrollbar { height: 14px; }
+.diff-horizontal-scroll::-webkit-scrollbar-track { background: var(--theme-heading); }
+.diff-horizontal-scroll::-webkit-scrollbar-thumb { background: #71818e; border: 2px solid var(--theme-heading); border-radius: 7px; }
+.diff-horizontal-scroll:focus-visible { outline: 1px solid var(--theme-accent); outline-offset: -1px; }
+.details-pane:not(.wrap-diff-lines) .diff-lines { width: max-content; min-width: 100%; }
+.details-pane:not(.wrap-diff-lines) .line-text { white-space: pre; overflow-wrap: normal; word-break: normal; }
+.diff-wrap-toggle { display: flex; flex: none; align-items: center; gap: 5px; margin-left: auto; padding: 0 10px; color: var(--theme-secondary); font-size: 12px; white-space: nowrap; cursor: pointer; }

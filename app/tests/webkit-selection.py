@@ -59,7 +59,11 @@ def main():
                     page.mouse.dblclick(**point)
                     page.wait_for_timeout(350)
                     assert page.evaluate("window.getSelection().toString()") == "loading"
-                    assert page.locator(".editor-input").count() == 0, "Text selection opened the side editor"
+                    page.locator(".editor-input").wait_for()
+                    assert page.locator(".editor-input").input_value(), "Double-clicking code must open the file"
+                    page.set_viewport_size({"width": 1600, "height": 1000})
+                    page.wait_for_timeout(150)
+                    assert page.evaluate("window.getSelection().toString()") == "loading", "Opening and resizing must preserve the diff selection"
                     copied = page.evaluate("""() => {
                       const clipboardData = new DataTransfer();
                       const event = new ClipboardEvent("copy", {bubbles: true, cancelable: true, clipboardData});
@@ -68,7 +72,6 @@ def main():
                     }""")
                     assert copied == "loading", copied
                 page.screenshot(path="/tmp/gitferry-webkit-diff-selection.png")
-                page.locator(".diff-line.added").filter(has_text="loading").first.locator(".line-number").dblclick()
                 editor = page.locator(".editor-input")
                 editor.wait_for()
                 page.wait_for_timeout(250)
@@ -84,8 +87,27 @@ def main():
                     if dirty:
                         assert page.locator(".editor-tab-close.dirty").count() == 1
                 page.screenshot(path="/tmp/gitferry-webkit-editor-selection.png")
+                page.locator(".editor-tab-close").click()
+                page.locator(".action-dialog-submit").click()
+                page.locator(".editor-input").wait_for(state="detached")
+                page.get_by_role("checkbox", name="Wrap diff lines").uncheck()
+                bar = page.locator(".diff-horizontal-scroll").first
+                bar.wait_for(state="visible")
+                bar.evaluate("bar => { bar.scrollLeft = bar.scrollWidth; }")
+                page.wait_for_function("document.querySelector('.diff-content').scrollLeft > 100")
+                assert bar.evaluate("bar => getComputedStyle(bar).position") == "sticky"
+                assert page.evaluate("""() => {
+                  const pane = document.querySelector('.diff-content'), text = pane.querySelector('.diff-line.added .line-text');
+                  const last = [...pane.querySelectorAll('.diff-line.added .line-text')].at(-1);
+                  const range = document.createRange(); range.selectNodeContents(last); range.collapse(false);
+                  const end = range.getBoundingClientRect(), bounds = pane.getBoundingClientRect();
+                  return end.right <= bounds.right + 1;
+                }"""), "The end of the long line must be reachable by horizontal scrolling"
+                page.get_by_role("checkbox", name="Wrap diff lines").check()
+                page.wait_for_function("document.querySelector('.diff-content').scrollLeft === 0")
+                assert page.evaluate("document.querySelector('.diff-content').scrollWidth <= document.querySelector('.diff-content').clientWidth + 1")
                 assert not errors, errors
-                print("WebKit: repeated diff word selection and copying, gutter navigation, clean and unsaved editor word selection passed")
+                print("WebKit: repeated diff word selection and copying, double-click editor opening, clean and unsaved editor selection, wrapping and horizontal scrolling passed")
             except BaseException:
                 page.screenshot(path="/tmp/gitferry-webkit-selection-failure.png")
                 raise

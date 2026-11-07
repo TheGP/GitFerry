@@ -55,7 +55,7 @@ All changed files open in one scrollable Summary. Click line numbers to toggle a
 
 ![Working-tree changes with two line-number columns, changed-word emphasis, a selected line, and Stage lines controls](docs/images/gitferry-line-staging.png)
 
-Syntax colors, changed-word highlights, adjustable code fonts, and wrapped long lines keep diffs readable. Double-click code to select a word for copying in diffs and the editor. Double-click a line number in a diff to open its full file in the side editor.
+Syntax colors, changed-word highlights, adjustable code fonts, and wrapped long lines keep diffs readable. Double-click code to open its full file in the side editor while keeping the word selected for copying. Word selection in the editor stays available for copying too. Use **Wrap lines** above the changes to choose wrapping or horizontal scrolling; the horizontal scrollbar stays visible while reviewing a long file.
 
 Edit working files and save with **Ctrl+S**. Saving a staged file also stages the edited contents; historical file versions remain read-only. Prefer your own editor? Configure Antigravity, VS Code, or Sublime Text in Settings. **Open in editor** in the side-editor header opens the working-tree file at the current cursor line; unsaved edits stay in GitFerry.
 
