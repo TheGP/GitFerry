@@ -87,9 +87,14 @@ module.exports = async function ({ page, rebaseRepo, git, click, openRepo, scree
       } else {
         await page.$eval('.ssh-prompt .action-dialog-body', body => { body.scrollTop = body.scrollHeight; });
         assert.ok(await page.$eval('.ssh-prompt .ssh-prompt-text', text => {
-          const range = document.createRange(); range.selectNodeContents(text); range.collapse(false);
+          const walker = document.createTreeWalker(text, NodeFilter.SHOW_TEXT);
+          let last;
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.textContent.length) last = node;
+          if (!last) return false;
+          const range = document.createRange();
+          range.setStart(last, last.textContent.length - 1); range.setEnd(last, last.textContent.length);
           const r = range.getBoundingClientRect(), body = text.closest('.action-dialog-body').getBoundingClientRect();
-          return r.top >= body.top && r.bottom <= body.bottom;
+          return r.height > 0 && r.top >= body.top - 1 && r.bottom <= body.bottom + 1;
         }), 'The end of a long SSH verification prompt must be readable');
       }
       await click(page, 'button[aria-label="Cancel SSH sign-in"]');
