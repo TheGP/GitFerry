@@ -638,6 +638,9 @@ button { cursor: pointer; }
 .settings-button:hover, .settings-button:focus-visible { background: var(--theme-hover); color: var(--theme-text); }
 .settings-modal { width: min(500px, calc(100vw - 32px)); max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--theme-border); border-radius: 7px; background: var(--theme-modal); box-shadow: 0 24px 80px #0009; }
 .settings-body { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 18px; padding: 22px; }
+.settings-body::-webkit-scrollbar { width: 10px; }
+.settings-body::-webkit-scrollbar-track { background: var(--theme-heading); }
+.settings-body::-webkit-scrollbar-thumb { background: #71818e; border: 2px solid var(--theme-heading); border-radius: 5px; }
 .settings-body label { display: flex; flex-direction: column; gap: 7px; color: var(--theme-secondary); font-size: 13px; font-weight: 700; letter-spacing: .6px; }
 .settings-body select, .settings-body input { width: 100%; min-height: 38px; padding: 7px 10px; border: 1px solid var(--theme-border); border-radius: 4px; background: var(--theme-input); color: var(--theme-text); font-size: 14px; letter-spacing: 0; }
 .settings-body p { margin: 0; color: var(--theme-secondary); font-size: 13px; line-height: 1.5; }

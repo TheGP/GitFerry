@@ -38,12 +38,20 @@ def short_window_dialogs(page):
         box = page.locator(selector).bounding_box()
         assert box and box["y"] >= 7 and box["y"] + box["height"] <= page.viewport_size["height"] - 7, (selector, box)
 
+    def scroll_to_bottom(selector):
+        box = page.locator(selector).bounding_box()
+        assert box, selector
+        page.mouse.move(box["x"] + box["width"] - 18, box["y"] + min(50, box["height"] / 2))
+        page.mouse.wheel(0, 10000)
+        page.wait_for_function("selector => { const e = document.querySelector(selector); return e.scrollTop + e.clientHeight >= e.scrollHeight - 1; }", arg=selector)
+
     for height in (400, 600, 720):
         page.set_viewport_size({"width": 960, "height": height})
         page.get_by_role("button", name="Settings", exact=True).click()
         fits(".settings-modal")
         if height <= 600:
             assert page.locator(".settings-body").evaluate("body => body.scrollHeight > body.clientHeight")
+        scroll_to_bottom(".settings-body")
         page.get_by_label("Editor command override").focus()
         assert page.get_by_label("Editor command override").evaluate("input => { const r = input.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }")
         assert page.locator(".settings-footer button").evaluate("button => button.getBoundingClientRect().bottom <= innerHeight")
@@ -53,17 +61,18 @@ def short_window_dialogs(page):
         page.get_by_role("button", name="Open repository", exact=True).click()
         fits(".open-modal")
         page.get_by_role("button", name="SSH host", exact=True).click()
+        scroll_to_bottom(".open-modal .modal-body")
         page.locator(".remote-form input").last.focus()
         assert page.locator(".remote-form input").last.evaluate("input => input.getBoundingClientRect().bottom <= innerHeight")
         page.get_by_role("button", name="Close open repository", exact=True).click()
         page.keyboard.press("Control+p")
         fits(".palette")
-        page.locator(".palette-list button").last.scroll_into_view_if_needed()
+        scroll_to_bottom(".palette-list")
         assert page.locator(".palette-list button").last.evaluate("button => button.getBoundingClientRect().bottom <= innerHeight")
         page.keyboard.press("Escape")
         page.get_by_role("button", name="More actions", exact=True).click()
         fits(".toolbar-center .push-menu")
-        page.locator(".toolbar-center .push-menu > button").last.scroll_into_view_if_needed()
+        scroll_to_bottom(".toolbar-center .push-menu")
         assert page.locator(".toolbar-center .push-menu > button").last.evaluate("button => button.getBoundingClientRect().bottom <= innerHeight")
         page.keyboard.press("Escape")
     page.set_viewport_size({"width": 1700, "height": 1000})
