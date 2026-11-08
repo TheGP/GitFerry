@@ -1200,7 +1200,9 @@ async function bridge(command, args) {
   }
   if (command.startsWith("plugin:event|")) return 1;
   if (command === "ssh_current_prompt") return null;
-  if (command === "ssh_saved_credentials") return [];
+  if (command === "ssh_saved_credentials") return process.env.GITFERRY_DIALOGS_ONLY ? Array.from({ length: 40 }, (_, i) => `password:fixture-${i}.example`) : [];
+  if (process.env.GITFERRY_DIALOGS_ONLY && command === "mcp_start") return { url: "http://127.0.0.1:39847/mcp", token: "non-secret-layout-fixture" };
+  if (process.env.GITFERRY_DIALOGS_ONLY && command === "ssh_prompt_answer") { assert.equal(args.answer, null, "Layout tests must only cancel SSH prompts"); return null; }
   if (command === "repo_action") actionRequests.push({ path: args.path, kind: args.operation.kind });
   if (command === "repo_action" && actionGate?.kind === args.operation.kind) {
     const gate = actionGate;
@@ -1613,6 +1615,11 @@ async function main() {
   await page.goto("http://127.0.0.1:1420/");
   // The app renders only after restoring saved settings, so shortcuts pressed earlier are lost.
   await page.waitForSelector(".statusbar");
+  if (process.env.GITFERRY_DIALOGS_ONLY) {
+    await require('./dialog-overflow.cjs')({ page, rebaseRepo, git, click, openRepo, screenshots, path, actionRequests });
+    assert.deepEqual(pageErrors, [], 'Short-window dialogs must have no uncaught errors');
+    return;
+  }
   if (process.env.GITFERRY_FILE_LINKS_ONLY) {
     await exerciseFileLinks(page);
     assert.deepEqual(pageErrors, [], "File-link navigation must have no uncaught errors");

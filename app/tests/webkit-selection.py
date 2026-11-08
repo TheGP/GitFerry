@@ -33,6 +33,43 @@ def word_point(page, selector, word):
     }""", {"selector": selector, "word": word})
 
 
+def short_window_dialogs(page):
+    def fits(selector):
+        box = page.locator(selector).bounding_box()
+        assert box and box["y"] >= 7 and box["y"] + box["height"] <= page.viewport_size["height"] - 7, (selector, box)
+
+    for height in (400, 600, 720):
+        page.set_viewport_size({"width": 960, "height": height})
+        page.get_by_role("button", name="Settings", exact=True).click()
+        fits(".settings-modal")
+        if height <= 600:
+            assert page.locator(".settings-body").evaluate("body => body.scrollHeight > body.clientHeight")
+        page.get_by_label("Editor command override").focus()
+        assert page.get_by_label("Editor command override").evaluate("input => { const r = input.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }")
+        assert page.locator(".settings-footer button").evaluate("button => button.getBoundingClientRect().bottom <= innerHeight")
+        if height == 600:
+            page.screenshot(path="/tmp/gitferry-webkit-settings-short-window.png")
+        page.get_by_role("button", name="Done", exact=True).click()
+        page.get_by_role("button", name="Open repository", exact=True).click()
+        fits(".open-modal")
+        page.get_by_role("button", name="SSH host", exact=True).click()
+        page.locator(".remote-form input").last.focus()
+        assert page.locator(".remote-form input").last.evaluate("input => input.getBoundingClientRect().bottom <= innerHeight")
+        page.get_by_role("button", name="Close open repository", exact=True).click()
+        page.keyboard.press("Control+p")
+        fits(".palette")
+        page.locator(".palette-list button").last.scroll_into_view_if_needed()
+        assert page.locator(".palette-list button").last.evaluate("button => button.getBoundingClientRect().bottom <= innerHeight")
+        page.keyboard.press("Escape")
+        page.get_by_role("button", name="More actions", exact=True).click()
+        fits(".toolbar-center .push-menu")
+        page.locator(".toolbar-center .push-menu > button").last.scroll_into_view_if_needed()
+        assert page.locator(".toolbar-center .push-menu > button").last.evaluate("button => button.getBoundingClientRect().bottom <= innerHeight")
+        page.keyboard.press("Escape")
+    page.set_viewport_size({"width": 1700, "height": 1000})
+    print("WebKit: Settings, local/SSH repository dialog, palette and action menus fit 400/600/720px windows")
+
+
 def main():
     server = subprocess.Popen(["node", "node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "1421", "--strictPort"], cwd=APP, stdout=subprocess.DEVNULL)
     try:
@@ -54,6 +91,7 @@ def main():
             try:
                 page.goto(URL)
                 page.locator(".diff-line.added .line-text").first.wait_for()
+                short_window_dialogs(page)
                 for _ in range(2):
                     point = word_point(page, ".diff-line.added .line-text", "loading")
                     page.mouse.dblclick(**point)

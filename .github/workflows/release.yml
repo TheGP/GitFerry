@@ -88,6 +88,7 @@ jobs:
           node tests/headless-smoke.cjs
           GITFERRY_FILE_LINKS_ONLY=1 node tests/headless-smoke.cjs
           GITFERRY_FIND_ONLY=1 node tests/headless-smoke.cjs
+          GITFERRY_DIALOGS_ONLY=1 node tests/headless-smoke.cjs
       - name: Test word selection in WebKit
         run: |
           python3 -m venv /tmp/gitferry-webkit-venv
