@@ -65,7 +65,7 @@ module.exports = async function ({ page, rebaseRepo, git, click, openRepo, scree
     await page.keyboard.press('Escape');
     await click(page, '.branch-chip');
     await fits('.branch-menu');
-    await scrollLast('.branch-menu-list', '.branch-menu-list .branch-menu-row:last-child button:last-child');
+    await scrollLast('.branch-menu-list', '.branch-menu-list button[title="More actions for viewport-34"]');
     await visible('.branch-menu-filter'); await visible('.branch-menu form input');
     await click(page, "button[title='Plan an interactive rebase onto main']");
     await page.waitForSelector('.rebase-step:nth-child(38)');
