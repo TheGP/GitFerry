@@ -1,0 +1,41 @@
+name: Mac WebKit browser checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  selection:
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8
+      - name: Install frontend packages
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+      - name: Install Mac WebKit
+        timeout-minutes: 5
+        run: |
+          python3 -m venv /tmp/gitferry-webkit-venv
+          /tmp/gitferry-webkit-venv/bin/pip install playwright==1.56.0
+          /tmp/gitferry-webkit-venv/bin/playwright install webkit
+      - name: Test selection painting and Find focus
+        timeout-minutes: 3
+        run: /tmp/gitferry-webkit-venv/bin/python -u app/tests/webkit-selection.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: webkit-screenshots
+          path: /tmp/gitferry-webkit-*.png
+          if-no-files-found: ignore

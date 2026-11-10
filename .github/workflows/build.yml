@@ -26,6 +26,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  webkit:
+    uses: ./.github/workflows/webkit.yml
+
   checks:
     runs-on: ubuntu-24.04
     outputs:
@@ -74,14 +77,6 @@ jobs:
           GITFERRY_FILE_LINKS_ONLY=1 node tests/headless-smoke.cjs
           GITFERRY_FIND_ONLY=1 node tests/headless-smoke.cjs
           GITFERRY_DIALOGS_ONLY=1 node tests/headless-smoke.cjs
-      - name: Test word selection in WebKit
-        timeout-minutes: 7
-        run: |
-          python3 -m venv /tmp/gitferry-webkit-venv
-          /tmp/gitferry-webkit-venv/bin/pip install playwright==1.56.0
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
-          /tmp/gitferry-webkit-venv/bin/playwright install --with-deps webkit
-          timeout 180s /tmp/gitferry-webkit-venv/bin/python -u app/tests/webkit-selection.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -89,11 +84,10 @@ jobs:
           path: |
             /tmp/gitferry-headless-*/screenshots/**
             /tmp/gitferry-worktree-tabs.png
-            /tmp/gitferry-webkit-*.png
           if-no-files-found: ignore
 
   agents:
-    needs: checks
+    needs: [checks, webkit]
     if: github.event_name == 'workflow_dispatch' || needs.checks.outputs.native_links == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
