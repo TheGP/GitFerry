@@ -206,7 +206,8 @@ button { cursor: pointer; }
 .diff-heading { display: flex; justify-content: space-between; gap: 20px; padding: 11px 31px; background: #242d34; border-top: 1px solid #1a232a; border-bottom: 1px solid #1a232a; color: #cbd8df; font-family: Consolas, monospace; font-size: 13px; }
 .diff-heading .diff-heading-target { color: #7d9fa5; font-family: Inter, "Segoe UI", sans-serif; font-size: 13px; letter-spacing: 1px; }
 .diff-content { overflow-x: auto; scrollbar-width: none; padding: 12px 0 30px; font-family: Consolas, "SFMono-Regular", "Liberation Mono", monospace; font-size: 16px; line-height: 23px; }
-.diff-line { display: flex; min-width: 0; width: 100%; color: #b3bec7; }
+/* Normal block flow avoids missing selection paint in older macOS WebKit flex items. */
+.diff-line { display: flow-root; min-width: 0; width: 100%; color: #b3bec7; }
 .diff-line.added { background: var(--diff-added-bg); color: var(--diff-added-text); }
 .diff-line.deleted { background: var(--diff-deleted-bg); color: var(--diff-deleted-text); }
 .diff-line.hunk { background: #303d4b; color: #8cb8d8; }
@@ -218,13 +219,15 @@ button { cursor: pointer; }
 .diff-content.has-hunks .diff-line.hunk .line-number, .diff-content.has-hunks .diff-line.hunk .line-text { visibility: hidden; }
 .diff-content.actionable .diff-line.hunk { cursor: pointer; }
 .diff-line .line-text { cursor: text; -webkit-user-select: text; user-select: text; }
-.line-number { width: 86px; flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 8px 0 2px; text-align: right; color: #657481; font-size: 15px; line-height: inherit; user-select: none; }
+/* Paint selection on every syntax span, above added/deleted and changed-word backgrounds. */
+.diff-content ::selection { background: #365f89; color: #fff; text-shadow: none; }
+.line-number { width: 86px; float: left; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 0 8px 0 2px; text-align: right; color: #657481; font-size: 15px; line-height: inherit; user-select: none; }
 .line-number span { min-width: 0; padding-right: 4px; }
 .line-number.selectable { border: 0; background: transparent; cursor: pointer; }
 .line-number.selectable:hover { background: var(--theme-accent-soft); color: var(--theme-text); }
 .diff-line.selected { outline: 1px solid var(--theme-accent); outline-offset: -1px; }
 .diff-line.selected .line-number { background: var(--theme-accent); color: var(--theme-chrome); }
-.line-text { flex: 1; min-width: 0; padding-right: 24px; white-space: pre-wrap; overflow-wrap: break-word; overflow-wrap: anywhere; word-break: break-word; }
+.line-text { display: block; margin-left: 86px; min-width: 0; min-height: 1.5em; padding-right: 24px; white-space: pre-wrap; overflow-wrap: break-word; overflow-wrap: anywhere; word-break: break-word; }
 .diff-line.added .word-change { background: var(--diff-added-word); border-radius: 2px; }
 .diff-line.deleted .word-change { background: var(--diff-deleted-word); border-radius: 2px; }
 .diff-line .syntax-keyword, .diff-line .syntax-boolean, .editor-code .syntax-keyword, .editor-code .syntax-boolean { color: #db9bd1; }

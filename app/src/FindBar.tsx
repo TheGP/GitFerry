@@ -8,6 +8,12 @@ export function FindBar() {
   let timer: ReturnType<typeof setTimeout> | undefined, frame = 0;
   const selected = () => matches()[index()];
   const draw = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => setRects(open() && selected() ? pageMatchRects(selected()) : [])); };
+  function reveal() {
+    revealPageMatch(selected());
+    // WebKit can focus a textarea when its match selection changes. Keep subsequent
+    // Enter presses in Find rather than sending them to the file being searched.
+    input?.focus({ preventScroll: true });
+  }
   function refresh(navigate = false) {
     clearTimeout(timer);
     if (!open()) return;
@@ -15,12 +21,12 @@ export function FindBar() {
     const kept = previous ? next.findIndex(item => item.surface.anchor === previous.surface.anchor && item.start === previous.start && item.end === previous.end) : -1;
     const nearby = next.findIndex(item => item.surface.anchor === origin && item.start >= originOffset);
     setMatches(next); setIndex(navigate ? Math.max(0, nearby) : kept >= 0 ? kept : Math.min(index(), Math.max(0, next.length - 1)));
-    if (navigate && selected()) revealPageMatch(selected());
+    if (navigate && selected()) reveal();
     draw();
   }
   function move(direction: number) {
     refresh();
-    if (matches().length) { setIndex(value => (value + direction + matches().length) % matches().length); revealPageMatch(selected()); draw(); }
+    if (matches().length) { setIndex(value => (value + direction + matches().length) % matches().length); reveal(); draw(); }
   }
   function close() {
     const match = selected();

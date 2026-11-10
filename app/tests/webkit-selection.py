@@ -3,6 +3,7 @@
 Run after installing Playwright and its WebKit browser; app packages must be installed.
 Uses demo data only, without Git writes, native editors, or MCP configuration.
 """
+import base64
 from pathlib import Path
 import subprocess
 import time
@@ -31,6 +32,86 @@ def word_point(page, selector, word):
       }
       throw new Error(`Missing text node: ${word}`);
     }""", {"selector": selector, "word": word})
+
+
+def painted_multiline_selection(page):
+    # Scope to a real rendered diff, including changed-word and syntax spans.
+    pane = page.locator(".diff-content").first
+    pane.evaluate("pane => pane.dataset.selectionProbe = ''")
+    selector = "[data-selection-probe] .line-text"
+
+    def boxes(word):
+        return page.evaluate("""({selector, word}) => {
+          const element = [...document.querySelectorAll(selector)].find(e => e.textContent.includes(word));
+          if (!element) throw new Error(`Missing selection word: ${word}`);
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const start = node.textContent.indexOf(word);
+            if (start < 0) continue;
+            const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + word.length);
+            return [...range.getClientRects()].filter(r => r.width > 0).map(r => ({x: r.x, y: r.y, width: r.width, height: r.height}));
+          }
+          throw new Error(`Missing selection text: ${word}`);
+        }""", {"selector": selector, "word": word})
+
+    for first, last, reverse in (("loading", "remoteHost", False), ("loading", "remoteHost", True), ("false", "remoteHost", False), ("remote", "RepositoryPreviewConfigurationWithRemoteTrackingEnabled", False)):
+        pane.scroll_into_view_if_needed()
+        start, end = boxes(first)[0], boxes(last)[-1]
+        points = [{"x": start["x"] + 1, "y": start["y"] + start["height"] / 2}, {"x": end["x"] + end["width"] - 1, "y": end["y"] + end["height"] / 2}]
+        if reverse:
+            points.reverse()
+        page.mouse.move(**points[0]); page.mouse.down(); page.mouse.move(**points[1], steps=12); page.mouse.up()
+        page.wait_for_timeout(120)
+        selected = page.evaluate("window.getSelection().toString()")
+        assert first in selected and last in selected, selected
+        copied = page.evaluate("""() => {
+          const clipboardData = new DataTransfer();
+          window.getSelection().anchorNode.parentElement.dispatchEvent(new ClipboardEvent("copy", {bubbles: true, cancelable: true, clipboardData}));
+          return clipboardData.getData("text/plain");
+        }""")
+        assert first in copied and last in copied, copied
+        screenshot = page.screenshot(path=f"/tmp/gitferry-webkit-multiline-{first}-{reverse}.png", scale="css")
+        # Inspect painted pixels, not only selection offsets: the WebKit bug copies
+        # the complete text while leaving the last selected row visibly unselected.
+        coverage = page.evaluate("""async ({png, rects}) => {
+          const image = new Image(); image.src = `data:image/png;base64,${png}`; await image.decode();
+          const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
+          const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
+          return rects.map(rect => {
+            const pixels = context.getImageData(Math.ceil(rect.x), Math.ceil(rect.y), Math.floor(rect.width) - 1, Math.floor(rect.height) - 1).data;
+            let blue = 0;
+            for (let i = 0; i < pixels.length; i += 4) if (pixels[i] === 54 && pixels[i + 1] === 95 && pixels[i + 2] === 137) blue++;
+            return blue / (pixels.length / 4);
+          });
+        }""", {"png": base64.b64encode(screenshot).decode(), "rects": [start, end]})
+        assert all(value > .2 for value in coverage), (first, last, reverse, coverage)
+        assert page.locator(".editor-input").count() == 0, "Dragging text must not open the editor"
+        assert page.locator(".diff-line.selected").count() == 0, "Dragging text must not select staging lines"
+    page.evaluate("window.getSelection().removeAllRanges()")
+    print("WebKit: forward/reverse multi-line copying and visible selection pixels, changed words and wrapped final lines passed")
+
+
+def repeated_find(page):
+    editor = page.locator(".editor-input")
+    before = editor.input_value()
+    page.keyboard.press("Control+f")
+    search = page.get_by_role("searchbox", name="Find in view")
+    search.fill("loading")
+    count = page.locator(".find-count")
+    total = int(count.inner_text().split(" of ")[1])
+    initial = int(count.inner_text().split(" of ")[0])
+    for direction in (1, -1):
+        for step in range(total * 2):
+            page.keyboard.press("Enter" if direction == 1 else "Shift+Enter")
+            page.wait_for_timeout(30)
+            expected = (initial - 1 + direction * (step + 1)) % total + 1
+            assert count.inner_text() == f"{expected} of {total}"
+            assert search.evaluate("input => document.activeElement === input"), "Find must retain focus on editor matches"
+            assert editor.input_value() == before, "Repeated Enter must never edit the file"
+    page.screenshot(path="/tmp/gitferry-webkit-find-repeated-enter.png")
+    page.keyboard.press("Escape")
+    assert page.locator(".find-bar").count() == 0
+    print("WebKit: repeated Enter and Shift+Enter cycle through editor and diff matches without editing")
 
 
 def short_window_dialogs(page):
@@ -101,6 +182,7 @@ def main():
                 page.goto(URL)
                 page.locator(".diff-line.added .line-text").first.wait_for()
                 short_window_dialogs(page)
+                painted_multiline_selection(page)
                 for _ in range(2):
                     point = word_point(page, ".diff-line.added .line-text", "loading")
                     page.mouse.dblclick(**point)
@@ -134,6 +216,7 @@ def main():
                     if dirty:
                         assert page.locator(".editor-tab-close.dirty").count() == 1
                 page.screenshot(path="/tmp/gitferry-webkit-editor-selection.png")
+                repeated_find(page)
                 page.locator(".editor-tab-close").click()
                 page.locator(".action-dialog-submit").click()
                 page.locator(".editor-input").wait_for(state="detached")

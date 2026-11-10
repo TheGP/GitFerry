@@ -1054,6 +1054,18 @@ async function exerciseFindInView(page) {
   assert.notEqual(await page.$eval('.find-count', item => item.textContent), before);
   await page.keyboard.down("Shift"); await page.keyboard.press("Enter"); await page.keyboard.up("Shift");
   assert.equal(await page.$eval('.find-count', item => item.textContent), before);
+  const findBuffer = await page.$eval(".editor-input", input => input.value);
+  const totalMatches = Number(before.split(" of ")[1]);
+  const initialMatch = Number(before.split(" of ")[0]);
+  for (const direction of [1, -1]) {
+    for (let step = 1; step <= totalMatches * 2; step++) {
+      await page.keyboard.press(direction === 1 ? "Enter" : "Shift+Enter");
+      const expected = ((initialMatch - 1 + direction * step) % totalMatches + totalMatches) % totalMatches + 1;
+      assert.equal(await page.$eval(".find-count", item => item.textContent), `${expected} of ${totalMatches}`);
+      assert.equal(await page.$eval(".find-bar input", input => document.activeElement === input), true, "Find must keep focus when selecting an editor match");
+      assert.equal(await page.$eval(".editor-input", input => input.value), findBuffer, "Repeated Enter must not edit the searched file");
+    }
+  }
   await page.locator('.find-bar input').fill("function findNeedleAlpha");
   assert.notEqual(await page.$eval('.find-count', item => item.textContent), "No matches", "Find spans syntax token boundaries");
   await page.locator('.find-bar input').fill("wrappedFindNeedle");
