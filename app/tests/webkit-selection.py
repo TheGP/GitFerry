@@ -52,7 +52,7 @@ def painted_multiline_selection(page):
             return [...range.getClientRects()].filter(r => r.width > 0).map(r => ({x: r.x, y: r.y, width: r.width, height: r.height}));
           }
           throw new Error(`Missing selection text: ${word}`);
-        }""", {"selector": selector, "word": word})
+        }""", {"selector": "[data-selection-probe] .diff-line.added .line-text" if word == "loading" else selector, "word": word})
 
     for first, last, reverse in (("loading", "remoteHost", False), ("loading", "remoteHost", True), ("false", "remoteHost", False), ("remote", "RepositoryPreviewConfigurationWithRemoteTrackingEnabled", False)):
         pane.scroll_into_view_if_needed()
@@ -81,7 +81,9 @@ def painted_multiline_selection(page):
           return rects.map(rect => {
             const pixels = context.getImageData(Math.ceil(rect.x), Math.ceil(rect.y), Math.floor(rect.width) - 1, Math.floor(rect.height) - 1).data;
             let blue = 0;
-            for (let i = 0; i < pixels.length; i += 4) if (pixels[i] === 54 && pixels[i + 1] === 95 && pixels[i + 2] === 137) blue++;
+            // macOS WebKit blends selection with the underlying red/green row.
+            // Count blue background pixels rather than requiring the unblended CSS RGB.
+            for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 2] > pixels[i] + 40 && pixels[i + 2] > pixels[i + 1] + 20 && pixels[i + 1] > pixels[i]) blue++;
             return blue / (pixels.length / 4);
           });
         }""", {"png": base64.b64encode(screenshot).decode(), "rects": [start, end]})
