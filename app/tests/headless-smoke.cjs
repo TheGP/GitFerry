@@ -1059,7 +1059,9 @@ async function exerciseFindInView(page) {
   const initialMatch = Number(before.split(" of ")[0]);
   for (const direction of [1, -1]) {
     for (let step = 1; step <= totalMatches * 2; step++) {
-      await page.keyboard.press(direction === 1 ? "Enter" : "Shift+Enter");
+      if (direction === -1) await page.keyboard.down("Shift");
+      await page.keyboard.press("Enter");
+      if (direction === -1) await page.keyboard.up("Shift");
       const expected = ((initialMatch - 1 + direction * step) % totalMatches + totalMatches) % totalMatches + 1;
       assert.equal(await page.$eval(".find-count", item => item.textContent), `${expected} of ${totalMatches}`);
       assert.equal(await page.$eval(".find-bar input", input => document.activeElement === input), true, "Find must keep focus when selecting an editor match");
