@@ -73,6 +73,7 @@ def painted_multiline_selection(page):
         screenshot = page.screenshot(path=f"/tmp/gitferry-webkit-multiline-{first}-{reverse}.png", scale="css")
         # Inspect painted pixels, not only selection offsets: the WebKit bug copies
         # the complete text while leaving the last selected row visibly unselected.
+        print(f"Checking selection pixels: {first} to {last}, reverse={reverse}")
         coverage = page.evaluate("""async ({png, rects}) => {
           const image = new Image(); image.src = `data:image/png;base64,${png}`; await image.decode();
           const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
@@ -181,7 +182,9 @@ def main():
             try:
                 page.goto(URL)
                 page.locator(".diff-line.added .line-text").first.wait_for()
+                print("WebKit: checking short-window dialogs")
                 short_window_dialogs(page)
+                print("WebKit: checking painted multi-line selection")
                 painted_multiline_selection(page)
                 for _ in range(2):
                     point = word_point(page, ".diff-line.added .line-text", "loading")
@@ -216,6 +219,7 @@ def main():
                     if dirty:
                         assert page.locator(".editor-tab-close.dirty").count() == 1
                 page.screenshot(path="/tmp/gitferry-webkit-editor-selection.png")
+                print("WebKit: checking repeated Find navigation")
                 repeated_find(page)
                 page.locator(".editor-tab-close").click()
                 page.locator(".action-dialog-submit").click()

@@ -90,11 +90,12 @@ jobs:
           GITFERRY_FIND_ONLY=1 node tests/headless-smoke.cjs
           GITFERRY_DIALOGS_ONLY=1 node tests/headless-smoke.cjs
       - name: Test word selection in WebKit
+        timeout-minutes: 7
         run: |
           python3 -m venv /tmp/gitferry-webkit-venv
           /tmp/gitferry-webkit-venv/bin/pip install playwright==1.56.0
           /tmp/gitferry-webkit-venv/bin/playwright install --with-deps webkit
-          /tmp/gitferry-webkit-venv/bin/python app/tests/webkit-selection.py
+          timeout 180s /tmp/gitferry-webkit-venv/bin/python -u app/tests/webkit-selection.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
