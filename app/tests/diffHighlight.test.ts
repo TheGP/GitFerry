@@ -40,6 +40,20 @@ test("keeps highlighting lines with an added suffix", () => {
   assert.equal(changedText(after).trim(), "bar(b);");
 });
 
+test("highlights inserted packages in a long Dockerfile command", () => {
+  const before = "    apt-get update && apt-get install -y tzdata gnupg x11vnc xvfb zip wget curl psmisc supervisor gconf-service python3 python3-pip libasound2 libatk1.0-0 libatk-bridge2.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgcc1 libgconf-2-4 libgdk-pixbuf2.0-0 libglib2.0-0 libgtk-3-bin libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libappindicator1 libnss3 lsb-release xdg-utils libgbm-dev nginx libcurl3-gnutls tini && \\";
+  const after = before.replace("zip wget", "zip zstd tar wget");
+  const rows = [hunk("@@ -1 +1,2 @@"), deleted(before), added(after), added("    zstd --version && tar --version && \\")];
+  const parts = highlightDiff(rows, "Dockerfile", 1800);
+  assert.equal(changedText(parts[1]), "");
+  assert.equal(changedText(parts[2]).trim(), "zstd tar");
+  assert.equal(changedText(parts[3]), "");
+  assert.equal(text(parts[2]), after);
+  const reversed = highlightDiff([deleted(after), added(before)], "Dockerfile", 1800);
+  assert.equal(changedText(reversed[0]).trim(), "zstd tar");
+  assert.equal(changedText(reversed[1]), "");
+});
+
 test("leaves unpaired lines of an uneven block unhighlighted", () => {
   const rows = [hunk("@@ -1,2 +1 @@"), deleted("const a = 1;"), deleted("const b = 2;"), added("const a = 3;")];
   const [, first, second, after] = highlightDiff(rows, "a.ts", 100);

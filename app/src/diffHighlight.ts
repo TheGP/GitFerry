@@ -48,16 +48,31 @@ function splitWords(value: string): { text: string; start: number; end: number }
 
 function changedRanges(before: string, after: string): [Range[], Range[]] {
   if (before === after) return [[], []];
-  const a = splitWords(before);
-  const b = splitWords(after);
+  if (before.length > 2400 || after.length > 2400) return [[], []];
+  let a = splitWords(before);
+  let b = splitWords(after);
+  // Long commands often change only a few words. Keep their original offsets, but
+  // exclude shared edges from the quadratic comparison and its token limit.
+  let prefix = 0, common = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix].text === b[prefix].text) {
+    common += a[prefix].text.trim().length;
+    prefix++;
+  }
+  let oldEnd = a.length, newEnd = b.length;
+  while (oldEnd > prefix && newEnd > prefix && a[oldEnd - 1].text === b[newEnd - 1].text) {
+    common += a[--oldEnd].text.trim().length;
+    newEnd--;
+  }
+  a = a.slice(prefix, oldEnd);
+  b = b.slice(prefix, newEnd);
   // Bound quadratic work for generated and minified lines.
-  if (a.length > 180 || b.length > 180 || before.length > 2400 || after.length > 2400) return [[], []];
+  if (a.length > 180 || b.length > 180) return [[], []];
   const scores = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
   for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--)
     scores[i][j] = a[i].text === b[j].text ? scores[i + 1][j + 1] + 1 : Math.max(scores[i + 1][j], scores[i][j + 1]);
   const oldRanges: Range[] = [];
   const newRanges: Range[] = [];
-  let i = 0, j = 0, common = 0;
+  let i = 0, j = 0;
   while (i < a.length || j < b.length) {
     if (i < a.length && j < b.length && a[i].text === b[j].text) { common += a[i].text.trim().length; i++; j++; }
     else if (j < b.length && (i === a.length || scores[i][j + 1] >= scores[i + 1][j])) { newRanges.push({ start: b[j].start, end: b[j++].end }); }
