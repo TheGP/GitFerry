@@ -144,7 +144,8 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       if (row) {
         // Keep the whole hunk in view when it fits, otherwise start at the double-clicked line.
         const anchor = first && row.offsetTop - first.offsetTop < scroller.clientHeight * 0.6 ? first : row;
-        scroller.scrollTop = Math.max(0, anchor.offsetTop - scroller.clientHeight / 4);
+        const context = Math.min(scroller.clientHeight / 4, Math.max(0, scroller.clientHeight - anchor.offsetHeight));
+        scroller.scrollTop = Math.max(0, anchor.offsetTop - context);
         // A requested column can wrap several screens below the beginning of a logical line.
         // Measure its position in the syntax layer, whose text offsets match the textarea.
         const code = props.target.column !== undefined ? row.querySelector(".editor-code") : null;
