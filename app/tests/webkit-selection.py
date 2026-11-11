@@ -163,6 +163,40 @@ def short_window_dialogs(page):
     print("WebKit: Settings, local/SSH repository dialog, palette and action menus fit 400/600/720px windows")
 
 
+def editor_range_navigation(browser):
+    page = browser.new_page(viewport={"width": 1100, "height": 600})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        for width in (560, 360):
+            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?width={width}")
+            editor = page.locator(".editor-input")
+            editor.wait_for()
+            content = editor.input_value()
+            for line in (246, 176, 246, 176):
+                # Repeated clicks must navigate even after scrolling away from the active range.
+                page.locator(".editor-scroll").evaluate("e => e.scrollTop = e.scrollHeight")
+                page.get_by_role("button", name=f"Lines {line}–{line + 5}", exact=True).click()
+                page.wait_for_timeout(200)
+                geometry = page.evaluate("""line => {
+                  const scroll = document.querySelector('.editor-scroll');
+                  const row = document.querySelector('.editor-rows').children[line - 1];
+                  const box = scroll.getBoundingClientRect(), code = row.getBoundingClientRect();
+                  return {top: code.top, bottom: code.bottom, viewTop: box.top, viewBottom: box.bottom, height: scroll.clientHeight};
+                }""", line)
+                assert geometry["height"] > 100 and geometry["top"] >= geometry["viewTop"] - 1 and geometry["bottom"] <= geometry["viewBottom"] + 1, (width, line, geometry)
+                assert f"Ln {line}" in page.locator(".editor-status").inner_text()
+                assert editor.input_value() == content and editor.evaluate("e => e.readOnly")
+            page.screenshot(path=f"/tmp/gitferry-webkit-range-navigation-{width}.png")
+        assert not errors, errors
+        print("WebKit: repeated AI range clicks scroll the requested code into view in wide and narrow editors")
+    except BaseException:
+        page.screenshot(path="/tmp/gitferry-webkit-range-navigation-failure.png")
+        raise
+    finally:
+        page.close()
+
+
 def main():
     server = subprocess.Popen(["node", "node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "1421", "--strictPort"], cwd=APP, stdout=subprocess.DEVNULL)
     try:
@@ -178,6 +212,7 @@ def main():
             raise RuntimeError("Selection test server did not start")
         with sync_playwright() as playwright:
             browser = playwright.webkit.launch()
+            editor_range_navigation(browser)
             page = browser.new_page(viewport={"width": 1700, "height": 1000})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
