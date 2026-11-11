@@ -3017,7 +3017,7 @@ function App() {
     };
     const paneKeys = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.altKey) return;
-      const modalOpen = Boolean(sshPrompt()) || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || Boolean(fileMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || moreMenu() || stashMenu();
+      const modalOpen = Boolean(sshPrompt()) || fileFinderOpen() || errorDetails() || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || Boolean(fileMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || moreMenu() || stashMenu();
       if (modalOpen) return;
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.code === "Digit1" || event.code === "Digit2") && repoReady()) {
         event.preventDefault(); event.stopImmediatePropagation();

@@ -1012,6 +1012,11 @@ async function exercisePaneExpansion(page, file, text) {
   await checkDraft();
   await paneShortcut("2", "Meta");
   await fillsWorkspace(".editor-pane");
+  await click(page, '.settings-button');
+  await page.waitForSelector('.settings-modal');
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$('.settings-modal'), null);
+  assert.ok(await page.$('.workspace.expanded-editor'), "Settings closes before pane expansion");
   await page.keyboard.down("Control"); await page.keyboard.press("f"); await page.keyboard.up("Control");
   await page.waitForSelector(".find-bar");
   await page.keyboard.press("Escape");
@@ -1037,6 +1042,11 @@ async function exercisePaneExpansion(page, file, text) {
   assert.equal(actionRequests.length, actionCount, "Pane shortcuts must not run Git actions");
   assert.equal(externalEditorRequests.length, externalCount);
   await page.locator(".editor-input").fill(text);
+  await paneShortcut("1");
+  await deliverFileLink(page, fileLinkUrl(file));
+  await page.waitForSelector(".workspace.expanded-editor");
+  assert.equal(await page.$eval(".editor-input", input => input.value), text, "Native links must reveal the editor even when Changes is expanded");
+  await page.keyboard.press("Escape");
   await page.setViewport(viewport);
   await page.$eval(".editor-input", (input, word) => { const start = input.value.indexOf(word); input.focus(); input.setSelectionRange(start, start + word.length); }, word);
   console.log("Pane expansion: laptop widths, both layouts, icons, Ctrl/Cmd shortcuts, Escape priority, current code, selections and unsaved buffers passed");
