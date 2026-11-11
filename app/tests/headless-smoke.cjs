@@ -105,6 +105,58 @@ async function toggleIgnoreWhitespace(page) {
   await click(page, ".settings-footer button");
 }
 
+async function exerciseKeepTestsClosed(page) {
+  assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.keepTestsClosed")), "true", "Test files should stay collapsed by default");
+  const root = makeRepo("test-expansion");
+  const tests = ["logic.test.ts", "logic.spec.ts", "logic_test.go", "test_logic.py", "tests/logic.ts", "__tests__/logic.ts"];
+  for (const file of ["logic.ts", ...tests]) {
+    fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    fs.writeFileSync(path.join(root, file), "export const value = 1;\n");
+  }
+  git(root, "add", "logic.ts", ...tests);
+  fs.renameSync(path.join(root, "new.txt"), path.join(root, "new.test.txt"));
+  const head = git(root, "rev-parse", "HEAD"), index = fs.readFileSync(path.join(root, ".git/index"));
+  const actions = actionRequests.length, external = externalEditorRequests.length;
+  await openRepo(page, root);
+  const expanded = file => page.$eval(`.summary-diff-card[data-path='${file}'] .file-row`, row => row.getAttribute("aria-expanded") === "true");
+  for (const file of [...tests, "new.test.txt"]) assert.equal(await expanded(file), false, file);
+  await click(page, "button[aria-label='Close all staged changes']");
+  await click(page, "button[aria-label='Open all staged changes']");
+  assert.equal(await expanded("logic.ts"), true);
+  for (const file of tests) assert.equal(await expanded(file), false, file);
+  await click(page, "button[aria-label='Open all untracked changes']");
+  assert.equal(await expanded("new.test.txt"), false, "A group containing only tests must also skip them");
+  await click(page, ".summary-diff-card[data-path='logic.test.ts'] .file-row");
+  assert.equal(await expanded("logic.test.ts"), true, "Tests can still be opened individually");
+  await click(page, "button[aria-label='Close all changed files']");
+  await click(page, "button[aria-label='Open all changed files']");
+  for (const file of [...tests, "new.test.txt"]) assert.equal(await expanded(file), false, file);
+  const toggleSetting = async () => {
+    await click(page, "button[title='Settings']");
+    await click(page, ".settings-body label::-p-text(Keep test files collapsed when expanding all)");
+    await click(page, ".settings-footer button");
+  };
+  await toggleSetting();
+  assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.keepTestsClosed")), "false");
+  await page.reload();
+  await page.waitForSelector(".statusbar");
+  await openRepo(page, root);
+  assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.keepTestsClosed")), "false", "An explicit opt-out must survive restart");
+  if (await expanded("new.test.txt")) await click(page, "button[aria-label='Close all untracked changes']");
+  await click(page, "button[aria-label='Open all untracked changes']");
+  assert.equal(await expanded("new.test.txt"), true, "Turning off the setting allows bulk opening tests");
+  await toggleSetting();
+  if (await page.$("button[aria-label='Close all changed files']")) await click(page, "button[aria-label='Close all changed files']");
+  await click(page, "button[aria-label='Open all changed files']");
+  for (const file of [...tests, "new.test.txt"]) assert.equal(await expanded(file), false, file);
+  assert.equal(git(root, "rev-parse", "HEAD"), head);
+  assert.deepEqual(fs.readFileSync(path.join(root, ".git/index")), index);
+  assert.equal(actionRequests.length, actions);
+  assert.equal(externalEditorRequests.length, external);
+  await mcp(page, "close_repository", { repository: root });
+  console.log("Test expansion: default on, mixed and tests-only groups, individual opening, global expansion and persistent opt-out passed");
+}
+
 function makeRepo(name, large = false) {
   const folder = path.join(sandbox, name);
   fs.mkdirSync(folder);
@@ -1711,6 +1763,11 @@ async function main() {
   await page.goto("http://127.0.0.1:1420/");
   // The app renders only after restoring saved settings, so shortcuts pressed earlier are lost.
   await page.waitForSelector(".statusbar");
+  if (process.env.GITFERRY_TEST_EXPANSION_ONLY) {
+    await exerciseKeepTestsClosed(page);
+    assert.deepEqual(pageErrors, [], "Test expansion must have no uncaught errors");
+    return;
+  }
   if (process.env.GITFERRY_DIALOGS_ONLY) {
     await require('./dialog-overflow.cjs')({ page, rebaseRepo, git, click, openRepo, screenshots, path, actionRequests });
     assert.deepEqual(pageErrors, [], 'Short-window dialogs must have no uncaught errors');
@@ -1775,6 +1832,8 @@ async function main() {
   await shortcut(page, "o");
   await page.waitForSelector(".open-modal");
   await page.keyboard.press("Escape");
+  await openRepo(page, small);
+  await exerciseKeepTestsClosed(page);
   await openRepo(page, small);
   await exerciseStatusMessages(page, small);
   if (process.env.GITFERRY_STATUS_ONLY) {
@@ -2502,7 +2561,7 @@ main().catch(async error => {
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["find-in-view", "file-links-topic", "file-links", "comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
+  for (const name of ["test-expansion", "find-in-view", "file-links-topic", "file-links", "comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

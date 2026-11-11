@@ -648,7 +648,7 @@ function App() {
     localStorage.setItem(uiFontKey, uiFont()); localStorage.setItem(codeFontKey, codeFont()); localStorage.setItem(codeSizeKey, String(codeSize()));
   });
   createEffect(() => localStorage.setItem(fullFileKey, String(fullFile())));
-  const [keepTestsClosed, setKeepTestsClosed] = createSignal(localStorage.getItem(testsClosedKey) === "true");
+  const [keepTestsClosed, setKeepTestsClosed] = createSignal(localStorage.getItem(testsClosedKey) !== "false");
   const [editorExecutable, setEditorExecutable] = createSignal(localStorage.getItem(editorExecutableKey) ?? "");
   const [showSettings, setShowSettings] = createSignal(false);
   const [actionDialog, setActionDialog] = createSignal<ActionDialog | null>(null);
@@ -1123,10 +1123,9 @@ function App() {
   };
   function toggleSummaryGroup(items: Choice[]) {
     const open = !isSummaryGroupExpanded(items);
-    const skipTests = items.some(item => !keptClosed(item));
     setSummaryDiffs(previous => {
       const next = { ...previous };
-      for (const item of items) next[summaryKey(item)] = open && skipTests && keptClosed(item) ? false : open;
+      for (const item of items) next[summaryKey(item)] = open && !keptClosed(item);
       return next;
     });
   }
