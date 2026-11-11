@@ -15,6 +15,7 @@ import { isCommitTarget, isNoteTarget, parseNotesResult, resolveNote, validateNo
 import { inAppViewport, noteVisibility } from "./noteVisibility";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
 import { FindBar } from "./FindBar";
+import { PaneExpandButton } from "./PaneExpandButton";
 import { createFileLinkQueue, filePosition, type FileLinkBatch, type ResolvedFileLink } from "./fileLinks";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
 import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection } from "./mcpNavigation";
@@ -692,6 +693,52 @@ function App() {
   });
   const [sideEditorDirty, setSideEditorDirty] = createSignal(false);
   const [sideEditorWidth, setSideEditorWidth] = createSignal(Number(localStorage.getItem("gitferry.editorWidth")) || 620);
+  const [expandedPane, setExpandedPane] = createSignal<"changes" | "editor" | null>(null);
+  type PaneScrollAnchor = { scroll: HTMLElement; row: HTMLElement; offset: number; height: number };
+  const paneScrollAnchors = new WeakMap<HTMLElement, PaneScrollAnchor>();
+  let paneScrollFrame = 0;
+  function toggleExpandedPane(pane: "changes" | "editor") {
+    if (pane === "editor" && (!sideEditor() || sideEditor()?.repo !== activePath())) return;
+    const anchors: PaneScrollAnchor[] = [];
+    for (const scroll of [detailsScroll, workspaceElement?.querySelector<HTMLElement>(".editor-scroll")]) {
+      if (!scroll) continue;
+      if (!scroll.clientHeight || !scroll.clientWidth) {
+        const saved = paneScrollAnchors.get(scroll);
+        if (saved) anchors.push(saved);
+        continue;
+      }
+      const bounds = scroll.getBoundingClientRect(), rows = scroll.querySelector(".editor-rows")?.children;
+      let row: HTMLElement | null = null;
+      if (rows?.length) {
+        // Find the first visible logical line without scanning a large file.
+        let low = 0, high = rows.length;
+        while (low < high) {
+          const middle = (low + high) >>> 1;
+          if (rows[middle].getBoundingClientRect().bottom <= bounds.top) low = middle + 1; else high = middle;
+        }
+        row = rows[Math.min(low, rows.length - 1)] as HTMLElement;
+      } else {
+        const hit = document.elementFromPoint(bounds.left + Math.min(120, bounds.width / 2), bounds.top + 8);
+        if (hit instanceof HTMLElement && scroll.contains(hit) && hit !== scroll) row = hit.closest<HTMLElement>(".diff-line, .summary-diff-card") ?? hit;
+      }
+      if (row) {
+        const box = row.getBoundingClientRect(), anchor = { scroll, row, offset: box.top - bounds.top, height: box.height };
+        paneScrollAnchors.set(scroll, anchor); anchors.push(anchor);
+      }
+    }
+    setExpandedPane(current => current === pane ? null : pane);
+    cancelAnimationFrame(paneScrollFrame);
+    paneScrollFrame = requestAnimationFrame(() => {
+      for (const { scroll, row, offset, height } of anchors) {
+        if (!row.isConnected || !scroll.clientHeight) continue;
+        const box = row.getBoundingClientRect();
+        scroll.scrollTop += box.top - scroll.getBoundingClientRect().top - (offset < 0 && height ? offset * box.height / height : offset);
+      }
+    });
+  }
+  function revealChangesPane() {
+    if (expandedPane() === "editor") setExpandedPane("changes");
+  }
   let sideEditorNonce = 0;
   // Opening the editor widens the window by the editor's width, so the rest of the layout keeps its size; closing it narrows the window back.
   // While the window resizes, the workspace is pinned to its final width (the window clips the overflow), so the
@@ -700,10 +747,12 @@ function App() {
   let workspaceElement: HTMLElement | undefined;
   async function showSideEditor(target: EditorTarget) {
     if (removingWorktree()) return;
-    if (sideEditor()) { setSideEditor(target); return; }
+    const expandEditor = expandedPane() !== null;
+    if (sideEditor()) { setSideEditor(target); if (expandEditor) setExpandedPane("editor"); return; }
     const extra = sideEditorWidth() + 1;
     setWorkspaceLock((workspaceElement?.clientWidth ?? window.innerWidth) + extra);
     setSideEditor(target);
+    if (expandEditor) setExpandedPane("editor");
     await growWindow(extra);
     setWorkspaceLock(null);
   }
@@ -872,6 +921,10 @@ function App() {
   let commitScroll!: HTMLDivElement;
   let detailsScroll!: HTMLDivElement;
   const repo = createMemo(() => tabs().find(item => item.path === activePath()) ?? null);
+  createEffect(() => {
+    if (!repo()) setExpandedPane(null);
+    else if (expandedPane() === "editor" && sideEditor()?.repo !== activePath()) setExpandedPane("changes");
+  });
   const groupedTabs = createMemo(() => repositoryTabs(tabs(), activePath(), worktreeSelection()));
   const selectedWorktrees = createMemo(() => repo() ? availableWorktrees(repo()!, tabs(), worktreeOrder()[worktreeGroupKey(repo()!)] ?? []) : []);
   const repositoryActive = (item: Repo) => Boolean(repo() && worktreeGroupKey(item) === worktreeGroupKey(repo()!));
@@ -1137,6 +1190,9 @@ function App() {
     if (repoReady()) {
       commands.push(
         { label: "Browse tracked files", run: openFileFinder },
+        { label: "Expand Changes pane", run: () => { if (expandedPane() !== "changes") toggleExpandedPane("changes"); } },
+        ...(sideEditor()?.repo === activePath() ? [{ label: "Expand editor pane", run: () => { if (expandedPane() !== "editor") toggleExpandedPane("editor"); } }] : []),
+        ...(expandedPane() ? [{ label: "Restore pane layout", run: () => { const pane = expandedPane(); if (pane) toggleExpandedPane(pane); } }] : []),
         { label: "Stage all files", run: () => { void runAction({ kind: "stage_all" }); } },
         { label: "Fetch all remotes", run: () => { void runAction({ kind: "fetch" }); } },
         { label: "Pull fast-forward", run: () => { void runAction({ kind: "pull" }); } },
@@ -1162,7 +1218,7 @@ function App() {
     const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
     buttons[(index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length].focus();
   }
-  createEffect(() => { if (repo() && commitScroll) setViewportHeight(commitScroll.clientHeight); });
+  createEffect(() => { expandedPane(); if (repo() && commitScroll) requestAnimationFrame(() => setViewportHeight(commitScroll.clientHeight)); });
   createEffect(() => {
     const path = activePath();
     if (!path || !repoReady() || !isTauri() || demoMode) return;
@@ -1192,7 +1248,7 @@ function App() {
     fileInfoRequest++;
     setFileView("diff"); setFileHistory(null); setFileBlame(null); setFileInfoLoading(false); setFileInfoError("");
   }
-  function selectWorking() { navigationArea = "commits"; request++; resetFileInfo(); setSelected("working"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
+  function selectWorking() { revealChangesPane(); navigationArea = "commits"; request++; resetFileInfo(); setSelected("working"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
   createEffect(() => {
     const message = notice();
     if (!message) return;
@@ -1601,6 +1657,7 @@ function App() {
   }
   const commitPermissionVersion = () => JSON.stringify([repo()?.head, repo()?.branch, repo()?.refsHash, repo()?.operation]);
   async function selectCommit(hash: string) {
+    revealChangesPane();
     const path = activePath();
     if (!path) return;
     navigationArea = "commits";
@@ -1635,6 +1692,7 @@ function App() {
     }).catch(() => {}); // Ref changes can remove a commit; its cached contents remain readable.
   }, { defer: true }));
   async function selectFile(item: Choice, restoreScroll?: number) {
+    revealChangesPane();
     const path = activePath();
     if (!path) return;
     navigationArea = "files";
@@ -2947,7 +3005,8 @@ function App() {
         return;
       }
       if (modalOpen || editable || event.altKey || event.shiftKey || !repoReady()) return;
-      const area = target?.closest(".details-pane") ? "files" : target?.closest(".commits-pane") ? "commits" : navigationArea;
+      if (expandedPane() === "editor") return;
+      const area = expandedPane() === "changes" || target?.closest(".details-pane") ? "files" : target?.closest(".commits-pane") ? "commits" : navigationArea;
       if (event.key === "ArrowRight" && area === "commits" && navigationFiles().length) { event.preventDefault(); moveFile(1); return; }
       if (event.key === "ArrowLeft" && area === "files") { event.preventDefault(); navigationArea = "commits"; revealCommit(selected() === "working" ? -1 : displayedCommits().findIndex(item => item.hash === selected())); return; }
       if (event.key === "Enter" && area === "files" && !target?.closest("button:not(.file-row)")) { event.preventDefault(); expandKeyboardFile(); return; }
@@ -2956,10 +3015,25 @@ function App() {
       event.preventDefault();
       if (area === "files") moveFile(direction); else void moveCommit(direction);
     };
+    const paneKeys = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey) return;
+      const modalOpen = Boolean(sshPrompt()) || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || Boolean(fileMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || moreMenu() || stashMenu();
+      if (modalOpen) return;
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.code === "Digit1" || event.code === "Digit2") && repoReady()) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        if (!event.repeat) toggleExpandedPane(event.code === "Digit1" ? "changes" : "editor");
+      } else if (event.key === "Escape" && expandedPane() && !document.querySelector(".find-bar")) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        const pane = expandedPane();
+        if (pane) toggleExpandedPane(pane);
+      }
+    };
+    window.addEventListener("keydown", paneKeys, true);
+    onCleanup(() => cancelAnimationFrame(paneScrollFrame));
     window.addEventListener("focus", focus); window.addEventListener("keydown", keys); document.addEventListener("visibilitychange", visibility);
     const resize = () => { if (commitScroll) setViewportHeight(commitScroll.clientHeight); requestAnimationFrame(updateTabScroll); };
     window.addEventListener("resize", resize);
-    onCleanup(() => { unlistenMcp?.(); unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize", resize); });
+    onCleanup(() => { unlistenMcp?.(); unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); window.removeEventListener("keydown", paneKeys, true); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize", resize); });
   });
 
   return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); if (!event.target.closest(".file-action-popover")) setFileMenu(null); if (!event.target.closest(".worktree-action-popover")) setWorktreeMenu(null); } }}>
@@ -3015,7 +3089,7 @@ function App() {
       <Show when={menu().ref.kind === "remote" && !menu().ref.name.endsWith("/HEAD")}><button class="danger" disabled={actionBusy()} onClick={() => { const target = remoteBranch(menu().ref); setRefMenu(null); if (target) void runAction({ kind: "delete_remote_branch", value: target }, `Delete branch ${target.branch} from ${target.remote}?`); }}>Delete remote branch</button></Show>
       <Show when={menu().ref.kind === "tag"}><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push tag to remote…</button><button disabled={actionBusy()} onClick={() => { const name = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_tag", value: { name } }, `Delete local tag ${name}?`); }}>Delete local tag</button><button class="danger" disabled={actionBusy()} onClick={() => deleteRemoteTag(menu().ref.name)}>Delete remote tag…</button></Show>
     </div>}</Show>
-    <main class={`workspace ${repoReady() && bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditor() ? "with-editor" : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
+    <main class={`workspace ${repoReady() && bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditor() ? "with-editor" : ""} ${repoReady() && expandedPane() ? `pane-expanded expanded-${expandedPane()}` : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
     <Show when={repo()} fallback={<main class="welcome">
       <div class="welcome-symbol">◇</div><div class="eyebrow">YOUR REPOSITORIES, ALL IN ONE PLACE</div>
       <h1>Git, wherever it lives.</h1><p>Open a local repository to browse its history, changes, and diffs.</p>
@@ -3052,7 +3126,7 @@ function App() {
             <Show when={!displayedCommits().length}><div class="empty-note">{searchBusy() ? "Searching…" : searchQuery() ? "No matching commits" : "No commits yet"}</div></Show>
           </div>
         </section><div class="splitter commits-splitter" onPointerDown={event => startResize(bottomLayout() ? "history" : "commits", event)} />
-        <section class={`details-pane ${wrapDiffLines() ? "wrap-diff-lines" : ""}`} onContextMenu={openFileMenu} onPointerDown={() => { navigationArea = "files"; }}><div class="details-tabs"><button class={`details-tab ${!choice() ? "active" : ""}`} onClick={() => { if (choice()) setParkedFile(choice()); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><Show when={choice() ?? parkedFile()}>{file => <div class={`details-tab file-tab ${choice() ? "active" : ""}`} title={file().path}><button class="details-tab-label" onClick={() => { if (!choice()) void selectFile(file()); }}>{file().path.split("/").pop()?.split("\\").pop()}</button><button class="details-tab-close" title="Close file" aria-label={`Close ${file().path}`} onClick={closeFileTab}><Icon name="close" /></button></div>}</Show></div><Show when={!choice() || fileView() === "diff"}><div class="diff-controls"><label class="diff-wrap-toggle" title="Wrap long diff lines; turn off to scroll horizontally"><input type="checkbox" aria-label="Wrap diff lines" checked={wrapDiffLines()} onChange={event => setWrapDiffLines(event.currentTarget.checked)} />Wrap lines</label></div></Show>
+        <section class={`details-pane ${wrapDiffLines() ? "wrap-diff-lines" : ""}`} onContextMenu={openFileMenu} onPointerDown={() => { navigationArea = "files"; }}><div class="details-tabs"><button class={`details-tab ${!choice() ? "active" : ""}`} onClick={() => { if (choice()) setParkedFile(choice()); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><Show when={choice() ?? parkedFile()}>{file => <div class={`details-tab file-tab ${choice() ? "active" : ""}`} title={file().path}><button class="details-tab-label" onClick={() => { if (!choice()) void selectFile(file()); }}>{file().path.split("/").pop()?.split("\\").pop()}</button><button class="details-tab-close" title="Close file" aria-label={`Close ${file().path}`} onClick={closeFileTab}><Icon name="close" /></button></div>}</Show><PaneExpandButton pane="Changes" expanded={expandedPane() === "changes"} onToggle={() => toggleExpandedPane("changes")} /></div><Show when={!choice() || fileView() === "diff"}><div class="diff-controls"><label class="diff-wrap-toggle" title="Wrap long diff lines; turn off to scroll horizontally"><input type="checkbox" aria-label="Wrap diff lines" checked={wrapDiffLines()} onChange={event => setWrapDiffLines(event.currentTarget.checked)} />Wrap lines</label></div></Show>
           <div class="details-scroll" ref={detailsScroll} tabIndex={0} aria-label="Changed files" onScroll={scheduleDetailsSave}>
             <Show when={selected() === "compare" && !choice() && comparison()}>{current => <div class="detail-header"><dl class="commit-facts">
                 <dt>Comparing</dt><dd>{current().head} <span class="compare-vs">since it left</span> {current().base}</dd>
@@ -3107,7 +3181,7 @@ ${details()!.body.trimEnd()}` : ""}</pre><Show when={details()!.canEditMessage &
         </section>
       </Show>
     </Show>
-        <Show when={sideEditor()}>{target => <FileEditor target={target()} externalEditorLabel={editorOptions.find(option => option.id === editor())?.label ?? "editor"} onOpenExternal={openEditorFile} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} externalEditorLabel={editorOptions.find(option => option.id === editor())?.label ?? "editor"} onOpenExternal={openEditorFile} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} expanded={expandedPane() === "editor"} onToggleExpand={() => toggleExpandedPane("editor")} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
     </main>
     <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? actionMessage() : repo()?.loading ? `Opening ${repo()?.name}…` : searchBusy() ? "Searching commits…" : busy() ? loadingStatus() : repo()?.loadError ? "Repository unavailable" : "Ready"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
     <Show when={actionDialog()}>{current => <div class="modal-backdrop" onClick={() => setActionDialog(null)}><div class="action-dialog" role="dialog" aria-modal="true" aria-label={current().title} onClick={event => event.stopPropagation()}>

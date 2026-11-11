@@ -971,6 +971,77 @@ function makeFileLinkFixture() {
   git(root, "worktree", "add", "-b", "topic", linked);
   return { root, clean, content, nested, linked };
 }
+async function exercisePaneExpansion(page, file, text) {
+  const viewport = page.viewport();
+  const actionCount = actionRequests.length, externalCount = externalEditorRequests.length;
+  const width = await page.$eval(".editor-pane", pane => pane.style.width);
+  const bottom = await page.$eval(".workspace", pane => pane.classList.contains("alt"));
+  await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
+  const draft = text + "\n" + Array.from({ length: 100 }, (_, i) => `// unsaved filler ${i}`).join("\n");
+  await page.locator(".editor-input").fill(draft);
+  const word = "findNeedleAlpha", start = draft.lastIndexOf(word);
+  const line = draft.slice(0, start).split("\n").length;
+  await page.$eval(".editor-input", (input, { start, word }) => { input.focus(); input.setSelectionRange(start, start + word.length); window.__expandedEditor = input; }, { start, word });
+  await page.$eval(`.editor-row:nth-child(${line})`, row => row.scrollIntoView({ block: "center" }));
+  const checkDraft = async () => {
+    assert.equal(await page.$eval(".editor-input", input => input === window.__expandedEditor), true, "Expansion must retain the editor instance");
+    assert.equal(await page.$eval(".editor-input", input => input.value), draft);
+    assert.equal(await page.$eval(".editor-input", input => input.value.slice(input.selectionStart, input.selectionEnd)), word);
+    assert.ok(await page.$(".editor-tab-close.dirty"));
+  };
+  const fillsWorkspace = async selector => {
+    assert.ok(await page.$eval(selector, pane => {
+      const box = pane.getBoundingClientRect(), root = document.querySelector(".workspace").getBoundingClientRect();
+      return Math.abs(box.x - root.x) <= 1 && Math.abs(box.y - root.y) <= 1 && Math.abs(box.width - root.width) <= 1 && Math.abs(box.height - root.height) <= 1;
+    }), `${selector} must fill the app workspace`);
+  };
+  const paneShortcut = async (number, modifier = "Control") => {
+    await page.keyboard.down(modifier); await page.keyboard.down("Shift");
+    await page.keyboard.press(number);
+    await page.keyboard.up("Shift"); await page.keyboard.up(modifier);
+  };
+  await click(page, '.editor-pane button[aria-label="Expand editor pane"]');
+  await page.waitForSelector(".workspace.expanded-editor");
+  await fillsWorkspace(".editor-pane"); await checkDraft();
+  assert.ok(await page.$eval(`.editor-row:nth-child(${line})`, row => {
+    const r = row.getBoundingClientRect(), view = row.closest(".editor-scroll").getBoundingClientRect();
+    return r.top >= view.top && r.bottom <= view.bottom;
+  }), "Expanding must keep the current code in view");
+  await paneShortcut("2");
+  assert.equal(await page.$(".workspace.pane-expanded"), null);
+  await checkDraft();
+  await paneShortcut("2", "Meta");
+  await fillsWorkspace(".editor-pane");
+  await page.keyboard.down("Control"); await page.keyboard.press("f"); await page.keyboard.up("Control");
+  await page.waitForSelector(".find-bar");
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$(".find-bar"), null);
+  assert.ok(await page.$(".workspace.expanded-editor"), "Find closes before pane expansion");
+  await page.keyboard.press("Escape");
+  assert.equal(await page.$(".workspace.pane-expanded"), null);
+  await checkDraft();
+  await paneShortcut("1");
+  await fillsWorkspace(".details-pane");
+  assert.equal(await page.$eval(".editor-pane", pane => pane.getClientRects().length), 0);
+  await checkDraft();
+  await click(page, ".layout-toggle");
+  await fillsWorkspace(".details-pane");
+  await click(page, ".layout-toggle");
+  assert.equal(await page.$eval(".workspace", pane => pane.classList.contains("alt")), bottom);
+  await page.screenshot({ path: path.join(screenshots, "expanded-changes.png") });
+  await click(page, 'button[aria-label="Restore Changes pane"]');
+  assert.equal(await page.$(".workspace.pane-expanded"), null);
+  assert.equal(await page.$eval(".editor-pane", pane => pane.style.width), width);
+  await checkDraft();
+  assert.equal(fs.readFileSync(file, "utf8"), text, "Pane expansion must not save the editor");
+  assert.equal(actionRequests.length, actionCount, "Pane shortcuts must not run Git actions");
+  assert.equal(externalEditorRequests.length, externalCount);
+  await page.locator(".editor-input").fill(text);
+  await page.setViewport(viewport);
+  await page.$eval(".editor-input", (input, word) => { const start = input.value.indexOf(word); input.focus(); input.setSelectionRange(start, start + word.length); }, word);
+  console.log("Pane expansion: laptop widths, both layouts, icons, Ctrl/Cmd shortcuts, Escape priority, current code, selections and unsaved buffers passed");
+}
+
 async function exerciseFindInView(page) {
   const root = makeRepo("find-in-view"), file = path.join(root, "search.ts");
   fs.writeFileSync(file, "export function previousName() {}\n");
@@ -1045,6 +1116,7 @@ async function exerciseFindInView(page) {
   const unsupportedColors = await page.addStyleTag({ content: fs.readFileSync(path.join(project, "app/src/fileEditor.css"), "utf8").replace(/color-mix\(/g, "unsupported-color-mix(") });
   assert.notEqual(await page.$eval(".editor-input", input => getComputedStyle(input, "::selection").backgroundColor), "rgba(0, 0, 0, 0)", "Selection must stay visible when color-mix is unsupported");
   await unsupportedColors.evaluate(style => style.remove());
+  await exercisePaneExpansion(page, file, text);
   await page.keyboard.down("Control"); await page.keyboard.press("f"); await page.keyboard.up("Control");
   await page.waitForSelector('.find-bar input');
   assert.equal(await page.$eval('.find-bar input', input => input.value), "findNeedleAlpha", "Find starts with the selected word");

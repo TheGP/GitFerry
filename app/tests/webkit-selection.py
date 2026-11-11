@@ -221,6 +221,49 @@ def editor_range_navigation(browser):
         page.close()
 
 
+def pane_expansion(page):
+    editor = page.locator(".editor-input")
+    content = editor.input_value()
+    page.set_viewport_size({"width": 1100, "height": 700})
+    editor.focus()
+    editor.evaluate("e => { window.__expandedEditor = e; const start = e.value.indexOf('loading'); e.setSelectionRange(start, start + 7); }")
+    selection = editor.evaluate("e => [e.selectionStart, e.selectionEnd]")
+    def check_editor():
+        assert editor.evaluate("e => e === window.__expandedEditor")
+        assert editor.input_value() == content
+        assert editor.evaluate("e => [e.selectionStart, e.selectionEnd]") == selection
+        assert page.locator(".editor-tab-close.dirty").count() == 1
+    def fills_workspace(selector):
+        assert page.locator(selector).evaluate("""pane => {
+          const r=pane.getBoundingClientRect(),w=document.querySelector('.workspace').getBoundingClientRect();
+          return Math.abs(r.x-w.x)<=1 && Math.abs(r.y-w.y)<=1 && Math.abs(r.width-w.width)<=1 && Math.abs(r.height-w.height)<=1;
+        }""")
+    page.get_by_role("button", name="Expand editor pane", exact=True).click()
+    fills_workspace(".editor-pane"); check_editor()
+    page.keyboard.press("Control+Shift+2")
+    assert page.locator(".workspace.pane-expanded").count() == 0
+    check_editor()
+    page.keyboard.press("Meta+Shift+2")
+    fills_workspace(".editor-pane"); check_editor()
+    page.keyboard.press("Control+f")
+    page.locator(".find-bar").wait_for()
+    page.keyboard.press("Escape")
+    assert page.locator(".find-bar").count() == 0
+    assert page.locator(".workspace.expanded-editor").count() == 1
+    page.keyboard.press("Escape")
+    assert page.locator(".workspace.pane-expanded").count() == 0
+    page.keyboard.press("Control+Shift+1")
+    fills_workspace(".details-pane"); check_editor()
+    page.screenshot(path="/tmp/gitferry-webkit-expanded-changes.png")
+    page.get_by_role("button", name="Restore Changes pane", exact=True).click()
+    assert page.locator(".workspace.pane-expanded").count() == 0
+    page.keyboard.press("Control+Shift+2")
+    page.screenshot(path="/tmp/gitferry-webkit-expanded-editor.png")
+    page.keyboard.press("Escape")
+    page.set_viewport_size({"width": 1600, "height": 1000})
+    print("WebKit: in-app pane expansion, laptop widths, Ctrl/Cmd shortcuts, Find/Escape priority and unsaved selections passed")
+
+
 def main():
     server = subprocess.Popen(["node", "node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", "1421", "--strictPort"], cwd=APP, stdout=subprocess.DEVNULL)
     try:
@@ -282,6 +325,7 @@ def main():
                 page.screenshot(path="/tmp/gitferry-webkit-editor-selection.png")
                 print("WebKit: checking repeated Find navigation")
                 repeated_find(page)
+                pane_expansion(page)
                 page.locator(".editor-tab-close").click()
                 page.locator(".action-dialog-submit").click()
                 page.locator(".editor-input").wait_for(state="detached")

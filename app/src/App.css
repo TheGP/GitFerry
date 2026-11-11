@@ -871,3 +871,15 @@ button.row-action.armed, button.row-action.armed:hover:not(:disabled), .line-sel
 
 /* Scroll long forms without compressing controls or hiding their close/confirm buttons. */
 .settings-body > *, .action-dialog-body > *, .branch-menu > :not(.branch-menu-list) { flex-shrink: 0; }
+
+/* Expand a pane inside the app without recreating editors or changing saved pane widths. */
+.workspace.pane-expanded { display: flex; width: 100% !important; }
+.workspace.pane-expanded > .locations, .workspace.pane-expanded > .commits-pane,
+.workspace.pane-expanded > .splitter { display: none; }
+.workspace.expanded-changes > .editor-pane, .workspace.expanded-editor > .details-pane { display: none; }
+.workspace.expanded-editor > .editor-pane { width: 100% !important; flex: 1; }
+.pane-expand { display: grid; place-items: center; flex: none; align-self: center; width: 28px; height: 28px; padding: 5px; border: 0; border-radius: 3px; background: transparent; color: var(--theme-secondary); }
+.pane-expand svg { width: 16px; height: 16px; }
+.pane-expand:hover { background: var(--theme-hover); color: var(--theme-text); }
+.pane-expand:focus-visible { outline: 1px solid var(--theme-accent); outline-offset: -1px; }
+.details-tabs > .pane-expand { margin-left: auto; margin-right: 6px; }
