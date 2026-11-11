@@ -23,9 +23,13 @@
     { startLine: 176, endLine: 181, comment: "Read metadata files together instead of reading every file one by one." },
     { startLine: 246, endLine: 251, comment: "Queue work within this process so sessions do not keep trying the same lock." },
   ];
-  const width = Number(new URLSearchParams(location.search).get("width")) || 560;
+  const options = new URLSearchParams(location.search);
+  const width = Number(options.get("width")) || 560;
+  const size = Number(options.get("size")) || 13;
+  document.documentElement.style.setProperty("--code-size", `${size}px`);
+  document.documentElement.style.setProperty("--code-line-height", `${Math.ceil(size * 1.5)}px`);
   render(() => createComponent(FileEditor, {
-    target: { repo: "/navigation-fixture", path: "example.ts", line: 176, marks: null, nonce: 1, readOnly: true, annotation: { ...ranges[0], ranges } },
+    target: { repo: "/navigation-fixture", path: "example.ts", line: 176, marks: null, nonce: 1, readOnly: !options.has("editable"), annotation: { ...ranges[0], ranges } },
     active: true, conflicted: false, width, externalEditorLabel: "VS Code",
     load: async () => content,
     save: async () => { throw new Error("Navigation must never save a file"); },

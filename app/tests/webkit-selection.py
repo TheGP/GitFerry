@@ -168,15 +168,19 @@ def editor_range_navigation(browser):
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
-        for width in (560, 360):
-            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?width={width}")
+        for width, size, editable in ((560, 13, False), (360, 13, False), (560, 15, True), (360, 15, True), (360, 24, False)):
+            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?width={width}&size={size}{'&editable' if editable else ''}")
             editor = page.locator(".editor-input")
             editor.wait_for()
             content = editor.input_value()
+            if editable:
+                editor.fill(content + "\n// unsaved navigation probe")
+                content = editor.input_value()
             for line in (246, 176, 246, 176):
                 # Repeated clicks must navigate even after scrolling away from the active range.
                 page.locator(".editor-scroll").evaluate("e => e.scrollTop = e.scrollHeight")
                 button = page.get_by_role("button", name=f"Lines {line}–{line + 5}", exact=True)
+                selection = editor.evaluate("e => [e.selectionStart, e.selectionEnd]")
                 button.click()
                 page.wait_for_timeout(200)
                 geometry = page.evaluate("""line => {
@@ -186,9 +190,9 @@ def editor_range_navigation(browser):
                   return {top: code.top, bottom: code.bottom, viewTop: box.top, viewBottom: box.bottom, height: scroll.clientHeight};
                 }""", line)
                 assert geometry["height"] > 100 and geometry["top"] >= geometry["viewTop"] - 1 and geometry["bottom"] <= geometry["viewBottom"] + 1, (width, line, geometry)
-                assert button.evaluate("button => document.activeElement === button"), "Range navigation must not focus the textarea and replace its selection"
+                assert editor.evaluate("e => [e.selectionStart, e.selectionEnd]") == selection, "Range navigation must not replace the existing code selection"
                 assert f"Ln {line}" in page.locator(".editor-status").inner_text()
-                assert editor.input_value() == content and editor.evaluate("e => e.readOnly")
+                assert editor.input_value() == content and editor.evaluate("e => e.readOnly") == (not editable)
             # Keyboard activation must keep focus on the range, too.
             button = page.get_by_role("button", name="Lines 246–251", exact=True)
             button.focus()
@@ -197,7 +201,17 @@ def editor_range_navigation(browser):
             assert button.evaluate("button => document.activeElement === button")
             assert "Ln 246" in page.locator(".editor-status").inner_text()
             assert editor.input_value() == content
-            page.screenshot(path=f"/tmp/gitferry-webkit-range-navigation-{width}.png")
+            for line, word in ((178, "return"), (246, "value246")):
+                page.locator(f".editor-row:nth-child({line})").evaluate("row => row.scrollIntoView({block: 'center'})")
+                point = word_point(page, f".editor-row:nth-child({line}) .editor-code", word)
+                page.mouse.dblclick(**point)
+                page.wait_for_timeout(150)
+                selected = editor.evaluate("e => e.value.slice(e.selectionStart, e.selectionEnd)")
+                assert selected == word, (width, size, line, word, selected)
+                assert editor.input_value() == content
+            if editable:
+                assert page.locator(".editor-tab-close.dirty").count() == 1
+            page.screenshot(path=f"/tmp/gitferry-webkit-range-navigation-{width}-{size}.png")
         assert not errors, errors
         print("WebKit: repeated AI range clicks scroll the requested code into view in wide and narrow editors")
     except BaseException:

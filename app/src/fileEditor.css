@@ -30,8 +30,8 @@
 
 .editor-scroll { flex: 1; min-height: 0; overflow: auto; }
 /* The highlighted rows and the transparent textarea on top share font, width, padding and wrapping, so the caret lands on the colored text. */
-.editor-body { position: relative; padding: 6px 0 35vh; font-family: var(--code-font); font-size: var(--code-size); line-height: 1.5; }
-.editor-row { position: relative; min-height: 1.5em; display: grid; grid-template-columns: var(--editor-gutter) minmax(0, 1fr); }
+.editor-body { position: relative; padding: 6px 0 35vh; font-family: var(--code-font); font-size: var(--code-size); line-height: var(--code-line-height, 20px); }
+.editor-row { position: relative; min-height: var(--code-line-height, 20px); display: grid; grid-template-columns: var(--editor-gutter) minmax(0, 1fr); }
 .editor-line-number { padding-right: 1.5ch; color: var(--theme-muted); text-align: right; user-select: none; }
 .editor-code, .editor-input { padding: 0 16px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; tab-size: 4; }
 .editor-code { min-width: 0; color: var(--theme-text); }

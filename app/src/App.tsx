@@ -640,7 +640,10 @@ function App() {
     const root = document.documentElement.style;
     root.setProperty("--ui-font", fontStack(uiFont(), uiFontFallback));
     root.setProperty("--code-font", fontStack(codeFont(), codeFontFallback));
-    root.setProperty("--code-size", `${Math.min(24, Math.max(9, codeSize()))}px`);
+    const size = Math.min(24, Math.max(9, codeSize()));
+    root.setProperty("--code-size", `${size}px`);
+    // Older WebKit rounds textarea line heights differently from grid rows.
+    root.setProperty("--code-line-height", `${Math.ceil(size * 1.5)}px`);
     localStorage.setItem(uiFontKey, uiFont()); localStorage.setItem(codeFontKey, codeFont()); localStorage.setItem(codeSizeKey, String(codeSize()));
   });
   createEffect(() => localStorage.setItem(fullFileKey, String(fullFile())));
