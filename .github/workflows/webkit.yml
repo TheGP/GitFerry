@@ -30,6 +30,17 @@ jobs:
           python3 -m venv /tmp/gitferry-webkit-venv
           /tmp/gitferry-webkit-venv/bin/pip install playwright==1.56.0
           /tmp/gitferry-webkit-venv/bin/playwright install webkit
+      - name: Bundle native WebKit verification fixture
+        working-directory: app
+        run: >-
+          node --input-type=module -e 'import { build } from "vite";
+          await build({ base: "/", build: { target: "safari15", outDir: "/tmp/gitferry-editor-fixture", emptyOutDir: true,
+          rollupOptions: { input: "tests/editor-navigation.html" } } });'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: editor-navigation-fixture
+          path: /tmp/gitferry-editor-fixture
+          if-no-files-found: error
       - name: Test selection painting and Find focus
         timeout-minutes: 3
         run: /tmp/gitferry-webkit-venv/bin/python -u app/tests/webkit-selection.py

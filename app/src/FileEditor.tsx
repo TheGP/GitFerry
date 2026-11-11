@@ -124,7 +124,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     finally { if (id === loadId) setLoading(false); }
   }
   // Scrolls the target line to the upper third, puts the caret at its start and highlights the hunk.
-  function reveal(requestedLine = props.target.line) {
+  function reveal(requestedLine = props.target.line, focus = props.target.focus !== false) {
     const text = doc()?.text;
     if (text === undefined) return;
     // Line 0 asks for the first conflict (or the top of the file).
@@ -172,7 +172,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       }
       // WebKit can replace the page selection even when setSelectionRange targets an
       // unfocused textarea. Defer that native caret change until the user enters the editor.
-      if (props.target.focus === false) pendingCaret = offset;
+      if (!focus) pendingCaret = offset;
       else {
         pendingCaret = null;
         input.focus({ preventScroll: true });
@@ -304,7 +304,7 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
         <div class="editor-tabs-actions"><Show when={shown() && !readOnly() && conflicts().length}><button class="editor-conflict-count" title="Go to the next conflict" onClick={nextConflict}>{conflicts().length} conflict{conflicts().length === 1 ? "" : "s"}</button></Show><Show when={shown() && props.conflicted && !readOnly()}><button class="editor-mark-resolved" disabled={saving()} title="Save and stage the file as resolved" onClick={() => void markResolved()}>Mark resolved</button></Show><Show when={shown()}><button class="editor-open-external" disabled={!doc() || saving() || openingExternal()} aria-label={`Open ${fileName()} in ${props.externalEditorLabel}`} title={`Open working-tree file in ${props.externalEditorLabel} at line ${caretLine() + 1}${dirty() ? ". Unsaved edits stay in GitFerry." : ""}`} onClick={() => void openExternal()}>{openingExternal() ? "Opening…" : "Open in editor"}</button><Show when={readOnly()} fallback={<button class="editor-save" disabled={!dirty() || saving()} title="Save (Ctrl+S)" onClick={() => void save()}>{saving() ? "Saving…" : "Save"}</button>}><span class="editor-commit" title={`As of ${props.target.commit ?? "working tree"}`}>{revisionLabel()} · read-only</span></Show></Show></div></div>
       <Show when={!shown()}><div class="editor-empty">Double-click code in a diff to open its file here.<Show when={dirty() && props.target.path}><span class="editor-empty-dirty">Unsaved edits to {fileName()} in another repository tab.</span></Show></div></Show>
       <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
-      <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · {annotationRanges().length > 1 ? `${annotationRanges().length} ranges` : `Lines ${annotation().startLine}${annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}`}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show><Show when={annotation().ranges}><For each={annotation().ranges}>{range => <div class="editor-annotation-range"><button title="Go to highlighted lines" onClick={() => reveal(range.startLine)}>Lines {range.startLine}{(range.endLine ?? range.startLine) !== range.startLine ? `–${range.endLine}` : ""}</button><Show when={range.comment}><p>{range.comment}</p></Show></div>}</For></Show></section>}</Show>
+      <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · {annotationRanges().length > 1 ? `${annotationRanges().length} ranges` : `Lines ${annotation().startLine}${annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}`}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show><Show when={annotation().ranges}><For each={annotation().ranges}>{range => <div class="editor-annotation-range"><button title="Go to highlighted lines" onClick={() => reveal(range.startLine, false)}>Lines {range.startLine}{(range.endLine ?? range.startLine) !== range.startLine ? `–${range.endLine}` : ""}</button><Show when={range.comment}><p>{range.comment}</p></Show></div>}</For></Show></section>}</Show>
       <Show when={shown() && error()}>{message => <div class="editor-error" title={message()}>{describeError(message()).summary}<Show when={describeError(message()).help}>{help => <p>{help()}</p>}</Show></div>}</Show>
       <div class="editor-scroll" ref={scroller} style={{ display: shown() ? undefined : "none" }}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>

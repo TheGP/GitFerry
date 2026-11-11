@@ -176,7 +176,8 @@ def editor_range_navigation(browser):
             for line in (246, 176, 246, 176):
                 # Repeated clicks must navigate even after scrolling away from the active range.
                 page.locator(".editor-scroll").evaluate("e => e.scrollTop = e.scrollHeight")
-                page.get_by_role("button", name=f"Lines {line}–{line + 5}", exact=True).click()
+                button = page.get_by_role("button", name=f"Lines {line}–{line + 5}", exact=True)
+                button.click()
                 page.wait_for_timeout(200)
                 geometry = page.evaluate("""line => {
                   const scroll = document.querySelector('.editor-scroll');
@@ -185,8 +186,17 @@ def editor_range_navigation(browser):
                   return {top: code.top, bottom: code.bottom, viewTop: box.top, viewBottom: box.bottom, height: scroll.clientHeight};
                 }""", line)
                 assert geometry["height"] > 100 and geometry["top"] >= geometry["viewTop"] - 1 and geometry["bottom"] <= geometry["viewBottom"] + 1, (width, line, geometry)
+                assert button.evaluate("button => document.activeElement === button"), "Range navigation must not focus the textarea and replace its selection"
                 assert f"Ln {line}" in page.locator(".editor-status").inner_text()
                 assert editor.input_value() == content and editor.evaluate("e => e.readOnly")
+            # Keyboard activation must keep focus on the range, too.
+            button = page.get_by_role("button", name="Lines 246–251", exact=True)
+            button.focus()
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(200)
+            assert button.evaluate("button => document.activeElement === button")
+            assert "Ln 246" in page.locator(".editor-status").inner_text()
+            assert editor.input_value() == content
             page.screenshot(path=f"/tmp/gitferry-webkit-range-navigation-{width}.png")
         assert not errors, errors
         print("WebKit: repeated AI range clicks scroll the requested code into view in wide and narrow editors")

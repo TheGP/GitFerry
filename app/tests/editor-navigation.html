@@ -9,7 +9,16 @@
   import { FileEditor } from "../src/FileEditor.tsx";
   import "../src/App.css";
 
-  const content = Array.from({ length: 300 }, (_, i) => `const value${i + 1} = ${i + 1};${i === 99 ? " // Wrapped context before the highlighted code.".repeat(35) : ""}`).join("\n");
+  const code = Array.from({ length: 300 }, (_, i) => i % 9 === 0 ? "" : `    const value${i + 1} = ${i + 1};`);
+  code[99] = "    // Wrapped context before the highlighted code.".repeat(35);
+  code.splice(175, 6,
+    "            const batch = await Promise.all(items.slice(start, start + BATCH_SIZE).map(async (item) => {",
+    "                const found = /^(alpha|gamma)-([a-z0-9]{24})\\.json$/.exec(item);",
+    "                return found ? this.loadRow(schema.parse(found[1]), found[2]) : undefined;",
+    "            }));",
+    "",
+    "            results.push(...batch.filter((item): item is Entry => item !== undefined));");
+  const content = code.join("\n");
   const ranges = [
     { startLine: 176, endLine: 181, comment: "Read metadata files together instead of reading every file one by one." },
     { startLine: 246, endLine: 251, comment: "Queue work within this process so sessions do not keep trying the same lock." },
