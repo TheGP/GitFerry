@@ -829,7 +829,7 @@ button.row-action.armed, button.row-action.armed:hover:not(:disabled), .line-sel
 .file-path, .diff-heading .diff-heading-target { font-family: var(--ui-font); }
 .file-status, .diff-heading, .conflict-row span, .commit-facts .mono { font-family: var(--code-font); }
 .diff-content { font-family: var(--code-font); font-size: var(--code-size); line-height: 1.5; }
-.commit-message, .commit-editor textarea, .file-edit-textarea { font-family: var(--code-font); font-size: var(--code-size); line-height: 1.5; }
+.commit-message, .commit-editor textarea, .file-edit-textarea { font-family: var(--code-font); font-size: var(--code-size); line-height: var(--code-line-height, 20px); }
 .settings-body .settings-row { display: grid; grid-template-columns: minmax(0, 1fr) 90px; gap: 10px; }
 /* Sublime Merge-style toolbar: stash on the left, the branch box (or search) centered, pull and push on the right. */
 .toolbar-side { min-width: 0; display: flex; align-items: center; gap: 8px; }
