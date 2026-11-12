@@ -49,7 +49,7 @@ export function FindBar() {
     const keys = (event: KeyboardEvent) => {
       if (event.isComposing || event.altKey) return;
       const command = event.ctrlKey || event.metaKey, key = event.key.toLowerCase();
-      if (command && key === "f") { event.preventDefault(); event.stopPropagation(); show(); return; }
+      if (command && !event.shiftKey && key === "f") { event.preventDefault(); event.stopPropagation(); show(); return; }
       if (!open()) return;
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); }
       else if (event.key === "F3" || command && key === "g" || event.key === "Enter" && findIgnored(event.target as Node)) { event.preventDefault(); event.stopPropagation(); move(event.shiftKey ? -1 : 1); }

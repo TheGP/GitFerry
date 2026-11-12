@@ -694,6 +694,12 @@ function App() {
   const [sideEditorDirty, setSideEditorDirty] = createSignal(false);
   const [sideEditorWidth, setSideEditorWidth] = createSignal(Number(localStorage.getItem("gitferry.editorWidth")) || 620);
   const [expandedPane, setExpandedPane] = createSignal<"changes" | "editor" | null>(null);
+  let activePane: "changes" | "editor" = "changes";
+  function rememberPane(event: Event) {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest(".editor-pane")) activePane = "editor";
+    else if (target?.closest(".details-pane")) activePane = "changes";
+  }
   type PaneScrollAnchor = { scroll: HTMLElement; row: HTMLElement; offset: number; height: number };
   const paneScrollAnchors = new WeakMap<HTMLElement, PaneScrollAnchor>();
   let paneScrollFrame = 0;
@@ -3018,9 +3024,13 @@ function App() {
       if (event.defaultPrevented || event.isComposing || event.altKey) return;
       const modalOpen = Boolean(sshPrompt()) || fileFinderOpen() || errorDetails() || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || Boolean(fileMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || moreMenu() || stashMenu();
       if (modalOpen) return;
-      if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.code === "Digit1" || event.code === "Digit2") && repoReady()) {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.code === "Digit1" || event.code === "Digit2" || event.key.toLowerCase() === "f") && repoReady()) {
         event.preventDefault(); event.stopImmediatePropagation();
-        if (!event.repeat) toggleExpandedPane(event.code === "Digit1" ? "changes" : "editor");
+        let pane = expandedPane() ?? activePane;
+        if (event.code === "Digit1") pane = "changes";
+        else if (event.code === "Digit2") pane = "editor";
+        else if (pane === "editor" && sideEditor()?.repo !== activePath()) pane = "changes";
+        if (!event.repeat) toggleExpandedPane(pane);
       } else if (event.key === "Escape" && expandedPane() && !document.querySelector(".find-bar")) {
         event.preventDefault(); event.stopImmediatePropagation();
         const pane = expandedPane();
@@ -3035,7 +3045,7 @@ function App() {
     onCleanup(() => { unlistenMcp?.(); unlistenDrop?.(); unlistenProgress?.(); unlistenSsh.forEach(unlisten => unlisten()); window.clearInterval(interval); window.removeEventListener("focus", focus); window.removeEventListener("keydown", keys); window.removeEventListener("keydown", paneKeys, true); document.removeEventListener("visibilitychange", visibility); window.removeEventListener("resize", resize); });
   });
 
-  return <div class="app-shell" onPointerDown={event => { if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); if (!event.target.closest(".file-action-popover")) setFileMenu(null); if (!event.target.closest(".worktree-action-popover")) setWorktreeMenu(null); } }}>
+  return <div class="app-shell" onFocusIn={rememberPane} onPointerDown={event => { rememberPane(event); if (event.target instanceof Element) { if (!event.target.closest(".push-control")) { setPushMenu(false); setPullMenu(false); setMoreMenu(false); } if (!event.target.closest(".status-control")) setErrorDetails(false); if (!event.target.closest(".stash-control")) setStashMenu(false); if (!event.target.closest(".tab-navigation")) setTabListOpen(false); if (!event.target.closest(".ref-action-popover, .ref-action-trigger")) setRefMenu(null); if (!event.target.closest(".file-action-popover")) setFileMenu(null); if (!event.target.closest(".worktree-action-popover")) setWorktreeMenu(null); } }}>
     <Show when={draggingFolder()}><div class="drop-overlay"><div><strong>Open repository</strong><span>Drop a Git folder here</span></div></div></Show>
     <FindBar />
     <Show when={waitingFileLinks()}><div class="file-link-waiting" role="status">{waitingFileLinks()} file link{waitingFileLinks() === 1 ? " is" : "s are"} waiting. Save or cancel your editor changes, or finish the current operation, to continue.</div></Show>

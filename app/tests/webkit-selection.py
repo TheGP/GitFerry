@@ -238,6 +238,17 @@ def pane_expansion(page):
           const r=pane.getBoundingClientRect(),w=document.querySelector('.workspace').getBoundingClientRect();
           return Math.abs(r.x-w.x)<=1 && Math.abs(r.y-w.y)<=1 && Math.abs(r.width-w.width)<=1 && Math.abs(r.height-w.height)<=1;
         }""")
+    page.keyboard.press("Meta+Shift+f")
+    fills_workspace(".editor-pane"); check_editor()
+    assert page.locator(".find-bar").count() == 0, "Cmd+Shift+F must expand instead of opening Find"
+    page.keyboard.press("Meta+Shift+f")
+    assert page.locator(".workspace.pane-expanded").count() == 0
+    page.locator(".diff-line.added .line-text").first.click()
+    page.keyboard.press("Control+Shift+f")
+    fills_workspace(".details-pane"); check_editor()
+    page.keyboard.press("Control+Shift+f")
+    assert page.locator(".workspace.pane-expanded").count() == 0
+    editor.focus()
     page.get_by_role("button", name="Expand editor pane", exact=True).click()
     fills_workspace(".editor-pane"); check_editor()
     page.keyboard.press("Control+Shift+2")
@@ -247,6 +258,11 @@ def pane_expansion(page):
     fills_workspace(".editor-pane"); check_editor()
     page.keyboard.press("Control+f")
     page.locator(".find-bar").wait_for()
+    page.keyboard.press("Meta+Shift+f")
+    assert page.locator(".workspace.pane-expanded").count() == 0
+    assert page.locator(".find-bar").count() == 1
+    page.keyboard.press("Meta+Shift+f")
+    fills_workspace(".editor-pane")
     page.keyboard.press("Escape")
     assert page.locator(".find-bar").count() == 0
     assert page.locator(".workspace.expanded-editor").count() == 1
