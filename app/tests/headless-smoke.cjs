@@ -1059,7 +1059,9 @@ async function exercisePaneExpansion(page, file, text) {
   assert.ok(await page.$(".workspace.expanded-editor"), "Holding the shortcut must not repeatedly toggle the pane");
   await paneShortcut("f", "Meta");
   assert.equal(await page.$(".workspace.pane-expanded"), null);
+  await page.setViewport({ width: 1600, height: 700, deviceScaleFactor: 1 });
   await click(page, ".diff-line.added .line-text");
+  await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
   await paneShortcut("f");
   await fillsWorkspace(".details-pane"); await checkDraft();
   await paneShortcut("f");

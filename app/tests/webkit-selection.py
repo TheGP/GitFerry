@@ -243,7 +243,9 @@ def pane_expansion(page):
     assert page.locator(".find-bar").count() == 0, "Cmd+Shift+F must expand instead of opening Find"
     page.keyboard.press("Meta+Shift+f")
     assert page.locator(".workspace.pane-expanded").count() == 0
+    page.set_viewport_size({"width": 1600, "height": 700})
     page.locator(".diff-line.added .line-text").first.click()
+    page.set_viewport_size({"width": 1100, "height": 700})
     page.keyboard.press("Control+Shift+f")
     fills_workspace(".details-pane"); check_editor()
     page.keyboard.press("Control+Shift+f")
