@@ -1075,6 +1075,7 @@ async function exercisePaneExpansion(page, file, text) {
   assert.equal(await page.$(".workspace.pane-expanded"), null, "Pane shortcuts must not act through Settings");
   assert.equal(await page.$(".find-bar"), null);
   await page.keyboard.press("Escape");
+  await page.$eval(`.editor-row:nth-child(${line})`, row => row.scrollIntoView({ block: "center" }));
   await click(page, '.editor-pane button[aria-label="Expand editor pane"]');
   await page.waitForSelector(".workspace.expanded-editor");
   await fillsWorkspace(".editor-pane"); await checkDraft();
