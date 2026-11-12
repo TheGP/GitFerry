@@ -16,6 +16,7 @@ import { inAppViewport, noteVisibility } from "./noteVisibility";
 import { FileEditor, type EditorTarget, type HunkMarks } from "./FileEditor";
 import { FindBar } from "./FindBar";
 import { PaneExpandButton } from "./PaneExpandButton";
+import { cancelDiffScroll, preserveDiffScroll } from "./diffScroll";
 import { createFileLinkQueue, filePosition, type FileLinkBatch, type ResolvedFileLink } from "./fileLinks";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
 import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection } from "./mcpNavigation";
@@ -462,7 +463,7 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
       const moved = !cached && !props.ignoreWhitespace ? movedDiffs.get(movedKey) : undefined;
       movedDiffs.delete(movedKey);
       setValue(cached ?? moved ?? null); setLoadedKey(cached ? loadKey() : "");
-    } else if (cached) { setValue(cached); setLoadedKey(loadKey()); }
+    } else if (cached) { preserveDiffScroll(props.scrollRoot, () => { setValue(cached); setLoadedKey(loadKey()); }); }
   });
   createEffect(() => {
     if (!props.expanded || loadedKey() === loadKey() || loading() || loadError()) return;
@@ -475,7 +476,7 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
         if (!demoMode) cacheDiff(key, diff);
         if (id !== loadId) return;
         const previous = value();
-        if (!previous || previous.text !== diff.text || previous.truncated !== diff.truncated) setValue(diff);
+        if (!previous || previous.text !== diff.text || previous.truncated !== diff.truncated) preserveDiffScroll(props.scrollRoot, () => setValue(diff));
         setLoadedKey(key);
       }).catch(cause => { if (id === loadId) { setLoadError(String(cause)); props.onError(String(cause)); } }).finally(() => { if (id === loadId) setLoading(false); });
     };
@@ -705,6 +706,7 @@ function App() {
   let paneScrollFrame = 0;
   function toggleExpandedPane(pane: "changes" | "editor") {
     if (pane === "editor" && (!sideEditor() || sideEditor()?.repo !== activePath())) return;
+    cancelDiffScroll(detailsScroll);
     const anchors: PaneScrollAnchor[] = [];
     for (const scroll of [detailsScroll, workspaceElement?.querySelector<HTMLElement>(".editor-scroll")]) {
       if (!scroll) continue;
@@ -926,6 +928,7 @@ function App() {
   let worktreeStrip!: HTMLElement;
   let commitScroll!: HTMLDivElement;
   let detailsScroll!: HTMLDivElement;
+  onCleanup(() => cancelDiffScroll(detailsScroll));
   const repo = createMemo(() => tabs().find(item => item.path === activePath()) ?? null);
   createEffect(() => {
     if (!repo()) setExpandedPane(null);
@@ -1096,7 +1099,7 @@ function App() {
             diffs.push({ file: item.path, ...value });
           }
         }));
-        if (!cancelled && bytes <= 2_000_000) setMoveScan({ key, moves: findCodeMoves(diffs) });
+        if (!cancelled && bytes <= 2_000_000) preserveDiffScroll(activePath() === path ? detailsScroll : undefined, () => setMoveScan({ key, moves: findCodeMoves(diffs) }));
       } catch { /* A failed optional scan must not interrupt normal diff viewing. */ }
     })();
   }));
@@ -1253,7 +1256,7 @@ function App() {
     fileInfoRequest++;
     setFileView("diff"); setFileHistory(null); setFileBlame(null); setFileInfoLoading(false); setFileInfoError("");
   }
-  function selectWorking() { revealChangesPane(); navigationArea = "commits"; request++; resetFileInfo(); setSelected("working"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
+  function selectWorking() { cancelDiffScroll(detailsScroll); revealChangesPane(); navigationArea = "commits"; request++; resetFileInfo(); setSelected("working"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null); if (detailsScroll) detailsScroll.scrollTop = 0; }
   createEffect(() => {
     const message = notice();
     if (!message) return;
@@ -1336,11 +1339,11 @@ function App() {
     if (!path || !current || current.loading || current.loadError) return false;
     try {
       const update = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
-      setTabs(current => current.map(item => {
+      preserveDiffScroll(activePath() === path ? detailsScroll : undefined, () => setTabs(current => current.map(item => {
         if (item.path !== path) return item;
         const overlap = item.commits.findIndex(commit => commit.hash === update.commits[update.commits.length - 1]?.hash);
         return mergeRepo(item, { ...update, commits: overlap >= 0 ? [...update.commits, ...item.commits.slice(overlap + 1)] : update.commits });
-      }));
+      })));
       await reconcileWorktrees(update);
       refreshWorkingDiff(path);
       if (activePath() === path) setError("");
@@ -1409,7 +1412,7 @@ function App() {
       if (refsMoved || update.head !== current.head || update.branch !== current.branch || update.operation !== current.operation || update.rebaseEditPause !== current.rebaseEditPause || hasStagedChanges(update.status) !== hasStagedChanges(current.status)) {
         if (activePath() === path) await refresh();
       } else if (JSON.stringify(update.status) !== JSON.stringify(current.status)) {
-        setTabs(items => items.map(item => item.path === path ? { ...item, status: reuseEqual(item.status, update.status, entry => entry.path) } : item));
+        preserveDiffScroll(activePath() === path ? detailsScroll : undefined, () => setTabs(items => items.map(item => item.path === path ? { ...item, status: reuseEqual(item.status, update.status, entry => entry.path) } : item)));
         refreshWorkingDiff(path);
       }
     } catch (cause) {
@@ -1628,6 +1631,7 @@ function App() {
     });
   });
   function showComparison() {
+    cancelDiffScroll(detailsScroll);
     navigationArea = "commits"; request++; resetFileInfo();
     setSelected("compare"); setDetails(null); setChoice(null); setParkedFile(null); setDiff(null); setKeyboardFileKey(null);
   }
@@ -1662,6 +1666,7 @@ function App() {
   }
   const commitPermissionVersion = () => JSON.stringify([repo()?.head, repo()?.branch, repo()?.refsHash, repo()?.operation]);
   async function selectCommit(hash: string) {
+    cancelDiffScroll(detailsScroll);
     revealChangesPane();
     const path = activePath();
     if (!path) return;
@@ -1697,6 +1702,7 @@ function App() {
     }).catch(() => {}); // Ref changes can remove a commit; its cached contents remain readable.
   }, { defer: true }));
   async function selectFile(item: Choice, restoreScroll?: number) {
+    cancelDiffScroll(detailsScroll);
     revealChangesPane();
     const path = activePath();
     if (!path) return;
@@ -1716,7 +1722,7 @@ function App() {
     if (!path || !item || (!diff() && loadingFileDiff === request)) return;
     await loadFileDiff(path, item, result => {
       const previous = diff();
-      if (choice() === item && (!previous || previous.text !== result.text || previous.truncated !== result.truncated)) setDiff(result);
+      if (choice() === item && (!previous || previous.text !== result.text || previous.truncated !== result.truncated)) preserveDiffScroll(detailsScroll, () => setDiff(result));
     });
   }
   function refreshWorkingDiff(path: string) {
@@ -1862,6 +1868,7 @@ function App() {
   // The setting persists, so every view says when whitespace-only changes are hidden.
   const whitespaceNote = () => `Whitespace-only changes are hidden${selected() === "working" ? ", so line and hunk actions are unavailable" : ""}. Turn this off in Settings.`;
   function revealDiff() {
+    cancelDiffScroll(detailsScroll);
     detailsScroll?.querySelector<HTMLElement>(".diff-heading")?.scrollIntoView({ block: "start", behavior: "auto" });
     // A full file can start far above its first change; bring that change into view with a few lines of context above it.
     const change = fullFile() ? detailsScroll?.querySelector<HTMLElement>(".diff-content .diff-line.added, .diff-content .diff-line.deleted") : null;
@@ -2549,6 +2556,7 @@ function App() {
     }
     const elements = detailsScroll?.querySelectorAll<HTMLElement>(".diff-line.ai-highlight");
     if (selectedRows.size && elements?.length !== selectedRows.size) throw new Error("GitFerry could not confirm the rendered highlights");
+    cancelDiffScroll(detailsScroll);
     (elements?.[0] ?? detailsScroll?.querySelector<HTMLElement>(".diff-heading"))?.scrollIntoView({ block: "center" });
     return { ...mcpView(), confirmed: true };
   }
@@ -3136,7 +3144,7 @@ function App() {
           </div>
         </section><div class="splitter commits-splitter" onPointerDown={event => startResize(bottomLayout() ? "history" : "commits", event)} />
         <section class={`details-pane ${wrapDiffLines() ? "wrap-diff-lines" : ""}`} onContextMenu={openFileMenu} onPointerDown={() => { navigationArea = "files"; }}><div class="details-tabs"><button class={`details-tab ${!choice() ? "active" : ""}`} onClick={() => { if (choice()) setParkedFile(choice()); setChoice(null); setDiff(null); detailsScroll.scrollTop = 0; }}>SUMMARY</button><Show when={choice() ?? parkedFile()}>{file => <div class={`details-tab file-tab ${choice() ? "active" : ""}`} title={file().path}><button class="details-tab-label" onClick={() => { if (!choice()) void selectFile(file()); }}>{file().path.split("/").pop()?.split("\\").pop()}</button><button class="details-tab-close" title="Close file" aria-label={`Close ${file().path}`} onClick={closeFileTab}><Icon name="close" /></button></div>}</Show><PaneExpandButton pane="Changes" expanded={expandedPane() === "changes"} onToggle={() => toggleExpandedPane("changes")} /></div><Show when={!choice() || fileView() === "diff"}><div class="diff-controls"><label class="diff-wrap-toggle" title="Wrap long diff lines; turn off to scroll horizontally"><input type="checkbox" aria-label="Wrap diff lines" checked={wrapDiffLines()} onChange={event => setWrapDiffLines(event.currentTarget.checked)} />Wrap lines</label></div></Show>
-          <div class="details-scroll" ref={detailsScroll} tabIndex={0} aria-label="Changed files" onScroll={scheduleDetailsSave}>
+          <div class="details-scroll" data-scroll-view={JSON.stringify([activePath(), selected(), choice()?.path, choice()?.target, fileView()])} ref={detailsScroll} tabIndex={0} aria-label="Changed files" onScroll={scheduleDetailsSave}>
             <Show when={selected() === "compare" && !choice() && comparison()}>{current => <div class="detail-header"><dl class="commit-facts">
                 <dt>Comparing</dt><dd>{current().head} <span class="compare-vs">since it left</span> {current().base}</dd>
                 <dt>Head</dt><dd class="mono">{current().headHash}</dd>

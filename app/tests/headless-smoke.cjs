@@ -27,6 +27,7 @@ let actionGate = null;
 let saveGate = null;
 let searchGate = null;
 let diffRequests = 0;
+let diffGate = null;
 
 function git(cwd, ...args) {
   const result = spawnSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", windowsHide: true });
@@ -176,6 +177,107 @@ function makeRepo(name, large = false) {
     fs.writeFileSync(path.join(folder, "new.txt"), "new file\n");
   }
   return folder;
+}
+
+async function exerciseReadingPosition(page) {
+  const viewport = page.viewport(), root = makeRepo("reading-position");
+  const actions = actionRequests.length, external = externalEditorRequests.length;
+  for (const file of ["a.ts", "z.ts"]) fs.writeFileSync(path.join(root, file), "");
+  git(root, "add", "a.ts", "z.ts"); git(root, "commit", "-m", "Reading fixtures");
+  const head = git(root, "rev-parse", "HEAD");
+  const lines = prefix => Array.from({ length: 150 }, (_, i) => `export const ${prefix}_${String(i).padStart(3, "0")} = "${"wrapped reading text ".repeat(12)}";`);
+  let above = lines("above"), reading = lines("reading");
+  const stage = (file, content) => { fs.writeFileSync(path.join(root, file), content.join("\n") + "\n"); git(root, "add", file); };
+  stage("a.ts", above); stage("z.ts", reading);
+  await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
+  await openRepo(page, root);
+  await page.waitForSelector('.summary-diff-card[data-path="z.ts"][data-target="staged"] .diff-line.added');
+  // Exercise our anchor even in Chromium, which otherwise provides native anchoring.
+  await page.$eval(".details-scroll", pane => pane.style.overflowAnchor = "none");
+  const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+  const locate = (needle, anchor = false) => page.evaluate(({ needle, anchor }) => {
+    const pane = document.querySelector(".details-scroll");
+    const scope = pane.querySelector('.summary-diff-card[data-path="z.ts"][data-target="staged"]') ?? pane;
+    const row = [...scope.querySelectorAll(".diff-line.added")].find(row => row.querySelector(".line-text")?.textContent.includes(needle));
+    if (!row) throw new Error(`Missing reading row: ${needle}`);
+    if (anchor) pane.scrollTop += row.getBoundingClientRect().top - pane.getBoundingClientRect().top + 15;
+    return { offset: row.getBoundingClientRect().top - pane.getBoundingClientRect().top, scrollTop: pane.scrollTop };
+  }, { needle, anchor });
+  const assertPosition = async (needle, before) => {
+    await settle();
+    const after = await locate(needle);
+    assert.ok(Math.abs(after.offset - before.offset) <= 2, `${needle} moved from ${before.offset} to ${after.offset}`);
+  };
+  const waitText = (file, needle) => page.waitForFunction(({ file, needle }) => {
+    const pane = document.querySelector(".details-scroll");
+    const scope = pane.querySelector(`.summary-diff-card[data-path='${file}'][data-target='staged']`) ?? pane;
+    return [...scope.querySelectorAll(".diff-line.added .line-text")].some(row => row.textContent.includes(needle));
+  }, {}, { file, needle });
+  await waitText("a.ts", "above_149");
+  await settle();
+  let position = await locate("reading_080", true);
+  above = [...lines("above_grew").slice(0, 40), ...above]; stage("a.ts", above);
+  await waitText("a.ts", "above_grew_039");
+  await assertPosition("reading_080", position);
+  above = above.slice(60); stage("a.ts", above);
+  await page.waitForFunction(() => !document.querySelector('.summary-diff-card[data-path="a.ts"][data-target="staged"]')?.textContent.includes("above_grew_039"));
+  await assertPosition("reading_080", position);
+  fs.writeFileSync(path.join(root, "a.ts"), ""); git(root, "add", "a.ts");
+  await page.waitForFunction(() => !document.querySelector('.summary-diff-card[data-path="a.ts"][data-target="staged"]'));
+  await assertPosition("reading_080", position);
+  await page.keyboard.down("Control"); await page.keyboard.down("Shift"); await page.keyboard.press("1"); await page.keyboard.up("Shift"); await page.keyboard.up("Control");
+  await settle();
+  position = await locate("reading_080", true);
+  reading = [...lines("inside_grew").slice(0, 20), ...reading]; stage("z.ts", reading);
+  await waitText("z.ts", "inside_grew_019");
+  await assertPosition("reading_080", position);
+  const index = fs.readFileSync(path.join(root, ".git/index"));
+  fs.appendFileSync(path.join(root, "z.ts"), "// unstaged_only_reading_probe\n");
+  await page.waitForFunction(() => document.querySelector('.summary-diff-card[data-path="z.ts"][data-target="working"]')?.textContent.includes("unstaged_only_reading_probe"));
+  await assertPosition("reading_080", position);
+  assert.deepEqual(fs.readFileSync(path.join(root, ".git/index")), index, "A working edit must not change the index");
+  assert.equal(await page.$eval('.summary-diff-card[data-path="z.ts"][data-target="staged"]', card => card.textContent.includes("unstaged_only_reading_probe")), false);
+  await click(page, '.summary-diff-card[data-path="z.ts"][data-target="staged"] .summary-open-tab');
+  await page.waitForSelector(".file-tab.active");
+  await waitText("z.ts", "reading_080");
+  await settle();
+  assert.ok(await page.$eval(".diff-heading", heading => {
+    const box = heading.getBoundingClientRect(), view = heading.closest(".details-scroll").getBoundingClientRect();
+    return box.top >= view.top - 1 && box.bottom <= view.bottom;
+  }), "Explicitly opening a file must still reveal its heading");
+  position = await locate("reading_080", true);
+  reading = [...lines("tab_grew").slice(0, 12), ...reading]; stage("z.ts", reading);
+  await waitText("z.ts", "tab_grew_011");
+  await assertPosition("reading_080", position);
+  const neighbour = await locate("reading_081");
+  reading = reading.filter(line => !line.includes("reading_080")); stage("z.ts", reading);
+  await page.waitForFunction(() => !document.querySelector(".diff-content")?.textContent.includes("reading_080"));
+  await assertPosition("reading_081", neighbour);
+  let release;
+  const gate = diffGate = { path: root, file: "z.ts", started: false, promise: new Promise(resolve => { release = resolve; }) };
+  try {
+    reading = [...lines("delayed_grew").slice(0, 15), ...reading]; stage("z.ts", reading);
+    await waitUntil(() => gate.started, "held staged diff response");
+    const box = await page.$eval(".details-scroll", pane => { const box = pane.getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; });
+    await page.mouse.move(box.x, box.y); await page.mouse.wheel({ deltaY: 350 });
+    await settle();
+    const current = await page.$eval(".details-scroll", pane => {
+      const top = pane.getBoundingClientRect().top;
+      const row = [...pane.querySelectorAll(".diff-line.added")].find(row => row.getBoundingClientRect().bottom > top);
+      return { needle: row.querySelector(".line-text").textContent, offset: row.getBoundingClientRect().top - top };
+    });
+    diffGate = null; release();
+    await waitText("z.ts", "delayed_grew_014");
+    await assertPosition(current.needle, current);
+  } finally { diffGate = null; release(); }
+  assert.equal(git(root, "rev-parse", "HEAD"), head);
+  assert.equal(actionRequests.length, actions, "Keeping the reading position must not run Git actions");
+  assert.equal(externalEditorRequests.length, external);
+  await page.screenshot({ path: path.join(screenshots, "reading-position.png") });
+  await page.keyboard.press("Escape");
+  await mcp(page, "close_repository", { repository: root });
+  await page.setViewport(viewport);
+  console.log("Reading position: staged growth/shrink above the viewport, wrapped lines, file tabs, removed anchors, index isolation and user scrolling during a delayed refresh passed");
 }
 
 function makeLineRepo() {
@@ -1395,6 +1497,7 @@ async function bridge(command, args) {
     diffRequests++;
   }
   const heldSearch = command === "repo_search" && args.offset > 0 && searchGate && args.query === searchGate.query ? searchGate : null;
+  const heldDiff = command === "repo_diff" && diffGate && args.path === diffGate.path && args.file === diffGate.file && args.target === "staged" ? diffGate : null;
   if (heldSearch) { heldSearch.started = true; await heldSearch.promise; }
   if (command === "repo_save_file" && saveGate) {
     const gate = saveGate;
@@ -1435,6 +1538,7 @@ async function bridge(command, args) {
   const entry = commands[command];
   if (!entry) throw new Error(`Unknown command ${command}`);
   const response = await rpc(...entry);
+  if (heldDiff) { heldDiff.started = true; await heldDiff.promise; }
   if (heldSearch) heldSearch.finished = true;
   if (response.kind === "error") {
     if (command === "repo_diff" && /bad object/.test(response.value)) invalidRevisionDiffs.push({ path: args.path, target: args.target });
@@ -1792,6 +1896,11 @@ async function main() {
   await page.goto("http://127.0.0.1:1420/");
   // The app renders only after restoring saved settings, so shortcuts pressed earlier are lost.
   await page.waitForSelector(".statusbar");
+  if (process.env.GITFERRY_READING_ONLY) {
+    await exerciseReadingPosition(page);
+    assert.deepEqual(pageErrors, [], "Reading-position refreshes must have no uncaught errors");
+    return;
+  }
   if (process.env.GITFERRY_TEST_EXPANSION_ONLY) {
     await exerciseKeepTestsClosed(page);
     assert.deepEqual(pageErrors, [], "Test expansion must have no uncaught errors");
@@ -1863,6 +1972,7 @@ async function main() {
   await page.keyboard.press("Escape");
   await openRepo(page, small);
   await exerciseKeepTestsClosed(page);
+  await exerciseReadingPosition(page);
   await openRepo(page, small);
   await exerciseStatusMessages(page, small);
   if (process.env.GITFERRY_STATUS_ONLY) {
@@ -2590,7 +2700,7 @@ main().catch(async error => {
   if (vite) vite.kill();
   if (agent) agent.kill();
   // Keep screenshots for inspection; remove only the disposable repositories.
-  for (const name of ["test-expansion", "find-in-view", "file-links-topic", "file-links", "comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
+  for (const name of ["reading-position", "test-expansion", "find-in-view", "file-links-topic", "file-links", "comparison-notes", "message-edit", "status-other", "harbor", "harbor-ui", "mcp-topic", "mcp", "small", "large", "lines", "whitespace", "conflicts", "rebase-plan", "other", "remote.git", "editor-loading", "comparison-base"]) {
     const target = path.resolve(sandbox, name);
     if (path.dirname(target) !== path.resolve(sandbox)) throw new Error("Unexpected test cleanup path");
     if (fs.existsSync(target)) {

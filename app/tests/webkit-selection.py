@@ -221,6 +221,76 @@ def editor_range_navigation(browser):
         page.close()
 
 
+def passive_diff_reading(browser):
+    page = browser.new_page(viewport={"width": 1000, "height": 700})
+    try:
+        page.goto(URL)
+        page.locator(".diff-content").first.wait_for()
+        result = page.evaluate("""async () => {
+          const {preserveDiffScroll} = await import('/src/diffScroll.ts');
+          const root = document.createElement('div'); root.className='details-scroll'; root.dataset.scrollView='reading';
+          root.style.cssText='position:fixed;left:10px;top:10px;width:580px;height:350px;overflow:auto;z-index:99999;display:block;overflow-anchor:none';
+          document.body.append(root);
+          const makeRow = (id, text) => {
+            const row=document.createElement('div'); row.className='diff-line added'; row.dataset.id=id;
+            const code=document.createElement('span'); code.className='line-text'; code.textContent=text; row.append(code); return row;
+          };
+          const cards = ['a.ts','z.ts'].map(path => {
+            const card=document.createElement('div'); card.className='summary-diff-card'; card.dataset.path=path; card.dataset.target='staged';
+            const heading=document.createElement('div'); heading.className='summary-diff-heading'; heading.textContent=path;
+            const content=document.createElement('div'); content.className='diff-content has-hunks';
+            const lines=document.createElement('div'); lines.className='diff-lines'; content.append(lines); card.append(heading,content); root.append(card);
+            for(let i=0;i<130;i++) lines.append(makeRow(String(i), `const reading_${i} = '${'wrapped code '.repeat(16)}';`));
+            return lines;
+          });
+          const [above,reading]=cards;
+          const row=id => [...reading.children].find(row=>row.dataset.id===String(id));
+          const offset=element=>element.getBoundingClientRect().top-root.getBoundingClientRect().top;
+          const settle=()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+          const anchor=id=>{ root.scrollTop+=offset(row(id))+7; return offset(row(id)); };
+          const same=(id,wanted,label)=>{ if(Math.abs(offset(row(id))-wanted)>2) throw Error(`${label}: ${offset(row(id))} != ${wanted}`); };
+          let wanted=anchor(80);
+          preserveDiffScroll(root,()=>{ for(let i=0;i<30;i++) above.prepend(makeRow('new'+i,'new code above')); });
+          await settle(); same(80,wanted,'growth in an earlier file');
+          preserveDiffScroll(root,()=>{ for(let i=0;i<45;i++) above.firstElementChild.remove(); });
+          await settle(); same(80,wanted,'shrink in an earlier file');
+          preserveDiffScroll(root,()=>{ for(let i=0;i<20;i++) reading.prepend(makeRow('prefix'+i,'inserted code')); });
+          await settle(); same(80,wanted,'insertions in the current file');
+          preserveDiffScroll(root,()=>row(80).replaceWith(row(80).cloneNode(true)));
+          await settle(); same(80,wanted,'recreated row');
+          wanted=offset(row(81));
+          preserveDiffScroll(root,()=>row(80).remove());
+          await settle(); same(81,wanted,'nearest surviving row');
+          row(90).querySelector('.line-text').textContent='return repeated;';
+          row(100).querySelector('.line-text').textContent='return repeated;';
+          wanted=anchor(100);
+          preserveDiffScroll(root,()=>{
+            reading.insertBefore(makeRow('duplicate','return repeated;'),row(60));
+            reading.replaceChildren(...[...reading.children].map(row=>row.cloneNode(true)));
+          });
+          await settle(); same(100,wanted,'duplicate lines use neighbouring context');
+          preserveDiffScroll(root,()=>above.prepend(makeRow('copy','code arriving during copying')));
+          window.dispatchEvent(new KeyboardEvent('keydown',{key:'Meta',metaKey:true}));
+          window.dispatchEvent(new KeyboardEvent('keydown',{key:'c',metaKey:true}));
+          await settle(); same(100,wanted,'copying must retain the reading anchor');
+          preserveDiffScroll(root,()=>above.prepend(makeRow('late','late code')));
+          window.dispatchEvent(new WheelEvent('wheel',{deltaY:200})); root.scrollTop+=200;
+          const userScroll=root.scrollTop; await settle();
+          if(root.scrollTop!==userScroll) throw Error('Refresh overrode a user scroll');
+          preserveDiffScroll(root,()=>above.prepend(makeRow('other','other code')));
+          root.dataset.scrollView='another-view'; root.scrollTop=0; await settle();
+          if(root.scrollTop!==0) throw Error('An old anchor overrode navigation');
+          root.remove(); return true;
+        }""")
+        assert result
+        print("WebKit: passive diff refresh preserves wrapped code, earlier file heights, recreated/duplicate rows, deletion fallbacks, user scrolling and navigation")
+    except BaseException:
+        page.screenshot(path="/tmp/gitferry-webkit-reading-position-failure.png")
+        raise
+    finally:
+        page.close()
+
+
 def pane_expansion(page):
     editor = page.locator(".editor-input")
     content = editor.input_value()
@@ -298,6 +368,7 @@ def main():
         with sync_playwright() as playwright:
             browser = playwright.webkit.launch()
             editor_range_navigation(browser)
+            passive_diff_reading(browser)
             page = browser.new_page(viewport={"width": 1700, "height": 1000})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
