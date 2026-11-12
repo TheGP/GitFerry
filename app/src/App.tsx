@@ -476,7 +476,8 @@ function DiffCard(props: { item: Choice; repoPath: string; working: boolean; rec
         if (!demoMode) cacheDiff(key, diff);
         if (id !== loadId) return;
         const previous = value();
-        if (!previous || previous.text !== diff.text || previous.truncated !== diff.truncated) preserveDiffScroll(props.scrollRoot, () => setValue(diff));
+        if (!previous && props.keyboardSelected) setValue(diff);
+        else if (!previous || previous.text !== diff.text || previous.truncated !== diff.truncated) preserveDiffScroll(props.scrollRoot, () => setValue(diff));
         setLoadedKey(key);
       }).catch(cause => { if (id === loadId) { setLoadError(String(cause)); props.onError(String(cause)); } }).finally(() => { if (id === loadId) setLoading(false); });
     };

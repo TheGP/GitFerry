@@ -1,6 +1,7 @@
 // Passive refreshes keep the first visible code row at its screen position. The
 // row's text and neighbours also identify it if the diff changes its DOM node.
-const rowsSelector = ".diff-content.has-hunks .diff-line:not(.metadata):not(.hunk), .diff-content:not(.has-hunks) .diff-line, .summary-diff-heading, .diff-heading";
+// Sticky file headings stay pinned while their code moves, so they cannot be anchors.
+const rowsSelector = ".diff-content.has-hunks .diff-line:not(.metadata):not(.hunk), .diff-content:not(.has-hunks) .diff-line";
 type Anchor = { element: HTMLElement; container: HTMLElement; path?: string; target?: string; text: string; before: string; after: string; offset: number };
 const pending = new WeakMap<HTMLElement, () => void>();
 const code = (element: Element | null) => element?.querySelector(".line-text")?.textContent ?? "";
@@ -61,10 +62,11 @@ export function cancelDiffScroll(root: HTMLElement | null | undefined) { if (roo
 
 /** Call immediately before applying refreshed data, rather than before its async read. */
 export function preserveDiffScroll<T>(root: HTMLElement | null | undefined, update: () => T): T {
-  if (!root?.isConnected || pending.has(root) || !root.clientHeight || !root.clientWidth) return update();
+  if (!root?.isConnected || pending.has(root) || !root.clientHeight || !root.clientWidth || root.scrollTop <= 0) return update();
   const anchors = capture(root);
   if (!anchors.length) return update();
   const scope = root.dataset.scrollView, overflowAnchor = root.style.getPropertyValue("overflow-anchor");
+  let expectedScroll = root.scrollTop;
   let frame = 0;
   const events = ["pointerdown", "wheel", "touchstart", "keydown"] as const;
   const cancel = () => {
@@ -82,10 +84,14 @@ export function preserveDiffScroll<T>(root: HTMLElement | null | undefined, upda
   const restore = () => {
     if (pending.get(root) !== cancel) return;
     if (!root.isConnected || !root.clientHeight || !root.clientWidth || root.dataset.scrollView !== scope) { cancel(); return; }
+    const clamped = Math.min(expectedScroll, Math.max(0, root.scrollHeight - root.clientHeight));
+    // Browser clamping after a shorter diff is automatic; focus/navigation scrolling is intentional.
+    if (Math.abs(root.scrollTop - expectedScroll) > 2 && Math.abs(root.scrollTop - clamped) > 2) { cancel(); return; }
     for (const anchor of anchors) {
       const element = surviving(root, anchor);
       if (!element) continue;
       root.scrollTop += element.getBoundingClientRect().top - root.getBoundingClientRect().top - anchor.offset;
+      expectedScroll = root.scrollTop;
       break;
     }
   };
