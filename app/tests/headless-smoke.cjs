@@ -193,6 +193,7 @@ async function exerciseReadingPosition(page) {
   await openRepo(page, root);
   await page.waitForSelector('.summary-diff-card[data-path="z.ts"][data-target="staged"] .diff-line.added');
   // Exercise our anchor even in Chromium, which otherwise provides native anchoring.
+  const nativeAnchor = await page.$eval(".details-scroll", pane => pane.style.getPropertyValue("overflow-anchor"));
   await page.$eval(".details-scroll", pane => pane.style.overflowAnchor = "none");
   const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
   const locate = (needle, anchor = false) => page.evaluate(({ needle, anchor }) => {
@@ -276,6 +277,7 @@ async function exerciseReadingPosition(page) {
   await page.screenshot({ path: path.join(screenshots, "reading-position.png") });
   await page.keyboard.press("Escape");
   await mcp(page, "close_repository", { repository: root });
+  await page.$eval(".details-scroll", (pane, value) => pane.style.setProperty("overflow-anchor", value), nativeAnchor);
   await page.setViewport(viewport);
   console.log("Reading position: staged growth/shrink above the viewport, wrapped lines, file tabs, removed anchors, index isolation and user scrolling during a delayed refresh passed");
 }
