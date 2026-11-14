@@ -238,7 +238,7 @@ def editor_change_overview(browser):
             marker.wait_for()
             editor.evaluate("e => {e.focus(); e.setSelectionRange(3, 15)}")
             content = editor.input_value()
-            for name, line in (("Modified line 21", 21), ("Added line 191", 191), ("Modified line 252", 252), ("Deleted before line 282", 282)):
+            for name, line in (("Modified line 21", 21), ("Added line 191", 191), ("Modified line 252", 252), ("Deleted near line 282", 282)):
                 marker = page.get_by_role("button", name=name, exact=True)
                 # The map measures actual wrapped rows, rather than assuming fixed line heights.
                 geometry = marker.evaluate("""(marker, line) => {
@@ -271,6 +271,10 @@ def editor_change_overview(browser):
             page.get_by_role("button", name="Modified line 251", exact=True).wait_for()
             assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
             page.screenshot(path=f"/tmp/gitferry-webkit-overview-{width}.png")
+        page.goto("http://127.0.0.1:1421/tests/editor-navigation.html?overview=large&editable")
+        page.get_by_role("button", name="Added lines 101–600", exact=True).wait_for()
+        page.get_by_role("button", name="Modified line 750", exact=True).wait_for()
+        assert page.locator(".editor-overview-marker").count() == 2
         for mode in ("clean", "untracked", "fail"):
             page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?overview={mode}")
             page.locator(".editor-overview").wait_for()

@@ -50,3 +50,21 @@ test("covers inserted text and keeps ranges ordered with repeated context", () =
     for (let i = 0; i < b.length; i++) if (b[i].startsWith("edit")) assert.ok(ranges.some(r => r.kind !== "removed" && r.startLine <= i + 1 && r.endLine >= i + 1));
   }
 });
+
+test("large inserted blocks stay separate from distant changes", () => {
+  const before = Array.from({ length: 4000 }, (_, i) => `line ${i + 1}`);
+  const after = [...before]; after[3099] = "changed";
+  after.splice(100, 0, ...Array.from({ length: 500 }, (_, i) => `added ${i}`));
+  assert.deepEqual(editorChanges(before.join("\n"), after.join("\n")), [
+    { startLine: 101, endLine: 600, kind: "added" },
+    { startLine: 3600, endLine: 3600, kind: "modified" },
+  ]);
+});
+test("large deletions stay separate from changes beyond unchanged islands", () => {
+  const before = Array.from({ length: 4000 }, (_, i) => `line ${i + 1}`);
+  const after = [...before]; after[3099] = "changed"; after.splice(100, 500);
+  assert.deepEqual(editorChanges(before.join("\n"), after.join("\n")), [
+    { startLine: 101, endLine: 101, kind: "removed" },
+    { startLine: 2600, endLine: 2600, kind: "modified" },
+  ]);
+});

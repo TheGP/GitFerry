@@ -36,7 +36,7 @@ export function EditorOverview(props: { changes: EditorChange[]; scroller: HTMLD
     onCleanup(() => { observer.disconnect(); scroll.removeEventListener("scroll", updateViewport); cancelAnimationFrame(frame); });
   });
   createEffect(() => { props.changes; measure(); });
-  const label = (change: EditorChange) => `${change.kind === "added" ? "Added" : change.kind === "modified" ? "Modified" : "Deleted"} ${change.kind === "removed" ? "before line" : change.startLine === change.endLine ? "line" : "lines"} ${change.startLine}${change.endLine > change.startLine ? `–${change.endLine}` : ""}`;
+  const label = (change: EditorChange) => `${change.kind === "added" ? "Added" : change.kind === "modified" ? "Modified" : "Deleted"} ${change.kind === "removed" ? "near line" : change.startLine === change.endLine ? "line" : "lines"} ${change.startLine}${change.endLine > change.startLine ? `–${change.endLine}` : ""}`;
   return <nav class="editor-overview" aria-label="File changes" title={props.error || "Changes compared with the base revision. Click a marker to scroll to its code."}>
     <div class="editor-overview-viewport" style={{ top: `${viewport().top}%`, height: `${viewport().height}%` }} />
     <For each={markers()}>{marker => <button class={`editor-overview-marker ${marker.kind}`} style={{ top: `${marker.top}%`, height: `${marker.height}%` }} aria-label={label(marker)} title={label(marker)} onMouseDown={event => event.preventDefault()} onClick={() => props.onNavigate(marker.startLine)} />}</For>

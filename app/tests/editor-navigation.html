@@ -26,6 +26,10 @@
     code.splice(279, 1);
     code.splice(189, 0, "    const addedInMiddle = true;");
   }
+  if (options.get("overview") === "large") {
+    code[249] = "    const distantEdit = true;";
+    code.splice(100, 0, ...Array.from({ length: 500 }, (_, i) => `    const largeAddition${i} = ${i};`));
+  }
   const content = code.join("\n");
   window.navigationEffects = { saves: 0, external: 0 };
   const ranges = [
