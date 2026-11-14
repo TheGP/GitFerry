@@ -46,7 +46,7 @@ async function clickWorktree(page, checkout) {
   await click(page, `.worktree-tab:nth-child(${index + 1})`);
 }
 
-async function doubleClickDiffWord(page, lineText, word) {
+async function doubleClickDiffWord(page, lineText, word, opensEditor = true) {
   await page.waitForFunction(text => [...document.querySelectorAll(".diff-line .line-text")].some(line => line.textContent === text), {}, lineText);
   const point = await page.evaluate(({ lineText, word }) => {
     const line = [...document.querySelectorAll(".diff-line .line-text")].find(item => item.textContent === lineText);
@@ -65,7 +65,7 @@ async function doubleClickDiffWord(page, lineText, word) {
   }, { lineText, word });
   // Let Chromium select the word itself; an artificial Range would miss the double-click bug.
   await page.mouse.click(point.x, point.y, { count: 2 });
-  await page.waitForFunction(text => document.querySelector(".editor-input")?.value.includes(text), {}, lineText);
+  if (opensEditor) await page.waitForFunction(text => document.querySelector(".editor-input")?.value.includes(text), {}, lineText);
   await new Promise(resolve => setTimeout(resolve, 350));
   const selection = await page.evaluate(() => {
     const selected = window.getSelection();
@@ -1168,6 +1168,9 @@ async function exercisePaneExpansion(page, file, text) {
   await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
   await paneShortcut("f");
   await fillsWorkspace(".details-pane"); await checkDraft();
+  await doubleClickDiffWord(page, "findNeedleAlpha();", "findNeedleAlpha", false);
+  assert.ok(await page.$(".workspace.expanded-changes"), "Double-clicking code to copy must keep Changes expanded");
+  await checkDraft();
   await paneShortcut("f");
   assert.equal(await page.$(".workspace.pane-expanded"), null);
   await page.$eval(".editor-input", input => input.focus());
@@ -1183,10 +1186,12 @@ async function exercisePaneExpansion(page, file, text) {
   await click(page, '.editor-pane button[aria-label="Expand editor pane"]');
   await page.waitForSelector(".workspace.expanded-editor");
   await fillsWorkspace(".editor-pane"); await checkDraft();
-  assert.ok(await page.$eval(`.editor-row:nth-child(${line})`, row => {
+  // Expansion restores its scroll anchor in an animation frame.
+  await page.waitForFunction(line => {
+    const row = document.querySelector(`.editor-row:nth-child(${line})`);
     const r = row.getBoundingClientRect(), view = row.closest(".editor-scroll").getBoundingClientRect();
     return r.top >= view.top && r.bottom <= view.bottom;
-  }), "Expanding must keep the current code in view");
+  }, {}, line);
   await paneShortcut("2");
   assert.equal(await page.$(".workspace.pane-expanded"), null);
   await checkDraft();
@@ -1261,6 +1266,23 @@ async function exerciseFindInView(page) {
   await click(page, 'input[aria-label="Wrap diff lines"]');
   await page.waitForFunction(() => document.querySelector('.summary-diff-card[data-path="search.ts"] .diff-content')?.scrollLeft === 0);
   assert.ok(await page.$eval('.summary-diff-card[data-path="search.ts"] .diff-content', pane => pane.scrollWidth <= pane.clientWidth + 1), "Wrapped long tokens must fit the pane");
+  const beforeCopyEditor = await page.evaluate(() => {
+    window.__copyOnlyEditor = document.querySelector(".editor-input");
+    return window.__copyOnlyEditor?.value ?? null;
+  });
+  await page.keyboard.down("Control"); await page.keyboard.down("Shift"); await page.keyboard.press("1"); await page.keyboard.up("Shift"); await page.keyboard.up("Control");
+  await page.waitForSelector(".workspace.expanded-changes");
+  await doubleClickDiffWord(page, "findNeedleAlpha();", "findNeedleAlpha", false);
+  assert.ok(await page.$(".workspace.expanded-changes"));
+  assert.equal(await page.evaluate(() => document.querySelector(".editor-input") === window.__copyOnlyEditor), true, "Copying in expanded Summary must not create an editor");
+  assert.equal(await page.evaluate(() => document.querySelector(".editor-input")?.value ?? null), beforeCopyEditor);
+  await click(page, '.summary-open-tab[aria-label="Open search.ts in a tab"]');
+  await page.waitForSelector('.diff-heading');
+  await doubleClickDiffWord(page, "export function previousName() {}", "previousName", false);
+  assert.ok(await page.$(".workspace.expanded-changes"), "Copying removed code in a file tab must keep Changes expanded");
+  assert.equal(await page.evaluate(() => document.querySelector(".editor-input") === window.__copyOnlyEditor), true);
+  await click(page, '.details-tab-close[aria-label="Close search.ts"]');
+  await click(page, 'button[aria-label="Restore Changes pane"]');
   await deliverFileLink(page, fileLinkUrl(file));
   await page.waitForFunction(value => document.querySelector(".editor-input")?.value === value, {}, text);
   // Hit the transparent textarea with real mouse events, using the syntax layer's glyph position.

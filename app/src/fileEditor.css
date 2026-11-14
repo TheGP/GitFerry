@@ -78,3 +78,16 @@
 .editor-conflict-count { color: #f0b37a; }
 .editor-mark-resolved { border-color: #3fa66b; background: color-mix(in srgb, #3fa66b 25%, transparent); }
 .editor-mark-resolved:disabled { opacity: .5; cursor: default; }
+
+/* Deleted source is a selectable preview, never part of the working textarea or its layout. */
+.editor-line-number { position: relative; }
+.editor-removed-marker { position: absolute; z-index: 2; top: 0; left: 0; width: 16px; height: var(--code-line-height, 20px); padding: 0; border: 0; background: transparent; color: #e77c75; font-size: 14px; line-height: inherit; }
+.editor-removed-marker:hover, .editor-removed-marker:focus-visible { background: var(--diff-deleted-bg); outline: 1px solid #e77c75; }
+.editor-removed { flex: 0 1 auto; min-height: 0; max-height: 40%; display: flex; flex-direction: column; border-top: 2px solid #e77c75; background: var(--theme-details); }
+.editor-removed-heading { flex: none; display: flex; align-items: center; gap: 4px; padding: 4px 8px; color: #e77c75; font-size: 12px; }
+.editor-removed-heading > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.editor-removed-heading button { flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 3px; background: var(--theme-raised); color: var(--theme-text); }
+.editor-removed-code { overflow: auto; min-height: 0; padding: 4px 0; background: var(--diff-deleted-bg); color: var(--theme-text); font-family: var(--code-font); font-size: var(--code-size); line-height: var(--code-line-height, 20px); user-select: text; -webkit-user-select: text; }
+.editor-removed-row { display: grid; grid-template-columns: 7ch minmax(0, 1fr); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
+.editor-removed-row::before { content: attr(data-line); padding-right: 2ch; color: var(--theme-muted); text-align: right; user-select: none; -webkit-user-select: none; }
+.editor-removed-row > span { min-width: 0; padding-right: 12px; }

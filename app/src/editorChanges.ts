@@ -1,5 +1,5 @@
 /** Ranges use 1-based lines in the displayed buffer. Deletions point to the following line (or EOF). */
-export type EditorChange = { startLine: number; endLine: number; kind: "added" | "modified" | "removed" };
+export type EditorChange = { startLine: number; endLine: number; kind: "added" | "modified" | "removed"; removed: { startLine: number; lines: string[] } | null };
 
 /** Bounded Myers comparison, using unique unchanged lines to separate large distant changes. */
 export function editorChanges(before: string, after: string): EditorChange[] {
@@ -14,6 +14,7 @@ export function editorChanges(before: string, after: string): EditorChange[] {
     startLine: Math.min(start + 1, Math.max(1, b.length)),
     endLine: Math.max(1, Math.min(Math.max(start + 1, stop), b.length)),
     kind: oldStart === oldStop ? "added" : start === stop ? "removed" : "modified",
+    removed: oldStart < oldStop ? { startLine: oldStart + 1, lines: a.slice(oldStart, oldStop) } : null,
   });
   const fallback = (): EditorChange[] => {
     // Keep large insertions/deletions separate without an unbounded edit-distance search.

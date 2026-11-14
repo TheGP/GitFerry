@@ -30,7 +30,10 @@
     code[249] = "    const distantEdit = true;";
     code.splice(100, 0, ...Array.from({ length: 500 }, (_, i) => `    const largeAddition${i} = ${i};`));
   }
+  if (options.get("overview") === "removed-eof") code.splice(-3);
+  if (options.get("overview") === "removed-all") code.length = 0;
   const content = code.join("\n");
+  window.navigationBaseline = baseline;
   window.navigationEffects = { saves: 0, external: 0 };
   const ranges = [
     { startLine: 176, endLine: 181, comment: "Read metadata files together instead of reading every file one by one." },

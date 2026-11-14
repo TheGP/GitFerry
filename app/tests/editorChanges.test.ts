@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { editorChanges } from "../src/editorChanges.ts";
+import { editorChanges as changesWithRemoved } from "../src/editorChanges.ts";
+
+// Keep assertions about current-file coordinates separate from deleted source text.
+const editorChanges = (before: string, after: string) => changesWithRemoved(before, after).map(({ startLine, endLine, kind }) => ({ startLine, endLine, kind }));
 
 test("finds distant changes across a large file, including staged plus unsaved edits", () => {
   const before = Array.from({ length: 4000 }, (_, i) => `line ${i + 1}`);
@@ -67,4 +70,22 @@ test("large deletions stay separate from changes beyond unchanged islands", () =
     { startLine: 101, endLine: 101, kind: "removed" },
     { startLine: 2600, endLine: 2600, kind: "modified" },
   ]);
+});
+
+test("retains actual deleted source lines for replacements, pure deletions and EOF", () => {
+  const before = "first\r\nold α\r\nremoved Unicode 文件\r\nkeep\r\nlast";
+  const changes = changesWithRemoved(before, "first\nreplacement\nkeep");
+  assert.deepEqual(changes.map(change => change.removed), [
+    { startLine: 2, lines: ["old α", "removed Unicode 文件"] },
+    { startLine: 5, lines: ["last"] },
+  ]);
+  assert.deepEqual(changesWithRemoved("", "new")[0].removed, null);
+  assert.deepEqual(changesWithRemoved("whole file", "")[0].removed, { startLine: 1, lines: ["whole file"] });
+});
+test("deleted previews follow unsaved edits and disappear when undone", () => {
+  assert.deepEqual(changesWithRemoved("a\nb\nc", "prefix\na\nc").map(change => change.removed).filter(Boolean), [{ startLine: 2, lines: ["b"] }]);
+  assert.deepEqual(changesWithRemoved("a\nb\nc", "a\nb\nc"), []);
+  const before = Array.from({ length: 2000 }, (_, i) => `line ${i + 1}`);
+  const after = [...before]; after.splice(100, 500); after[1200] = "changed";
+  assert.deepEqual(changesWithRemoved(before.join("\n"), after.join("\n"))[0].removed, { startLine: 101, lines: before.slice(100, 600) });
 });

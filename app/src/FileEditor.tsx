@@ -4,7 +4,7 @@ import { highlightFileLines } from "./diffHighlight";
 import { describeError } from "./statusMessages";
 import { filePosition } from "./fileLinks";
 import "./fileEditor.css";
-import { editorChanges } from "./editorChanges";
+import { editorChanges, type EditorChange } from "./editorChanges";
 import { EditorOverview } from "./EditorOverview";
 import { PaneExpandButton } from "./PaneExpandButton";
 
@@ -59,6 +59,16 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
   const [baseline, setBaseline] = createSignal<string | null>(null);
   const [overviewError, setOverviewError] = createSignal("");
   const changes = createMemo(() => { const base = baseline(), current = doc(); return base !== null && current ? editorChanges(base, current.text) : []; });
+  const [removedStart, setRemovedStart] = createSignal<number | null>(null);
+  const removals = createMemo(() => changes().filter(change => change.removed));
+  const removedChange = createMemo(() => removals().find(change => change.removed?.startLine === removedStart()));
+  const removedLines = createMemo(() => highlightFileLines(removedChange()?.removed?.lines.join("\n") ?? "", props.target.path));
+  const removalsByLine = createMemo(() => {
+    const result = new Map<number, EditorChange>();
+    for (const change of removals()) if (!result.has(change.startLine)) result.set(change.startLine, change);
+    return result;
+  });
+  createEffect(() => { if (removedStart() !== null && !removedChange()) setRemovedStart(null); });
   const [loading, setLoading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [openingExternal, setOpeningExternal] = createSignal(false);
@@ -194,7 +204,7 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
     if (props.target.preserveBuffer && loadedIdentity === identity && doc()) return;
     loadedIdentity = identity;
     clearTimeout(navigationTimer); setNavigationLine(null);
-    setDoc(null); setMarks(null); void load(false);
+    setDoc(null); setMarks(null); setRemovedStart(null); void load(false);
   }));
   createEffect(on(() => [props.target.repo, props.target.path, props.target.commit, props.baselineRevision] as const, ([repo, path, commit]) => {
     let cancelled = false;
@@ -204,6 +214,20 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
     }).catch(cause => { if (!cancelled) setOverviewError(`Change markers unavailable: ${String(cause)}`); });
     onCleanup(() => { cancelled = true; });
   }));
+  let changeFrame = 0;
+  onCleanup(() => cancelAnimationFrame(changeFrame));
+  function showChange(change: EditorChange) {
+    setRemovedStart(change.removed?.startLine ?? null);
+    // The preview changes the viewport height; measure after the layout is updated.
+    cancelAnimationFrame(changeFrame);
+    const id = loadId, nonce = props.target.nonce;
+    changeFrame = requestAnimationFrame(() => { if (id === loadId && nonce === props.target.nonce) scrollToChange(change.startLine); });
+  }
+  function stepRemoval(direction: number) {
+    const list = removals(), index = list.indexOf(removedChange()!);
+    const next = list[(index + direction + list.length) % list.length];
+    if (next) showChange(next);
+  }
   function scrollToChange(line: number) {
     const row = rowsElement.children[line - 1] as HTMLElement | undefined;
     if (!row) return;
@@ -333,7 +357,7 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
       <div class="editor-scroll" ref={scroller}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>
           <div class="editor-body" style={{ "--editor-gutter": gutter() }}>
-            <div class="editor-rows" ref={rowsElement}><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""} ${isHighlighted(index) ? "ai-highlight" : ""} ${navigationLine() === index + 1 ? "navigation-highlight" : ""} ${conflictClasses()[index] ?? ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /><Show when={!readOnly() && conflictAt().get(index)}>{conflict => <span class="editor-conflict-actions"><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "current")}>Accept current</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "incoming")}>Accept incoming</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "both")}>Accept both</button></span>}</Show></div>}</Index></div>
+            <div class="editor-rows" ref={rowsElement}><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""} ${isHighlighted(index) ? "ai-highlight" : ""} ${navigationLine() === index + 1 ? "navigation-highlight" : ""} ${conflictClasses()[index] ?? ""}`}><span class="editor-line-number">{index + 1}<Show when={removalsByLine().get(index + 1)}>{change => <button class="editor-removed-marker" aria-label={`Show removed lines near line ${index + 1}`} title={`Show ${change().removed!.lines.length} removed line${change().removed!.lines.length === 1 ? "" : "s"}`} onMouseDown={event => event.preventDefault()} onClick={() => showChange(change())}>▸</button>}</Show></span><span class="editor-code" innerHTML={html()} /><Show when={!readOnly() && conflictAt().get(index)}>{conflict => <span class="editor-conflict-actions"><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "current")}>Accept current</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "incoming")}>Accept incoming</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "both")}>Accept both</button></span>}</Show></div>}</Index></div>
             <textarea class="editor-input" ref={input} aria-label={`Edit ${props.target.path}`} spellcheck={false} autocapitalize="off" autocomplete="off" wrap="soft" rows={1} cols={1} readOnly={saving() || readOnly()} onPointerDown={() => { pendingCaret = null; caretInteraction++; revealedNonce = props.target.nonce; }} value={doc()?.text ?? ""} onInput={event => {
               const text = event.currentTarget.value;
               const before = lines().length;
@@ -348,8 +372,12 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
           </div>
         </Show>
       </div>
-      <Show when={doc()}><EditorOverview changes={changes()} scroller={scroller} rows={rowsElement} error={overviewError()} onNavigate={scrollToChange} /></Show>
+      <Show when={doc()}><EditorOverview changes={changes()} scroller={scroller} rows={rowsElement} error={overviewError()} onNavigate={showChange} /></Show>
       </div>
+      <Show when={shown() && removedChange()}>{change => <section class="editor-removed" aria-label="Removed code" onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setRemovedStart(null); } }}>
+        <div class="editor-removed-heading"><span>Removed {change().removed!.lines.length === 1 ? "line" : "lines"} {change().removed!.startLine}{change().removed!.lines.length > 1 ? `–${change().removed!.startLine + change().removed!.lines.length - 1}` : ""} · base revision</span><Show when={removals().length > 1}><button aria-label="Previous removed block" onMouseDown={event => event.preventDefault()} onClick={() => stepRemoval(-1)}>↑</button><button aria-label="Next removed block" onMouseDown={event => event.preventDefault()} onClick={() => stepRemoval(1)}>↓</button></Show><button aria-label="Close removed code" onMouseDown={event => event.preventDefault()} onClick={() => setRemovedStart(null)}>×</button></div>
+        <div class="editor-removed-code"><Index each={removedLines()}>{(html, index) => <div class="editor-removed-row" data-line={change().removed!.startLine + index}><span innerHTML={html()} /></div>}</Index></div>
+      </section>}</Show>
       <div class="editor-status" style={{ display: shown() ? undefined : "none" }}><span>Ln {caretLine() + 1}</span><span>{readOnly() ? "Read-only" : saving() ? "Saving…" : dirty() ? "Unsaved · Ctrl+S to save" : "Saved to working tree"}</span></div>
     </aside>
   </>;

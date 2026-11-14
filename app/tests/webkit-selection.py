@@ -295,6 +295,76 @@ def editor_change_overview(browser):
         page.close()
 
 
+def editor_removed_code(browser):
+    page = browser.new_page(viewport={"width": 1100, "height": 650})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        for width, size, editable in ((560, 13, False), (360, 24, True)):
+            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?overview=changes&width={width}&size={size}{'&editable' if editable else ''}")
+            editor = page.locator(".editor-input")
+            editor.wait_for()
+            shift = 1 if editable else 0
+            if editable:
+                editor.fill("// unsaved prefix\n" + editor.input_value())
+            content = editor.input_value()
+            editor.evaluate("e => {e.focus();e.setSelectionRange(3,15)}")
+            button = page.get_by_role("button", name=f"Show removed lines near line {20 + shift}", exact=True)
+            button.scroll_into_view_if_needed()
+            button.click()
+            page.locator(".editor-removed").wait_for()
+            assert "Removed line 20" in page.locator(".editor-removed-heading").inner_text()
+            assert "const value20 = 20;" in page.locator(".editor-removed-code").inner_text()
+            assert editor.input_value() == content
+            assert editor.evaluate("e => [e.selectionStart,e.selectionEnd]") == [3,15]
+            assert editor.evaluate("e => e.readOnly") == (not editable)
+            # The textarea and syntax text must still align after the preview changes the viewport.
+            page.locator(f".editor-row:nth-child({20 + shift})").evaluate("e => e.scrollIntoView({block:'center'})")
+            point = word_point(page, f".editor-row:nth-child({20 + shift}) .editor-code", "editedNearTop")
+            page.mouse.dblclick(**point)
+            page.wait_for_timeout(100)
+            assert editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)") == "editedNearTop"
+            point = word_point(page, ".editor-removed-code", "value20")
+            page.mouse.dblclick(**point)
+            page.wait_for_timeout(100)
+            assert page.evaluate("window.getSelection().toString()") == "value20"
+            # Old line numbers use CSS, so copying the whole removed block contains only source.
+            copied = page.locator(".editor-removed-code").evaluate("e => {const s=window.getSelection();s.selectAllChildren(e);return s.toString()}")
+            assert copied.strip() == "const value20 = 20;", copied
+            page.screenshot(path=f"/tmp/gitferry-webkit-removed-code-{width}.png")
+            page.get_by_role("button", name="Next removed block", exact=True).click()
+            assert "Removed line 250" in page.locator(".editor-removed-heading").inner_text()
+            page.get_by_role("button", name="Next removed block", exact=True).click()
+            assert "Removed line 280" in page.locator(".editor-removed-heading").inner_text()
+            page.get_by_role("button", name="Close removed code", exact=True).click()
+            assert page.locator(".editor-removed").count() == 0
+            assert editor.input_value() == content
+            if editable:
+                # Undoing all changes closes obsolete previews and removes every marker.
+                page.get_by_role("button", name=f"Show removed lines near line {20 + shift}", exact=True).click()
+                editor.fill(page.evaluate("window.navigationBaseline"))
+                page.wait_for_function("!document.querySelector('.editor-removed') && !document.querySelector('.editor-removed-marker')")
+            assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
+        for mode, heading, count in (("removed-eof", "Removed lines 298–300", 3), ("removed-all", "Removed lines 1–300", 300)):
+            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?overview={mode}&editable")
+            editor = page.locator(".editor-input")
+            editor.wait_for()
+            content = editor.input_value()
+            page.locator(".editor-overview-marker.removed").click()
+            assert heading in page.locator(".editor-removed-heading").inner_text()
+            assert page.locator(".editor-removed-row").count() == count
+            assert "value300" in page.locator(".editor-removed-code").inner_text()
+            assert editor.input_value() == content
+            assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
+        assert not errors, errors
+        print("WebKit: actual removed source is copyable in the editor; replacements, EOF, empty files, drafts and selection alignment passed")
+    except BaseException:
+        page.screenshot(path="/tmp/gitferry-webkit-removed-code-failure.png")
+        raise
+    finally:
+        page.close()
+
+
 def passive_diff_reading(browser):
     page = browser.new_page(viewport={"width": 1000, "height": 700})
     try:
@@ -392,6 +462,18 @@ def pane_expansion(page):
     page.set_viewport_size({"width": 1100, "height": 700})
     page.keyboard.press("Control+Shift+f")
     fills_workspace(".details-pane"); check_editor()
+    point = word_point(page, ".diff-line.added .line-text", "loading")
+    page.mouse.dblclick(**point)
+    page.wait_for_timeout(150)
+    assert page.locator(".workspace.expanded-changes").count() == 1, "Copying in expanded Changes must not switch to the editor"
+    assert page.evaluate("window.getSelection().toString()") == "loading"
+    copied = page.evaluate("""() => {
+      const clipboardData=new DataTransfer();
+      window.getSelection().anchorNode.parentElement.dispatchEvent(new ClipboardEvent('copy',{bubbles:true,cancelable:true,clipboardData}));
+      return clipboardData.getData('text/plain');
+    }""")
+    assert copied == "loading"
+    check_editor()
     page.keyboard.press("Control+Shift+f")
     assert page.locator(".workspace.pane-expanded").count() == 0
     editor.focus()
@@ -443,6 +525,7 @@ def main():
             browser = playwright.webkit.launch()
             editor_range_navigation(browser)
             editor_change_overview(browser)
+            editor_removed_code(browser)
             passive_diff_reading(browser)
             page = browser.new_page(viewport={"width": 1700, "height": 1000})
             errors = []
