@@ -1697,6 +1697,8 @@ async function exerciseSideEditor(page, repository) {
   await page.waitForSelector('.editor-input[aria-label="Edit base.txt"]', { timeout: 5000 }).catch(async error => {
     throw new Error(`${error.message}: editor=${await page.$eval(".editor-pane", pane => pane.textContent).catch(() => "not mounted")} error=${await page.$eval(".error-bar", pane => pane.textContent).catch(() => "none")}`);
   });
+  await page.waitForSelector('.editor-overview-marker.modified[aria-label="Modified line 2"]');
+  assert.equal(await page.$$(".editor-overview-marker").then(markers => markers.length), 1, "Working editor compares with HEAD using the real agent snapshot");
   const loadingRepo = makeRepo("editor-loading");
   const missingRepo = path.join(sandbox, "editor-missing");
   let releaseSnapshot;
@@ -1709,6 +1711,7 @@ async function exerciseSideEditor(page, repository) {
   await page.waitForSelector('.summary-diff-card[data-path="base.txt"] .diff-content');
   await page.waitForSelector('.editor-input[aria-label="Edit base.txt"]');
   await page.locator(".editor-input").fill(original + "unsaved draft\n");
+  await page.waitForSelector('.editor-overview-marker.added[aria-label="Added line 4"]');
   await click(page, "button[title='Settings']");
   const oldEditor = await page.$eval('select[aria-label="External editor"]', input => input.value);
   const oldExecutable = await page.$eval('input[aria-label="Editor command override"]', input => input.value);

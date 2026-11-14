@@ -1856,6 +1856,21 @@ function App() {
     if (demoMode) return demoDiff({ path: file, status: "M", target: "working" }).text;
     return (await invoke<EditableFile>("repo_read_file", { path, file })).content;
   }
+  // Compare the displayed working buffer to HEAD, including both staged and unstaged edits.
+  // Snapshot reads also work through older SSH agents and never write Git objects or the index.
+  async function readEditorBaseline(path: string, file: string, commit?: string) {
+    if (demoMode) return readSideEditorFile(path, file, commit);
+    let base: string | undefined;
+    if (!commit || commit === "staged") {
+      const tab = tabs().find(tab => repositoryKey(tab.path) === repositoryKey(path));
+      if (!tab || tab.loading || tab.loadError) throw new Error("Repository is not ready");
+      base = tab.head ?? undefined;
+    } else if (commit.includes("..")) base = commit.split("..")[0];
+    else base = (await invoke<Details>("repo_commit", { path, hash: commit })).parents[0];
+    if (!base) return "";
+    const diff = await invoke<Diff>("repo_diff", { path, target: snapshotDiffTarget(base), file, ignoreWhitespace: false, fullContext: true });
+    return !diff.text && !diff.truncated ? "" : fileFromSnapshotDiff(diff, file);
+  }
   async function saveSideEditorFile(path: string, file: string, content: string, expectedContent: string) {
     if (demoMode) { setNotice("File saved"); return; }
     const result = await invoke<SavedFile>("repo_save_file", { path, file, content, expectedContent, stage: false });
@@ -3199,7 +3214,7 @@ ${details()!.body.trimEnd()}` : ""}</pre><Show when={details()!.canEditMessage &
         </section>
       </Show>
     </Show>
-        <Show when={sideEditor()}>{target => <FileEditor target={target()} externalEditorLabel={editorOptions.find(option => option.id === editor())?.label ?? "editor"} onOpenExternal={openEditorFile} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} expanded={expandedPane() === "editor"} onToggleExpand={() => toggleExpandedPane("editor")} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} externalEditorLabel={editorOptions.find(option => option.id === editor())?.label ?? "editor"} onOpenExternal={openEditorFile} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} expanded={expandedPane() === "editor"} onToggleExpand={() => toggleExpandedPane("editor")} baselineRevision={tabs().find(tab => tab.path === target().repo)?.head ?? ""} loadBaseline={readEditorBaseline} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
     </main>
     <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? actionMessage() : repo()?.loading ? `Opening ${repo()?.name}…` : searchBusy() ? "Searching commits…" : busy() ? loadingStatus() : repo()?.loadError ? "Repository unavailable" : "Ready"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
     <Show when={actionDialog()}>{current => <div class="modal-backdrop" onClick={() => setActionDialog(null)}><div class="action-dialog" role="dialog" aria-modal="true" aria-label={current().title} onClick={event => event.stopPropagation()}>

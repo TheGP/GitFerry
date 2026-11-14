@@ -18,12 +18,20 @@
     "            }));",
     "",
     "            results.push(...batch.filter((item): item is Entry => item !== undefined));");
+  const options = new URLSearchParams(location.search);
+  const baseline = code.join("\n");
+  if (options.get("overview") === "changes") {
+    code[19] = "    const editedNearTop = true;";
+    code[249] = "    const editedNearBottom = true;";
+    code.splice(279, 1);
+    code.splice(189, 0, "    const addedInMiddle = true;");
+  }
   const content = code.join("\n");
+  window.navigationEffects = { saves: 0, external: 0 };
   const ranges = [
     { startLine: 176, endLine: 181, comment: "Read metadata files together instead of reading every file one by one." },
     { startLine: 246, endLine: 251, comment: "Queue work within this process so sessions do not keep trying the same lock." },
   ];
-  const options = new URLSearchParams(location.search);
   const width = Number(options.get("width")) || 560;
   const size = Number(options.get("size")) || 13;
   document.documentElement.style.setProperty("--code-size", `${size}px`);
@@ -32,8 +40,12 @@
     target: { repo: "/navigation-fixture", path: "example.ts", line: 176, marks: null, nonce: 1, readOnly: !options.has("editable"), annotation: { ...ranges[0], ranges } },
     active: true, conflicted: false, width, externalEditorLabel: "VS Code",
     load: async () => content,
-    save: async () => { throw new Error("Navigation must never save a file"); },
-    onOpenExternal: async () => { throw new Error("Navigation must stay in GitFerry"); },
+    loadBaseline: async () => {
+      if (options.get("overview") === "fail") throw new Error("Baseline connection unavailable");
+      return options.get("overview") === "untracked" ? "" : baseline;
+    },
+    save: async () => { window.navigationEffects.saves++; throw new Error("Navigation must never save a file"); },
+    onOpenExternal: async () => { window.navigationEffects.external++; throw new Error("Navigation must stay in GitFerry"); },
     onDirty: () => {}, onClose: () => {}, onClearAnnotation: () => {}, onResize: () => {}, onMarkResolved: () => {},
   }), document.getElementById("editor-fixture"));
 </script>

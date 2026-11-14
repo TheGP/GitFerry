@@ -28,7 +28,15 @@
 .editor-error { flex: none; padding: 6px 14px; border-bottom: 1px solid var(--theme-border); color: #f3a8a0; font-size: 12px; overflow-wrap: anywhere; }
 .editor-status { flex: none; display: flex; justify-content: space-between; gap: 12px; padding: 3px 12px; border-top: 1px solid var(--theme-border); background: var(--theme-heading); color: var(--theme-muted); font-size: 12px; }
 
-.editor-scroll { flex: 1; min-height: 0; overflow: auto; }
+.editor-viewport { flex: 1; min-height: 0; display: flex; }
+.editor-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
+.editor-overview { position: relative; flex: 0 0 14px; overflow: hidden; border-left: 1px solid var(--theme-border); background: var(--theme-details); }
+.editor-overview-viewport { position: absolute; inset-inline: 0; background: #8882; pointer-events: none; }
+.editor-overview-marker { position: absolute; left: 2px; right: 2px; min-height: 3px; padding: 0; border: 0; border-radius: 1px; cursor: pointer; }
+.editor-overview-marker.added { background: #63b983; }
+.editor-overview-marker.modified { background: #65a5df; }
+.editor-overview-marker.removed { background: #e77c75; }
+.editor-overview-marker:hover, .editor-overview-marker:focus-visible { outline: 1px solid var(--theme-text); outline-offset: 1px; z-index: 1; }
 /* The highlighted rows and the transparent textarea on top share font, width, padding and wrapping, so the caret lands on the colored text. */
 .editor-body { position: relative; padding: 6px 0 35vh; font-family: var(--code-font); font-size: var(--code-size); line-height: var(--code-line-height, 20px); }
 .editor-row { position: relative; min-height: var(--code-line-height, 20px); display: grid; grid-template-columns: var(--editor-gutter) minmax(0, 1fr); }

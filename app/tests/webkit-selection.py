@@ -221,6 +221,76 @@ def editor_range_navigation(browser):
         page.close()
 
 
+def editor_change_overview(browser):
+    page = browser.new_page(viewport={"width": 1100, "height": 650})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        for width, size in ((560, 13), (360, 24)):
+            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?overview=changes&editable&width={width}&size={size}")
+            editor = page.locator(".editor-input")
+            editor.wait_for()
+            page.get_by_role("button", name="Modified line 251", exact=True).wait_for()
+            assert page.locator(".editor-overview-marker").count() == 4
+            # New lines in an unsaved buffer must shift distant markers, without saving.
+            editor.fill("// unsaved first line\n" + editor.input_value())
+            marker = page.get_by_role("button", name="Modified line 252", exact=True)
+            marker.wait_for()
+            editor.evaluate("e => {e.focus(); e.setSelectionRange(3, 15)}")
+            content = editor.input_value()
+            for name, line in (("Modified line 21", 21), ("Added line 191", 191), ("Modified line 252", 252), ("Deleted before line 282", 282)):
+                marker = page.get_by_role("button", name=name, exact=True)
+                # The map measures actual wrapped rows, rather than assuming fixed line heights.
+                geometry = marker.evaluate("""(marker, line) => {
+                  const scroll = document.querySelector('.editor-scroll');
+                  const row = document.querySelector('.editor-rows').children[line - 1];
+                  return {actual: parseFloat(marker.style.top), expected: row.offsetTop / scroll.scrollHeight * 100};
+                }""", line)
+                assert abs(geometry["actual"] - geometry["expected"]) < 1, (name, geometry)
+                marker.click()
+                page.wait_for_timeout(100)
+                geometry = page.evaluate("""line => {
+                  const scroll = document.querySelector('.editor-scroll').getBoundingClientRect();
+                  const row = document.querySelector('.editor-rows').children[line - 1].getBoundingClientRect();
+                  return {top: row.top, bottom: row.bottom, viewTop: scroll.top, viewBottom: scroll.bottom};
+                }""", line)
+                assert geometry["top"] >= geometry["viewTop"] - 1 and geometry["top"] < geometry["viewBottom"], (name, geometry)
+                assert editor.evaluate("e => [e.selectionStart, e.selectionEnd]") == [3, 15]
+                assert editor.input_value() == content
+            # Resize the pane and viewport: marker positions must follow rewrapped content.
+            page.set_viewport_size({"width": 800, "height": 480})
+            page.locator(".editor-pane").evaluate("e => e.style.width = '310px'")
+            page.wait_for_timeout(150)
+            marker = page.get_by_role("button", name="Modified line 252", exact=True)
+            marker.focus()
+            page.keyboard.press("Enter")
+            assert marker.evaluate("e => document.activeElement === e")
+            assert editor.evaluate("e => [e.selectionStart, e.selectionEnd]") == [3, 15]
+            # Undo the draft through the input path: markers return to saved-buffer positions.
+            editor.fill(content.removeprefix("// unsaved first line\n"))
+            page.get_by_role("button", name="Modified line 251", exact=True).wait_for()
+            assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
+            page.screenshot(path=f"/tmp/gitferry-webkit-overview-{width}.png")
+        for mode in ("clean", "untracked", "fail"):
+            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?overview={mode}")
+            page.locator(".editor-overview").wait_for()
+            if mode == "untracked":
+                page.get_by_role("button", name="Added lines 1–300", exact=True).wait_for()
+            elif mode == "fail":
+                page.wait_for_function("document.querySelector('.editor-overview').title.includes('Baseline connection unavailable')")
+                assert page.locator(".editor-overview-marker").count() == 0
+            else:
+                page.wait_for_timeout(100)
+                assert page.locator(".editor-overview-marker").count() == 0
+        assert not errors, errors
+        print("WebKit: overview markers cover all distant changes, wrapped rows, draft edits, resize and selection-safe navigation")
+    except BaseException:
+        page.screenshot(path="/tmp/gitferry-webkit-overview-failure.png")
+        raise
+    finally:
+        page.close()
+
+
 def passive_diff_reading(browser):
     page = browser.new_page(viewport={"width": 1000, "height": 700})
     try:
@@ -368,6 +438,7 @@ def main():
         with sync_playwright() as playwright:
             browser = playwright.webkit.launch()
             editor_range_navigation(browser)
+            editor_change_overview(browser)
             passive_diff_reading(browser)
             page = browser.new_page(viewport={"width": 1700, "height": 1000})
             errors = []

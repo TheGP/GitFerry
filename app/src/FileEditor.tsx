@@ -4,6 +4,8 @@ import { highlightFileLines } from "./diffHighlight";
 import { describeError } from "./statusMessages";
 import { filePosition } from "./fileLinks";
 import "./fileEditor.css";
+import { editorChanges } from "./editorChanges";
+import { EditorOverview } from "./EditorOverview";
 import { PaneExpandButton } from "./PaneExpandButton";
 
 /** A hunk's changes in the new file, as 1-based lines: added lines, and lines that removed lines sat directly above. */
@@ -49,11 +51,14 @@ function insertText(input: HTMLTextAreaElement, text: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-export function FileEditor(props: { target: EditorTarget; revision?: string; width: number; expanded?: boolean; onToggleExpand?: () => void; active: boolean; conflicted: boolean; externalEditorLabel: string; onOpenExternal: (repo: string, path: string, line: number) => Promise<void>; onMarkResolved: (remaining: number) => void; load: (repo: string, path: string, commit?: string) => Promise<string>; save: (repo: string, path: string, content: string, expected: string) => Promise<void>; onDirty: (dirty: boolean) => void; onClose: () => void; onClearAnnotation: () => void; onResize: (event: PointerEvent) => void }) {
+export function FileEditor(props: { target: EditorTarget; baselineRevision?: string; loadBaseline?: (repo: string, path: string, commit?: string) => Promise<string>; revision?: string; width: number; expanded?: boolean; onToggleExpand?: () => void; active: boolean; conflicted: boolean; externalEditorLabel: string; onOpenExternal: (repo: string, path: string, line: number) => Promise<void>; onMarkResolved: (remaining: number) => void; load: (repo: string, path: string, commit?: string) => Promise<string>; save: (repo: string, path: string, content: string, expected: string) => Promise<void>; onDirty: (dirty: boolean) => void; onClose: () => void; onClearAnnotation: () => void; onResize: (event: PointerEvent) => void }) {
   let scroller!: HTMLDivElement;
   let rowsElement!: HTMLDivElement;
   let input!: HTMLTextAreaElement;
   const [doc, setDoc] = createSignal<EditorDoc | null>(null);
+  const [baseline, setBaseline] = createSignal<string | null>(null);
+  const [overviewError, setOverviewError] = createSignal("");
+  const changes = createMemo(() => { const base = baseline(), current = doc(); return base !== null && current ? editorChanges(base, current.text) : []; });
   const [loading, setLoading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [openingExternal, setOpeningExternal] = createSignal(false);
@@ -191,6 +196,22 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
     clearTimeout(navigationTimer); setNavigationLine(null);
     setDoc(null); setMarks(null); void load(false);
   }));
+  createEffect(on(() => [props.target.repo, props.target.path, props.target.commit, props.baselineRevision] as const, ([repo, path, commit]) => {
+    let cancelled = false;
+    setBaseline(null); setOverviewError("");
+    if (path && props.loadBaseline) void props.loadBaseline(repo, path, commit).then(value => {
+      if (!cancelled) setBaseline(value);
+    }).catch(cause => { if (!cancelled) setOverviewError(`Change markers unavailable: ${String(cause)}`); });
+    onCleanup(() => { cancelled = true; });
+  }));
+  function scrollToChange(line: number) {
+    const row = rowsElement.children[line - 1] as HTMLElement | undefined;
+    if (!row) return;
+    // Navigation must leave the native selection and unsaved buffer untouched.
+    scroller.scrollTop = Math.max(0, row.offsetTop - scroller.clientHeight / 4);
+    clearTimeout(navigationTimer); setNavigationLine(line);
+    navigationTimer = setTimeout(() => setNavigationLine(null), 1500);
+  }
   createEffect(on(() => props.target.nonce, () => { if (doc()) reveal(); }, { defer: true }));
   // The file changed on disk (a discard, a checkout, another editor): pick it up unless there are unsaved edits.
   createEffect(on(() => props.revision, () => { if (doc() && !readOnly() && !dirty() && !saving()) void load(true); }, { defer: true }));
@@ -308,7 +329,8 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
       <div class="editor-breadcrumbs" style={{ display: shown() ? undefined : "none" }} title={props.target.path}><Index each={crumbs()}>{(part, index) => <><Show when={index}><span class="editor-crumb-separator">›</span></Show><span class={index === crumbs().length - 1 ? "editor-crumb-file" : ""}>{part()}</span></>}</Index></div>
       <Show when={shown() && props.target.annotation}>{annotation => <section class="editor-annotation" aria-label="AI explanation"><div class="editor-annotation-heading"><span>AI · {annotationRanges().length > 1 ? `${annotationRanges().length} ranges` : `Lines ${annotation().startLine}${annotation().endLine !== annotation().startLine ? `–${annotation().endLine}` : ""}`}</span><button title="Clear AI highlights" onClick={props.onClearAnnotation}>×</button></div><Show when={annotation().comment}><p>{annotation().comment}</p></Show><Show when={annotation().ranges}><For each={annotation().ranges}>{range => <div class="editor-annotation-range"><button title="Go to highlighted lines" onClick={() => reveal(range.startLine, false)}>Lines {range.startLine}{(range.endLine ?? range.startLine) !== range.startLine ? `–${range.endLine}` : ""}</button><Show when={range.comment}><p>{range.comment}</p></Show></div>}</For></Show></section>}</Show>
       <Show when={shown() && error()}>{message => <div class="editor-error" title={message()}>{describeError(message()).summary}<Show when={describeError(message()).help}>{help => <p>{help()}</p>}</Show></div>}</Show>
-      <div class="editor-scroll" ref={scroller} style={{ display: shown() ? undefined : "none" }}>
+      <div class="editor-viewport" style={{ display: shown() ? undefined : "none" }}>
+      <div class="editor-scroll" ref={scroller}>
         <Show when={doc()} fallback={<div class="empty-note">{loading() ? "Loading file…" : error() ? "" : "No file loaded"}</div>}>
           <div class="editor-body" style={{ "--editor-gutter": gutter() }}>
             <div class="editor-rows" ref={rowsElement}><Index each={lines()}>{(html, index) => <div class={`editor-row ${index === caretLine() ? "caret" : ""} ${isAdded(index) ? "added" : ""} ${removedAbove(index) ? "removed-above" : ""} ${isHighlighted(index) ? "ai-highlight" : ""} ${navigationLine() === index + 1 ? "navigation-highlight" : ""} ${conflictClasses()[index] ?? ""}`}><span class="editor-line-number">{index + 1}</span><span class="editor-code" innerHTML={html()} /><Show when={!readOnly() && conflictAt().get(index)}>{conflict => <span class="editor-conflict-actions"><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "current")}>Accept current</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "incoming")}>Accept incoming</button><button onMouseDown={event => event.preventDefault()} onClick={() => resolveConflict(conflict(), "both")}>Accept both</button></span>}</Show></div>}</Index></div>
@@ -325,6 +347,8 @@ export function FileEditor(props: { target: EditorTarget; revision?: string; wid
             }} />
           </div>
         </Show>
+      </div>
+      <Show when={doc()}><EditorOverview changes={changes()} scroller={scroller} rows={rowsElement} error={overviewError()} onNavigate={scrollToChange} /></Show>
       </div>
       <div class="editor-status" style={{ display: shown() ? undefined : "none" }}><span>Ln {caretLine() + 1}</span><span>{readOnly() ? "Read-only" : saving() ? "Saving…" : dirty() ? "Unsaved · Ctrl+S to save" : "Saved to working tree"}</span></div>
     </aside>
