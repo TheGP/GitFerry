@@ -81,6 +81,7 @@ Edit working files and save with **Ctrl+S**. Saving a staged file also stages th
 | **Ctrl+Enter** | Commit staged changes |
 | **Ctrl+S** | Save an edited file |
 | **Ctrl+F** | Find displayed text, including diffs and unsaved editor contents |
+| **F** while reading Changes | Expand Changes across the app window; press again to restore |
 | **Ctrl+Shift+F** | Expand the active Changes/editor pane across the app window; press again to restore |
 | **Ctrl+Shift+1 / Ctrl+Shift+2** | Expand or restore Changes / editor directly |
 | **Enter / Shift+Enter** with Find open | Next / previous match |
@@ -88,7 +89,7 @@ Edit working files and save with **Ctrl+S**. Saving a staged file also stages th
 | **Ctrl+P** | Open the command palette |
 | **Ctrl+O** | Open a repository |
 
-*Use Cmd for commit, save, find, pane expansion, palette, and open shortcuts on macOS. Escape closes Find and keeps the matched text selected for copying; press it again to restore an expanded pane.*
+*On macOS, use Cmd instead of Ctrl for the modified shortcuts above. Plain F applies only while reading Changes. Escape closes Find and keeps the matched text selected for copying; press it again to restore an expanded pane.*
 
 ## Get GitFerry
 

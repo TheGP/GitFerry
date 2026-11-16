@@ -438,6 +438,11 @@ def passive_diff_reading(browser):
 def pane_expansion(page):
     editor = page.locator(".editor-input")
     content = editor.input_value()
+    editor.evaluate("e => {e.focus();e.setSelectionRange(e.value.length,e.value.length)}")
+    page.keyboard.press("f")
+    assert editor.input_value() == content + "f", "Plain F must type inside the editor"
+    assert page.locator(".workspace.pane-expanded").count() == 0
+    editor.fill(content)
     page.set_viewport_size({"width": 1100, "height": 700})
     editor.focus()
     editor.evaluate("e => { window.__expandedEditor = e; const start = e.value.indexOf('loading'); e.setSelectionRange(start, start + 7); }")
@@ -460,6 +465,16 @@ def pane_expansion(page):
     page.set_viewport_size({"width": 1600, "height": 700})
     page.locator(".diff-line.added .line-text").first.click()
     page.set_viewport_size({"width": 1100, "height": 700})
+    page.keyboard.press("f")
+    fills_workspace(".details-pane"); check_editor()
+    page.evaluate("""() => {
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'f',code:'KeyF',repeat:true,bubbles:true,cancelable:true}));
+      window.dispatchEvent(new KeyboardEvent('keydown',{key:'f',code:'KeyF',isComposing:true,bubbles:true,cancelable:true}));
+    }""")
+    assert page.locator(".workspace.expanded-changes").count() == 1
+    page.keyboard.press("f")
+    assert page.locator(".workspace.pane-expanded").count() == 0
+    check_editor()
     page.keyboard.press("Control+Shift+f")
     fills_workspace(".details-pane"); check_editor()
     point = word_point(page, ".diff-line.added .line-text", "loading")
@@ -486,6 +501,13 @@ def pane_expansion(page):
     fills_workspace(".editor-pane"); check_editor()
     page.keyboard.press("Control+f")
     page.locator(".find-bar").wait_for()
+    find_input = page.locator(".find-bar input")
+    query = find_input.input_value()
+    find_input.evaluate("e => {e.focus();e.setSelectionRange(e.value.length,e.value.length)}")
+    page.keyboard.press("f")
+    assert find_input.input_value() == query + "f", "Plain F must type into Find"
+    assert page.locator(".workspace.expanded-editor").count() == 1
+    find_input.fill(query)
     page.keyboard.press("Meta+Shift+f")
     assert page.locator(".workspace.pane-expanded").count() == 0
     assert page.locator(".find-bar").count() == 1

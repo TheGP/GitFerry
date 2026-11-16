@@ -3049,6 +3049,14 @@ function App() {
       if (event.defaultPrevented || event.isComposing || event.altKey) return;
       const modalOpen = Boolean(sshPrompt()) || fileFinderOpen() || errorDetails() || paletteOpen() || showOpen() || showSettings() || Boolean(actionDialog()) || Boolean(rebasePlan()) || Boolean(refMenu()) || Boolean(fileMenu()) || branchMenu() || tabListOpen() || pushMenu() || pullMenu() || moreMenu() || stashMenu();
       if (modalOpen) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const typing = Boolean(target?.closest("input, textarea, select, .find-bar")) || target instanceof HTMLElement && target.isContentEditable;
+      const readingChanges = expandedPane() === "changes" || !expandedPane() && !target?.closest(".editor-pane") && activePane === "changes";
+      if (event.key.toLowerCase() === "f" && !event.metaKey && !event.ctrlKey && !event.shiftKey && !typing && readingChanges && repoReady()) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        if (!event.repeat) toggleExpandedPane("changes");
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && (event.code === "Digit1" || event.code === "Digit2" || event.key.toLowerCase() === "f") && repoReady()) {
         event.preventDefault(); event.stopImmediatePropagation();
         let pane = expandedPane() ?? activePane;

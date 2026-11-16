@@ -1135,6 +1135,11 @@ async function exercisePaneExpansion(page, file, text) {
   await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
   const draft = text + "\n" + Array.from({ length: 100 }, (_, i) => `// unsaved filler ${i}`).join("\n");
   await page.locator(".editor-input").fill(draft);
+  await page.$eval(".editor-input", input => { input.focus(); input.setSelectionRange(input.value.length, input.value.length); });
+  await page.keyboard.press("f");
+  assert.equal(await page.$eval(".editor-input", input => input.value), draft + "f", "F must type in the editor instead of expanding a pane");
+  assert.equal(await page.$(".workspace.pane-expanded"), null);
+  await page.locator(".editor-input").fill(draft);
   const word = "findNeedleAlpha", start = draft.lastIndexOf(word);
   const line = draft.slice(0, start).split("\n").length;
   await page.$eval(".editor-input", (input, { start, word }) => { input.focus(); input.setSelectionRange(start, start + word.length); window.__expandedEditor = input; }, { start, word });
@@ -1166,6 +1171,16 @@ async function exercisePaneExpansion(page, file, text) {
   await page.setViewport({ width: 1600, height: 700, deviceScaleFactor: 1 });
   await click(page, ".diff-line.added .line-text");
   await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
+  await page.keyboard.press("f");
+  await fillsWorkspace(".details-pane"); await checkDraft();
+  await page.evaluate(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", {key:"f",code:"KeyF",repeat:true,bubbles:true,cancelable:true}));
+    window.dispatchEvent(new KeyboardEvent("keydown", {key:"f",code:"KeyF",isComposing:true,bubbles:true,cancelable:true}));
+  });
+  assert.ok(await page.$(".workspace.expanded-changes"), "Held F and IME composition must not repeatedly toggle Changes");
+  await page.keyboard.press("f");
+  assert.equal(await page.$(".workspace.pane-expanded"), null, "F must also restore Changes");
+  await checkDraft();
   await paneShortcut("f");
   await fillsWorkspace(".details-pane"); await checkDraft();
   await doubleClickDiffWord(page, "findNeedleAlpha();", "findNeedleAlpha", false);
@@ -1204,6 +1219,12 @@ async function exercisePaneExpansion(page, file, text) {
   assert.ok(await page.$('.workspace.expanded-editor'), "Settings closes before pane expansion");
   await page.keyboard.down("Control"); await page.keyboard.press("f"); await page.keyboard.up("Control");
   await page.waitForSelector(".find-bar");
+  const findQuery = await page.$eval(".find-bar input", input => input.value);
+  await page.$eval(".find-bar input", input => {input.focus(); input.setSelectionRange(input.value.length,input.value.length)});
+  await page.keyboard.press("f");
+  assert.equal(await page.$eval(".find-bar input", input => input.value), findQuery + "f", "F must type into Find");
+  assert.ok(await page.$(".workspace.expanded-editor"));
+  await page.locator(".find-bar input").fill(findQuery);
   await paneShortcut("f", "Meta");
   assert.equal(await page.$(".workspace.pane-expanded"), null, "Cmd+Shift+F must restore the pane while Find is open");
   assert.ok(await page.$(".find-bar"), "Pane expansion must retain the existing Find bar");
