@@ -413,6 +413,15 @@ def passive_diff_reading(browser):
             reading.replaceChildren(...[...reading.children].map(row=>row.cloneNode(true)));
           });
           await settle(); same(100,wanted,'duplicate lines use neighbouring context');
+          const makeNote=(id,text)=>{ const note=document.createElement('div'); note.className='hunk-note'; note.dataset.noteId=id; const body=document.createElement('span'); body.className='hunk-note-text'; body.textContent=text; note.append(body); note.style.minHeight='500px'; return note; };
+          let note=makeNote('reading-note','The comment being read.'); reading.insertBefore(note,row(100));
+          root.scrollTop+=offset(note)+40; const noteTop=offset(note);
+          preserveDiffScroll(root,()=>reading.insertBefore(makeNote('above-note','New AI comment above.'),note));
+          await settle(); if(Math.abs(offset(note)-noteTop)>2) throw Error('Adding a comment moved the comment being read');
+          preserveDiffScroll(root,()=>{ const updated=makeNote('reading-note','Updated comment with the same stable id.'); note.replaceWith(updated); note=updated; });
+          await settle(); if(Math.abs(offset(note)-noteTop)>2) throw Error('Updating a comment moved the reader');
+          note.remove(); reading.querySelector('[data-note-id="above-note"]').remove();
+          wanted=anchor(100);
           preserveDiffScroll(root,()=>above.prepend(makeRow('copy','code arriving during copying')));
           window.dispatchEvent(new KeyboardEvent('keydown',{key:'Meta',metaKey:true}));
           window.dispatchEvent(new KeyboardEvent('keydown',{key:'c',metaKey:true}));

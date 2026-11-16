@@ -1,6 +1,6 @@
 import { repositoryKey } from "./mcpNavigation.ts";
 
-export type Worktree = { path: string; branch: string; head: string | null; bare: boolean; prunable: boolean; mergedInto?: string | null };
+export type Worktree = { path: string; branch: string; head: string | null; bare: boolean; prunable: boolean; mergedInto?: string | null; createdAt?: number | null };
 export type WorktreeRepository = { path: string; name: string; branch: string; head?: string | null; status?: { index: string }[]; commonGitDir?: string; repositoryName?: string; worktrees?: Worktree[] };
 export const hasStagedChanges = (status: { index: string }[] = []) => status.some(entry => entry.index !== " " && entry.index !== "?");
 
@@ -36,7 +36,14 @@ export function availableWorktrees<T extends WorktreeRepository>(repo: T, tabs: 
       mergedInto: !hasStagedChanges(tab.status) && listed?.branch === tab.branch && (tab.head === undefined || tab.head === listed.head) ? listed?.mergedInto : null });
   }
   const positions = new Map(order.map((path, index) => [repositoryKey(path), index]));
-  return [...paths.values()].sort((a, b) => (positions.get(repositoryKey(a.path)) ?? order.length) - (positions.get(repositoryKey(b.path)) ?? order.length));
+  const primary = repo.worktrees?.[0];
+  const primaryKey = primary && !primary.bare ? repositoryKey(primary.path) : undefined;
+  const created = (tree: Worktree) => typeof tree.createdAt === "number" && Number.isFinite(tree.createdAt) && tree.createdAt >= 0 ? tree.createdAt : Number.MAX_SAFE_INTEGER;
+  return [...paths.values()].sort((a, b) => {
+    const saved = (positions.get(repositoryKey(a.path)) ?? order.length) - (positions.get(repositoryKey(b.path)) ?? order.length);
+    if (saved) return saved;
+    return Number(repositoryKey(b.path) === primaryKey) - Number(repositoryKey(a.path) === primaryKey) || created(a) - created(b);
+  });
 }
 
 export function worktreeLabel(tree: Worktree): string {

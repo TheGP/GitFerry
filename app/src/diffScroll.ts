@@ -1,10 +1,10 @@
-// Passive refreshes keep the first visible code row at its screen position. The
+// Passive refreshes keep the first visible code row or saved note at its screen position. The
 // row's text and neighbours also identify it if the diff changes its DOM node.
 // Sticky file headings stay pinned while their code moves, so they cannot be anchors.
-const rowsSelector = ".diff-content.has-hunks .diff-line:not(.metadata):not(.hunk), .diff-content:not(.has-hunks) .diff-line";
-type Anchor = { element: HTMLElement; container: HTMLElement; path?: string; target?: string; text: string; before: string; after: string; offset: number };
+const rowsSelector = ".diff-content.has-hunks .diff-line:not(.metadata):not(.hunk), .diff-content:not(.has-hunks) .diff-line, .hunk-note";
+type Anchor = { element: HTMLElement; container: HTMLElement; path?: string; target?: string; noteId?: string; text: string; before: string; after: string; offset: number };
 const pending = new WeakMap<HTMLElement, () => void>();
-const code = (element: Element | null) => element?.querySelector(".line-text")?.textContent ?? "";
+const code = (element: Element | null) => element?.querySelector(".line-text, .hunk-note-text")?.textContent ?? "";
 function neighbour(element: Element, direction: "previousElementSibling" | "nextElementSibling") {
   let next = element[direction];
   for (let count = 0; next && count < 12; count++, next = next[direction]) {
@@ -33,7 +33,7 @@ function capture(root: HTMLElement): Anchor[] {
     if (element.matches(".diff-line") && !code(element).trim()) continue;
     const card = element.closest<HTMLElement>(".summary-diff-card");
     anchors.push({ element, container: card ?? element.closest<HTMLElement>(".diff-content") ?? root,
-      path: card?.dataset.path, target: card?.dataset.target, text: code(element),
+      path: card?.dataset.path, target: card?.dataset.target, noteId: element.dataset.noteId, text: code(element),
       before: neighbour(element, "previousElementSibling"), after: neighbour(element, "nextElementSibling"),
       offset: element.getBoundingClientRect().top - box.top });
   }
@@ -41,13 +41,14 @@ function capture(root: HTMLElement): Anchor[] {
 }
 
 function surviving(root: HTMLElement, anchor: Anchor): HTMLElement | undefined {
-  const original = root.contains(anchor.element) && code(anchor.element) === anchor.text ? anchor.element : undefined;
+  const original = root.contains(anchor.element) && (anchor.noteId ? anchor.element.dataset.noteId === anchor.noteId : code(anchor.element) === anchor.text) ? anchor.element : undefined;
   if (!anchor.text) return original;
   const score = (element: Element) => Number(neighbour(element, "previousElementSibling") === anchor.before) + Number(neighbour(element, "nextElementSibling") === anchor.after);
-  if (original && score(original) === 2) return original;
+  if (original && (anchor.noteId || score(original) === 2)) return original;
   const container = root.contains(anchor.container) ? anchor.container : anchor.path === undefined ? root.querySelector<HTMLElement>(".diff-content") ?? undefined
     : [...root.querySelectorAll<HTMLElement>(".summary-diff-card")].find(card => card.dataset.path === anchor.path && card.dataset.target === anchor.target);
   if (!container) return undefined;
+  if (anchor.noteId) return [...container.querySelectorAll<HTMLElement>(".hunk-note")].find(note => note.dataset.noteId === anchor.noteId);
   const matches = [...container.querySelectorAll<HTMLElement>(".diff-line")].filter(row => code(row) === anchor.text);
   if (matches.length === 1) return matches[0];
   let best = original, bestScore = original ? score(original) : 0;

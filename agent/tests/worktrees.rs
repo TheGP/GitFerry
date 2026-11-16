@@ -10,6 +10,30 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[test]
+fn creation_dates_follow_worktree_registration_not_branch_commits() {
+    let temp = tempfile::tempdir().unwrap();
+    let primary = temp.path().join("main");
+    let older = temp.path().join("z older é");
+    let newer = temp.path().join("a newer é");
+    git(temp.path(), &["init", "-q", "-b", "main", primary.to_str().unwrap()]);
+    git(&primary, &["config", "user.name", "Test"]);
+    git(&primary, &["config", "user.email", "test@example.com"]);
+    git(&primary, &["commit", "-qm", "Base", "--allow-empty"]);
+    git(&primary, &["worktree", "add", "-qb", "older", older.to_str().unwrap()]);
+    git(&primary, &["worktree", "add", "-qb", "newer", newer.to_str().unwrap()]);
+    let before = snapshot_with(primary.to_str().unwrap(), 0, 1, ReadBackend::Git).unwrap();
+    let first = before.worktrees.iter().find(|tree| tree.branch == "older").unwrap().created_at.unwrap();
+    let second = before.worktrees.iter().find(|tree| tree.branch == "newer").unwrap().created_at.unwrap();
+    assert!(first <= second);
+    git(&older, &["commit", "-qm", "AI added more work", "--allow-empty"]);
+    for backend in [ReadBackend::Git, ReadBackend::Gix] {
+        let after = snapshot_with(newer.to_str().unwrap(), 0, 1, backend).unwrap();
+        assert_eq!(after.worktrees.iter().find(|tree| tree.branch == "older").unwrap().created_at, Some(first));
+        assert_eq!(after.worktrees.iter().find(|tree| tree.branch == "newer").unwrap().created_at, Some(second));
+    }
+}
+
+#[test]
 fn snapshots_identify_linked_worktrees_and_keep_same_name_clones_separate() {
     let temp = tempfile::tempdir().unwrap();
     let primary = temp.path().join("app");

@@ -1087,8 +1087,16 @@ fn parse_worktrees(output: &str, separator: char) -> Result<Vec<WorktreeEntry>, 
                     .map_err(|error| format!("Cannot decode worktree path: {error}"))?;
                 PathBuf::from(text(decoded.as_ref()))
             } else { PathBuf::from(path) };
+            let path = path.canonicalize().unwrap_or(path);
+            // A linked checkout's .git file is written when it is registered, not on each commit.
+            // Use its stable mtime on filesystems which do not expose birth time.
+            let created_at = std::fs::metadata(path.join(".git")).ok()
+                .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
+                .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
+                .and_then(|duration| u64::try_from(duration.as_millis()).ok());
             current = Some(WorktreeEntry {
-                path: display_path(&path.canonicalize().unwrap_or(path)),
+                path: display_path(&path),
+                created_at,
                 branch: "Detached HEAD".into(),
                 head: None,
                 bare: false,

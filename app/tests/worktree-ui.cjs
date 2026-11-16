@@ -7,7 +7,7 @@ const { spawn } = require("node:child_process");
 const puppeteer = require("puppeteer-core");
 
 const primary = "C:/repos/app", topic = "C:/trees/topic", unopened = "C:/trees/unopened", independent = "C:/elsewhere/app";
-const worktrees = [primary, topic, unopened].map((path, index) => ({ path, branch: ["main", "topic", "unopened"][index], head: "1".repeat(40), bare: false, prunable: false }));
+const worktrees = [primary, topic, unopened].map((path, index) => ({ path, branch: ["main", "topic", "unopened"][index], head: "1".repeat(40), bare: false, prunable: false, createdAt: (index + 1) * 100 }));
 worktrees[2].branch = "Detached HEAD";
 worktrees[1].mergedInto = "origin/main";
 let topicStatus = [];
@@ -103,6 +103,21 @@ async function main() {
   assert.equal(await page.$eval(".worktree-tab.active", button => button.title), topic);
   assert.deepEqual(await page.$$eval(".repo-tab .tab-name", spans => spans.map(span => span.textContent)), ["app", "app"]);
   assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.textContent.trim())), ["main", "topic", "unopened (detached)"], "Branches use branch labels; detached checkouts use their folder name");
+  const latest = { ...worktrees[0], path: "C:/trees/aaa-created-later", branch: "newest", createdAt: 400 };
+  worktrees.splice(1, 0, latest); // Git's path order puts it in the middle.
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelectorAll(".worktree-tab").length === 4);
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, topic, unopened, latest.path]);
+  worktrees.splice(1, 3, worktrees[3], worktrees[1], worktrees[2]);
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => !document.querySelector(".statusbar")?.textContent.includes("Loading"));
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, topic, unopened, latest.path], "Refreshed Git ordering must not move existing tabs");
+  await page.reload();
+  await page.waitForFunction(() => document.querySelectorAll(".worktree-tab").length === 4 && !document.querySelector(".repo-tab.loading"));
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, topic, unopened, latest.path], "Discovery order survives restarting GitFerry");
+  worktrees.splice(worktrees.findIndex(tree => tree.path === latest.path), 1);
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelectorAll(".worktree-tab").length === 3);
   assert.equal(await page.$$eval(".worktree-merged", badges => badges.length), 1);
   assert.equal(await page.$eval(".worktree-tab.active .worktree-merged", badge => badge.getAttribute("aria-label")), "Commits included in origin/main");
   assert.match(await page.$eval(".worktree-merged", badge => badge.title), /last fetched.*Uncommitted edits/);

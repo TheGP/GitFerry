@@ -65,3 +65,30 @@ test("verified Git listings do not resurrect removed worktrees from cached open 
   assert.deepEqual(availableWorktrees(repo, [repo, topic]).map(tree => tree.path), [primary.path]);
   assert.equal(availableWorktrees({ ...primary, worktrees: undefined }, [primary, topic]).length, 2, "Old agents still use open checkout metadata");
 });
+
+test("initial worktree order uses creation date instead of Git's path order", () => {
+  const older = { ...primary.worktrees[1], path: "C:/trees/z-older", createdAt: 100 };
+  const newer = { ...older, path: "C:/trees/a-newer", createdAt: 200 };
+  const repo = { ...primary, worktrees: [{ ...primary.worktrees[0], createdAt: 500 }, newer, older] };
+  assert.deepEqual(availableWorktrees(repo, [repo]).map(tree => tree.path), [primary.path, older.path, newer.path]);
+  const bare = { ...repo, worktrees: [{ ...repo.worktrees[0], bare: true }, newer, older] };
+  assert.deepEqual(availableWorktrees(bare, []).map(tree => tree.path), [older.path, newer.path]);
+});
+test("discovery order stays stable when later Git listings insert or reorder paths", () => {
+  const first = { ...primary.worktrees[1], path: "C:/trees/z-first", createdAt: 100 };
+  const second = { ...first, path: "C:/trees/a-second", createdAt: 200 };
+  let repo = { ...primary, worktrees: [primary.worktrees[0], first] };
+  const order = availableWorktrees(repo, [repo]).map(tree => tree.path);
+  repo = { ...repo, worktrees: [primary.worktrees[0], second, first] };
+  assert.deepEqual(availableWorktrees(repo, [repo], order).map(tree => tree.path), [...order, second.path]);
+  const saved = availableWorktrees(repo, [repo], order).map(tree => tree.path);
+  assert.deepEqual(availableWorktrees({ ...repo, worktrees: [second, first, primary.worktrees[0]] }, [], saved).map(tree => tree.path), saved);
+  assert.deepEqual(availableWorktrees(repo, [repo], [first.path, primary.path]).map(tree => tree.path), [first.path, primary.path, second.path]);
+});
+test("old agents and invalid creation dates retain stable first-discovered order", () => {
+  const extra = { ...primary.worktrees[1], path: "C:/trees/a-new" };
+  const order = availableWorktrees(primary, [primary]).map(tree => tree.path);
+  const repo = { ...primary, worktrees: [primary.worktrees[0], extra, primary.worktrees[1]] };
+  assert.deepEqual(availableWorktrees(repo, [repo], order).map(tree => tree.path), [...order, extra.path]);
+  for (const createdAt of [NaN, Infinity, -1]) assert.equal(availableWorktrees({ ...repo, worktrees: repo.worktrees.map(tree => ({ ...tree, createdAt })) }, [], order).at(-1)?.path, extra.path);
+});

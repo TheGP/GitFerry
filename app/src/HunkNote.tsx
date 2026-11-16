@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { createMemo, createSignal, For, onCleanup, Show, type Accessor } from "solid-js";
 import { matchNotesResult, parseNotesResult, rowCode, type Note, type NoteRow } from "./hunkNotes";
 import "./hunkNotes.css";
+import { preserveDiffScroll } from "./diffScroll";
 
 // The repo watcher reloads diffs only when their text changes, so a notes-only change needs its own poll.
 // Every open diff of a repository shares one poll.
@@ -41,7 +42,7 @@ function release(repoPath: string) {
   if (entry && --entry.users === 0) { window.clearInterval(entry.timer); shared.delete(repoPath); }
 }
 
-export function createHunkNotes(repoPath: () => string, file: () => string, rows: () => NoteRow[], enabled: () => boolean, target: () => string) {
+export function createHunkNotes(repoPath: () => string, file: () => string, rows: () => NoteRow[], enabled: () => boolean, target: () => string, scrollRoot: () => HTMLElement | undefined) {
   // Diff props can change during status refreshes without changing the repository.
   // Keep the reader alive so a subsequent read error retains its loaded notes.
   const sourcePath = createMemo(() => enabled() && isTauri() ? repoPath() : null);
@@ -52,9 +53,18 @@ export function createHunkNotes(repoPath: () => string, file: () => string, rows
     onCleanup(() => release(path));
     return entry;
   });
+  let previousView: string | undefined;
   return createMemo(() => {
-    const result = matchNotesResult(source()?.notes() ?? [], file(), rows(), target());
-    return { ...result, error: [source()?.error(), ...result.errors].filter(Boolean).join("\n") };
+    const view = `${repoPath()}\0${file()}\0${target()}`;
+    const keepPosition = previousView === view;
+    previousView = view;
+    const update = () => {
+      const result = matchNotesResult(source()?.notes() ?? [], file(), rows(), target());
+      return { ...result, error: [source()?.error(), ...result.errors].filter(Boolean).join("\n") };
+    };
+    // Capture before Solid inserts/removes notes above the code being read. Initial
+    // renders and explicit file/revision changes retain their own navigation.
+    return keepPosition ? preserveDiffScroll(scrollRoot(), update) : update();
   });
 }
 

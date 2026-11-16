@@ -36,6 +36,9 @@ pub struct WorktreeEntry {
     pub head: Option<String>,
     pub bare: bool,
     pub prunable: bool,
+    /// Creation time of the checkout's Git link in Unix milliseconds, independent of commits.
+    #[serde(default)]
+    pub created_at: Option<u64>,
     /// Base branch containing this checkout's committed history, using the last fetched refs.
     #[serde(default)]
     pub merged_into: Option<String>,

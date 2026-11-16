@@ -217,6 +217,22 @@ async function exerciseReadingPosition(page) {
   await waitText("a.ts", "above_149");
   await settle();
   let position = await locate("reading_080", true);
+  const note = (id, file, line, text) => ({ id, file, target: "staged", side: "new", startLine: line, quote: (file === "a.ts" ? above : reading)[line - 1], note: text });
+  let reply = await mcp(page, "write_notes", { repository: root, notes: [note("above-comment", "a.ts", 10, "Earlier file comment. ".repeat(100)), note("same-file-comment", "z.ts", 20, "Earlier hunk comment. ".repeat(100))] });
+  assert.equal(reply.error, null);
+  await page.waitForSelector('.hunk-note[data-note-id="same-file-comment"]');
+  await assertPosition("reading_080", position);
+  reply = await mcp(page, "write_notes", { repository: root, notes: [note("same-file-comment", "z.ts", 20, "Expanded comment above the reader. ".repeat(200))] });
+  assert.equal(reply.error, null);
+  await assertPosition("reading_080", position);
+  reply = await mcp(page, "write_notes", { repository: root, notes: [{ id: "above-comment", deleted: true }, { id: "same-file-comment", deleted: true }] });
+  assert.equal(reply.error, null);
+  await assertPosition("reading_080", position);
+  // File-written notes use the shared poll rather than MCP's explicit refresh.
+  fs.writeFileSync(path.join(root, ".gitferry/notes.jsonl"), JSON.stringify(note("polled-comment", "z.ts", 30, "New disk-written comment. ".repeat(100))) + "\n");
+  await page.waitForSelector('.hunk-note[data-note-id="polled-comment"]');
+  await assertPosition("reading_080", position);
+  assert.equal(await page.$eval(".details-tab.file-tab.active", () => true).catch(() => false), false, "Writing comments must not open a different file tab");
   above = [...lines("above_grew").slice(0, 40), ...above]; stage("a.ts", above);
   await waitText("a.ts", "above_grew_039");
   await assertPosition("reading_080", position);
@@ -247,6 +263,11 @@ async function exerciseReadingPosition(page) {
     return box.top >= view.top - 1 && box.bottom <= view.bottom;
   }), "Explicitly opening a file must still reveal its heading");
   position = await locate("reading_080", true);
+  reply = await mcp(page, "write_notes", { repository: root, notes: [note("file-tab-comment", "z.ts", 40, "Comment inside the open file. ".repeat(150))] });
+  assert.equal(reply.error, null);
+  await page.waitForSelector('.hunk-note[data-note-id="file-tab-comment"]');
+  await assertPosition("reading_080", position);
+  assert.equal(await page.$eval(".file-tab.active", tab => tab.title), "z.ts");
   reading = [...lines("tab_grew").slice(0, 12), ...reading]; stage("z.ts", reading);
   await waitText("z.ts", "tab_grew_011");
   await assertPosition("reading_080", position);
