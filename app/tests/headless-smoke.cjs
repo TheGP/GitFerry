@@ -1219,6 +1219,11 @@ async function exercisePaneExpansion(page, file, text) {
   assert.ok(await page.$('.workspace.expanded-editor'), "Settings closes before pane expansion");
   await page.keyboard.down("Control"); await page.keyboard.press("f"); await page.keyboard.up("Control");
   await page.waitForSelector(".find-bar");
+  // Find selects its query in an animation frame before typing can move the caret.
+  await page.waitForFunction(() => {
+    const input = document.querySelector(".find-bar input");
+    return input && document.activeElement === input && input.selectionStart === 0 && input.selectionEnd === input.value.length;
+  });
   const findQuery = await page.$eval(".find-bar input", input => input.value);
   await page.$eval(".find-bar input", input => {input.focus(); input.setSelectionRange(input.value.length,input.value.length)});
   await page.keyboard.press("f");

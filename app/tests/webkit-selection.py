@@ -502,6 +502,11 @@ def pane_expansion(page):
     page.keyboard.press("Control+f")
     page.locator(".find-bar").wait_for()
     find_input = page.locator(".find-bar input")
+    # Find selects its query in an animation frame; wait before placing an insertion caret.
+    page.wait_for_function("""() => {
+      const e=document.querySelector('.find-bar input');
+      return e && document.activeElement===e && e.selectionStart===0 && e.selectionEnd===e.value.length;
+    }""")
     query = find_input.input_value()
     find_input.evaluate("e => {e.focus();e.setSelectionRange(e.value.length,e.value.length)}")
     page.keyboard.press("f")
