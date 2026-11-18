@@ -41,6 +41,11 @@ jobs:
           name: editor-navigation-fixture
           path: /tmp/gitferry-editor-fixture
           if-no-files-found: error
+      - name: Test full-file editor change highlights
+        timeout-minutes: 3
+        env:
+          GITFERRY_WEBKIT_HIGHLIGHTS_ONLY: '1'
+        run: /tmp/gitferry-webkit-venv/bin/python -u app/tests/webkit-selection.py
       - name: Test selection painting and Find focus
         timeout-minutes: 3
         run: /tmp/gitferry-webkit-venv/bin/python -u app/tests/webkit-selection.py

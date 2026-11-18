@@ -4,6 +4,7 @@ Run after installing Playwright and its WebKit browser; app packages must be ins
 Uses demo data only, without Git writes, native editors, or MCP configuration.
 """
 import base64
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -607,9 +608,14 @@ def main():
             raise RuntimeError("Selection test server did not start")
         with sync_playwright() as playwright:
             browser = playwright.webkit.launch()
+            if os.environ.get("GITFERRY_WEBKIT_HIGHLIGHTS_ONLY"):
+                try:
+                    editor_change_highlights(browser)
+                finally:
+                    browser.close()
+                return
             editor_range_navigation(browser)
             editor_change_overview(browser)
-            editor_change_highlights(browser)
             editor_removed_code(browser)
             passive_diff_reading(browser)
             page = browser.new_page(viewport={"width": 1700, "height": 1000})

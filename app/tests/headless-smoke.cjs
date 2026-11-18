@@ -1772,7 +1772,7 @@ async function exerciseSideEditor(page, repository) {
   });
   await page.waitForSelector('.editor-overview-marker.modified[aria-label="Modified line 2"]');
   await page.waitForSelector('.editor-row:nth-child(2).added .word-change');
-  assert.equal(await page.$eval('.editor-row:nth-child(2) .word-change', word => word.textContent.trim()), "changed");
+  assert.equal(await page.$$eval('.editor-row:nth-child(2) .word-change', words => words.map(word => word.textContent).join("").trim()), "changed");
   await page.waitForSelector('.editor-removed-code');
   assert.equal((await page.$eval('.editor-removed-code', code => code.textContent)).trim(), "two", "Removed source appears on opening a changed file");
   assert.equal(await page.$('.editor-row:first-child.added'), null, "Unchanged context stays uncolored");
