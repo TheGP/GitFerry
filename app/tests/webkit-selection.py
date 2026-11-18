@@ -280,16 +280,63 @@ def editor_change_overview(browser):
             page.locator(".editor-overview").wait_for()
             if mode == "untracked":
                 page.get_by_role("button", name="Added lines 1–300", exact=True).wait_for()
+                assert page.locator(".editor-row.added").count() == 300
+                assert page.locator(".editor-removed").count() == 0
             elif mode == "fail":
                 page.wait_for_function("document.querySelector('.editor-overview').title.includes('Baseline connection unavailable')")
                 assert page.locator(".editor-overview-marker").count() == 0
             else:
                 page.wait_for_timeout(100)
                 assert page.locator(".editor-overview-marker").count() == 0
+                assert page.locator(".editor-row.added").count() == 0
+                assert page.locator(".editor-removed").count() == 0
         assert not errors, errors
         print("WebKit: overview markers cover all distant changes, wrapped rows, draft edits, resize and selection-safe navigation")
     except BaseException:
         page.screenshot(path="/tmp/gitferry-webkit-overview-failure.png")
+        raise
+    finally:
+        page.close()
+
+
+def editor_change_highlights(browser):
+    page = browser.new_page(viewport={"width": 1100, "height": 650})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        for width, size in ((560, 13), (360, 24)):
+            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?overview=words&editable&width={width}&size={size}")
+            editor = page.locator(".editor-input")
+            page.locator(".editor-removed-code .word-change").wait_for()
+            assert page.locator(".editor-row.added").count() == 3
+            for line in (20, 190, 251):
+                row = page.locator(f".editor-row:nth-child({line})")
+                assert "added" in row.get_attribute("class")
+                assert row.evaluate("e => getComputedStyle(e).backgroundColor") != "rgba(0, 0, 0, 0)"
+            assert "added" not in page.locator(".editor-row:nth-child(21)").get_attribute("class")
+            assert "removed-above" in page.locator(".editor-row:nth-child(281)").get_attribute("class")
+            assert page.locator(".editor-row:nth-child(251) .word-change").all_text_contents() == ["2500"]
+            assert page.locator(".editor-removed-code .word-change").all_text_contents() == ["250"]
+            assert "value250 = 250;" in page.locator(".editor-removed-code").inner_text()
+            assert page.locator(".editor-row:nth-child(251) .word-change").evaluate("e => getComputedStyle(e).backgroundColor") != "rgba(0, 0, 0, 0)"
+            assert page.locator(".editor-removed-code .word-change").evaluate("e => getComputedStyle(e).backgroundColor") != "rgba(0, 0, 0, 0)"
+            page.locator(".editor-row:nth-child(251)").evaluate("e => e.scrollIntoView({block:'center'})")
+            page.screenshot(path=f"/tmp/gitferry-webkit-editor-word-highlights-{width}.png")
+            content = editor.input_value()
+            # Changed-word spans must keep mouse hit testing aligned with the native textarea.
+            page.mouse.dblclick(**word_point(page, ".editor-row:nth-child(251) .editor-code", "2500"))
+            assert editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)") == "2500"
+            editor.fill(content.replace("value250 = 2500", "value250 = 250"))
+            page.wait_for_function("!document.querySelector('.editor-row:nth-child(251).added') && !document.querySelector('.editor-removed')")
+            editor.fill(content)
+            page.locator(".editor-row:nth-child(251) .word-change").wait_for()
+            # Passive buffer edits must not reopen a dismissed/obsolete preview.
+            assert page.locator(".editor-removed").count() == 0
+            assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
+        assert not errors, errors
+        print("WebKit: all changed lines and old/new words are highlighted on open; unsaved edits, undo and double-click selection stay aligned")
+    except BaseException:
+        page.screenshot(path="/tmp/gitferry-webkit-editor-highlights-failure.png")
         raise
     finally:
         page.close()
@@ -353,6 +400,7 @@ def editor_removed_code(browser):
             page.locator(".editor-overview-marker.removed").click()
             assert heading in page.locator(".editor-removed-heading").inner_text()
             assert page.locator(".editor-removed-row").count() == count
+            assert page.locator(".editor-row.added").count() == 0
             assert "value300" in page.locator(".editor-removed-code").inner_text()
             assert editor.input_value() == content
             assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
@@ -561,6 +609,7 @@ def main():
             browser = playwright.webkit.launch()
             editor_range_navigation(browser)
             editor_change_overview(browser)
+            editor_change_highlights(browser)
             editor_removed_code(browser)
             passive_diff_reading(browser)
             page = browser.new_page(viewport={"width": 1700, "height": 1000})

@@ -20,9 +20,9 @@
     "            results.push(...batch.filter((item): item is Entry => item !== undefined));");
   const options = new URLSearchParams(location.search);
   const baseline = code.join("\n");
-  if (options.get("overview") === "changes") {
-    code[19] = "    const editedNearTop = true;";
-    code[249] = "    const editedNearBottom = true;";
+  if (["changes", "words"].includes(options.get("overview"))) {
+    code[19] = options.get("overview") === "words" ? "    const value20 = 200;" : "    const editedNearTop = true;";
+    code[249] = options.get("overview") === "words" ? "    const value250 = 2500;" : "    const editedNearBottom = true;";
     code.splice(279, 1);
     code.splice(189, 0, "    const addedInMiddle = true;");
   }

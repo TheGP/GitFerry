@@ -852,6 +852,8 @@ async function exerciseMcp(page, repository, restore) {
   await openDiffLineInSideEditor(page, "new cause");
   await doubleClickDiffWord(page, "new cause", "cause");
   assert.equal(await page.$eval(".editor-input", input => input.readOnly), true, "Historical files remain read-only");
+  await page.waitForSelector('.editor-row:nth-child(2).added .word-change');
+  assert.equal(await page.$eval('.editor-row:nth-child(2) .word-change', word => word.textContent), "new", "Historical opening highlights changes against its parent");
   await click(page, ".editor-tab-close");
   const beforeFileReveal = { head: git(repository.folder, "rev-parse", "HEAD"), status: git(repository.folder, "status", "--porcelain"), file: fs.readFileSync(path.join(repository.folder, "code.txt"), "utf8") };
   const comment = "This file is unchanged at the tip of topic.\nThe explanation stays beside the highlighted code.";
@@ -905,6 +907,8 @@ async function exerciseMcp(page, repository, restore) {
   assert.equal((await mcp(page, "get_view")).result.editor.revision, "staged");
   assert.equal(await page.$eval(".editor-input", input => input.value), "first\nworking cause\nlast\n");
   assert.deepEqual(await page.$$eval(".editor-row.ai-highlight .editor-line-number", rows => rows.map(row => row.textContent)), ["1", "3"]);
+  await page.waitForSelector('.editor-row:nth-child(2).added .word-change');
+  assert.equal(await page.$eval('.editor-row:nth-child(2) .word-change', word => word.textContent), "working", "Staged snapshots use index text for their change highlights");
   assert.match(await page.$eval(".editor-commit", label => label.textContent), /Staged index/);
   assert.deepEqual({ index: git(repository.folder, "ls-files", "--stage"), work: git(repository.folder, "diff") }, stagedFileState, "Revealing staged ranges does not change the index or files");
   await click(page, ".editor-tab-close");
@@ -1767,6 +1771,11 @@ async function exerciseSideEditor(page, repository) {
     throw new Error(`${error.message}: editor=${await page.$eval(".editor-pane", pane => pane.textContent).catch(() => "not mounted")} error=${await page.$eval(".error-bar", pane => pane.textContent).catch(() => "none")}`);
   });
   await page.waitForSelector('.editor-overview-marker.modified[aria-label="Modified line 2"]');
+  await page.waitForSelector('.editor-row:nth-child(2).added .word-change');
+  assert.equal(await page.$eval('.editor-row:nth-child(2) .word-change', word => word.textContent.trim()), "changed");
+  await page.waitForSelector('.editor-removed-code');
+  assert.equal((await page.$eval('.editor-removed-code', code => code.textContent)).trim(), "two", "Removed source appears on opening a changed file");
+  assert.equal(await page.$('.editor-row:first-child.added'), null, "Unchanged context stays uncolored");
   assert.equal(await page.$$(".editor-overview-marker").then(markers => markers.length), 1, "Working editor compares with HEAD using the real agent snapshot");
   const loadingRepo = makeRepo("editor-loading");
   const missingRepo = path.join(sandbox, "editor-missing");
@@ -1781,6 +1790,7 @@ async function exerciseSideEditor(page, repository) {
   await page.waitForSelector('.editor-input[aria-label="Edit base.txt"]');
   await page.locator(".editor-input").fill(original + "unsaved draft\n");
   await page.waitForSelector('.editor-overview-marker.added[aria-label="Added line 4"]');
+  assert.equal(await page.$$('.editor-row.added').then(rows => rows.length), 2, "All changed lines, including an unsaved line outside the opened hunk, are colored");
   await click(page, "button[title='Settings']");
   const oldEditor = await page.$eval('select[aria-label="External editor"]', input => input.value);
   const oldExecutable = await page.$eval('input[aria-label="Editor command override"]', input => input.value);

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { highlightDiff, type DiffRow, type HighlightPart } from "../src/diffHighlight.ts";
+import { changedWordRanges, highlightDiff, highlightFileLines, type DiffRow, type HighlightPart, type WordRange } from "../src/diffHighlight.ts";
 
 const hunk = (line: string): DiffRow => ({ line, kind: "hunk", hunkIndex: 0 });
 const deleted = (code: string): DiffRow => ({ line: `-${code}`, kind: "deleted", hunkIndex: 0 });
@@ -81,4 +81,37 @@ test("skips word diff and colors for huge diffs", () => {
   const [, before, after] = highlightDiff(rows, "a.ts", 200_000);
   assert.deepEqual(before, [{ text: "const a = 1;", types: [], changed: false }]);
   assert.deepEqual(after, [{ text: "const a = 2;", types: [], changed: false }]);
+});
+
+test("whole-file word highlights preserve multi-line syntax, Unicode and exact text", () => {
+  const before = "/* shared\nold <文件> & value\n*/\nconst count = 1;\n";
+  const after = before.replace("old", "new").replace("= 1", "= 2");
+  const oldWords = new Map<number, WordRange[]>(), newWords = new Map<number, WordRange[]>();
+  const oldLines = before.split("\n");
+  after.split("\n").forEach((line, index) => {
+    const [old, next] = changedWordRanges(oldLines[index], line);
+    oldWords.set(index, old); newWords.set(index, next);
+  });
+  const previous = highlightFileLines(before, "example.ts", oldWords);
+  const current = highlightFileLines(after, "example.ts", newWords);
+  const plain = (html: string) => html.replace(/<[^>]*>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  assert.equal(plain(current.join("\n")), after);
+  assert.equal(plain(previous.join("\n")), before);
+  assert.match(current[1], /class="syntax-comment word-change">new<\/span>/);
+  assert.match(previous[1], /class="syntax-comment word-change">old<\/span>/);
+  assert.match(current[1], /&lt;文件&gt; &amp; value/);
+  assert.match(current[3], /class="syntax-number word-change">2<\/span>/);
+  assert.match(previous[3], /class="syntax-number word-change">1<\/span>/);
+  assert.ok(!current[0].includes("word-change") && !current[2].includes("word-change"));
+  assert.equal(current.at(-1), "");
+});
+
+test("word highlights safely escape plain files and preserve indentation and empty lines", () => {
+  const source = '\t<img src="x" onerror="run()">\n\n<文件> & 😀';
+  const html = highlightFileLines(source, "file.unknown", new Map([[0, [{ start: 1, end: 5 }]]]));
+  assert.match(html[0], /^\t<span class="word-change">&lt;img<\/span>/);
+  assert.ok(!html.join("\n").includes("<img"));
+  assert.equal(html[1], "");
+  assert.equal(html[2], "&lt;文件&gt; &amp; 😀");
+  assert.deepEqual(highlightFileLines("", "empty.ts"), [""]);
 });

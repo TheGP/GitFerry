@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show } from "solid-js";
 import { repositoryKey, type FileRange } from "./mcpNavigation";
-import { highlightFileLines } from "./diffHighlight";
+import { changedWordRanges, highlightFileLines, type WordRange } from "./diffHighlight";
 import { describeError } from "./statusMessages";
 import { filePosition } from "./fileLinks";
 import "./fileEditor.css";
@@ -55,20 +55,48 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
   let scroller!: HTMLDivElement;
   let rowsElement!: HTMLDivElement;
   let input!: HTMLTextAreaElement;
+  const targetIdentity = () => `${repositoryKey(props.target.repo)}\u0000${props.target.path}\u0000${props.target.commit ?? ""}`;
+  let loadedIdentity = "";
   const [doc, setDoc] = createSignal<EditorDoc | null>(null);
   const [baseline, setBaseline] = createSignal<string | null>(null);
   const [overviewError, setOverviewError] = createSignal("");
   const changes = createMemo(() => { const base = baseline(), current = doc(); return base !== null && current ? editorChanges(base, current.text) : []; });
+  const changeHighlights = createMemo(() => {
+    const added = new Map<number, WordRange[]>(), removed = new Map<number, Map<number, WordRange[]>>();
+    const current = (doc()?.text ?? "").split("\n");
+    let wordBudget = 180_000;
+    for (const change of changes()) {
+      if (change.kind === "removed") continue;
+      const oldWords = new Map<number, WordRange[]>();
+      for (let line = change.startLine; line <= change.endLine; line++) {
+        const old = change.removed?.lines[line - change.startLine], text = current[line - 1];
+        let before: WordRange[] = [], after: WordRange[] = [];
+        if (old !== undefined && (wordBudget -= old.length + text.length) >= 0) [before, after] = changedWordRanges(old, text);
+        added.set(line - 1, after);
+        if (before.length) oldWords.set(line - change.startLine, before);
+      }
+      if (change.removed) removed.set(change.removed.startLine, oldWords);
+    }
+    return { added, removed };
+  });
   const [removedStart, setRemovedStart] = createSignal<number | null>(null);
   const removals = createMemo(() => changes().filter(change => change.removed));
   const removedChange = createMemo(() => removals().find(change => change.removed?.startLine === removedStart()));
-  const removedLines = createMemo(() => highlightFileLines(removedChange()?.removed?.lines.join("\n") ?? "", props.target.path));
+  const removedLines = createMemo(() => highlightFileLines(removedChange()?.removed?.lines.join("\n") ?? "", props.target.path, changeHighlights().removed.get(removedStart() ?? -1)));
   const removalsByLine = createMemo(() => {
     const result = new Map<number, EditorChange>();
     for (const change of removals()) if (!result.has(change.startLine)) result.set(change.startLine, change);
     return result;
   });
   createEffect(() => { if (removedStart() !== null && !removedChange()) setRemovedStart(null); });
+  let previewIdentity = "";
+  createEffect(() => {
+    const identity = targetIdentity(), list = removals();
+    if (!doc() || baseline() === null || loadedIdentity !== identity || previewIdentity === identity) return;
+    previewIdentity = identity;
+    const near = list.find(change => change.endLine >= props.target.line) ?? list[0];
+    setRemovedStart(near?.removed?.startLine ?? null);
+  });
   const [loading, setLoading] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [openingExternal, setOpeningExternal] = createSignal(false);
@@ -81,7 +109,7 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
   const dirty = createMemo(() => { const current = doc(); return Boolean(current && current.text !== current.original); });
   createEffect(() => props.onDirty(dirty()));
   onCleanup(() => props.onDirty(false));
-  const lines = createMemo(() => highlightFileLines(doc()?.text ?? "", props.target.path));
+  const lines = createMemo(() => highlightFileLines(doc()?.text ?? "", props.target.path, changeHighlights().added));
   const gutter = createMemo(() => `${String(lines().length).length + 3}ch`);
   const fileName = () => props.target.path.split(/[\\/]/).pop() ?? props.target.path;
   const readOnly = () => Boolean(props.target.commit) || props.target.readOnly === true;
@@ -106,7 +134,6 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
   });
   const crumbs = () => props.target.path.split(/[\\/]/);
   let loadId = 0;
-  let loadedIdentity = "";
   let revealedNonce = -1;
   let pendingCaret: number | null = null;
   let caretInteraction = 0;
@@ -200,7 +227,7 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
     });
   }
   createEffect(on(() => `${props.target.repo}\u0000${props.target.path}\u0000${props.target.commit ?? ""}\u0000${props.target.content === undefined ? "" : props.target.nonce}`, () => {
-    const identity = `${repositoryKey(props.target.repo)}\u0000${props.target.path}\u0000${props.target.commit ?? ""}`;
+    const identity = targetIdentity();
     if (props.target.preserveBuffer && loadedIdentity === identity && doc()) return;
     loadedIdentity = identity;
     clearTimeout(navigationTimer); setNavigationLine(null);
@@ -340,8 +367,8 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
     }
   }
 
-  const isAdded = (index: number) => Boolean(marks()?.added.has(index + 1));
-  const removedAbove = (index: number) => Boolean(marks()?.removed.has(index + 1));
+  const isAdded = (index: number) => changeHighlights().added.has(index) || baseline() === null && Boolean(marks()?.added.has(index + 1));
+  const removedAbove = (index: number) => removalsByLine().has(index + 1) || baseline() === null && Boolean(marks()?.removed.has(index + 1));
   const annotationRanges = () => props.target.annotation?.ranges ?? (props.target.annotation ? [props.target.annotation] : []);
   const isHighlighted = (index: number) => annotationRanges().some(range => index + 1 >= range.startLine && index + 1 <= (range.endLine ?? range.startLine));
   return <>

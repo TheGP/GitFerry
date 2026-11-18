@@ -15,7 +15,7 @@ import "prismjs/components/prism-sql.js";
 
 export type DiffRow = { line: string; kind: string; hunkIndex: number };
 export type HighlightPart = { text: string; types: string[]; changed: boolean };
-type Range = { start: number; end: number };
+export type WordRange = { start: number; end: number };
 type TokenPart = { text: string; types: string[] };
 
 const MIN_SIMILARITY = 0.4;
@@ -46,7 +46,7 @@ function splitWords(value: string): { text: string; start: number; end: number }
   return result;
 }
 
-function changedRanges(before: string, after: string): [Range[], Range[]] {
+export function changedWordRanges(before: string, after: string): [WordRange[], WordRange[]] {
   if (before === after) return [[], []];
   if (before.length > 2400 || after.length > 2400) return [[], []];
   let a = splitWords(before);
@@ -70,8 +70,8 @@ function changedRanges(before: string, after: string): [Range[], Range[]] {
   const scores = Array.from({ length: a.length + 1 }, () => new Uint16Array(b.length + 1));
   for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--)
     scores[i][j] = a[i].text === b[j].text ? scores[i + 1][j + 1] + 1 : Math.max(scores[i + 1][j], scores[i][j + 1]);
-  const oldRanges: Range[] = [];
-  const newRanges: Range[] = [];
+  const oldRanges: WordRange[] = [];
+  const newRanges: WordRange[] = [];
   let i = 0, j = 0;
   while (i < a.length || j < b.length) {
     if (i < a.length && j < b.length && a[i].text === b[j].text) { common += a[i].text.trim().length; i++; j++; }
@@ -91,12 +91,16 @@ function flatten(tokens: Prism.TokenStream, types: string[], result: TokenPart[]
   flatten(tokens.content, [...types, tokens.type], result);
 }
 
-function renderParts(code: string, grammar: Prism.Grammar | undefined, ranges: Range[], colorize: boolean): HighlightPart[] {
+function renderParts(code: string, grammar: Prism.Grammar | undefined, ranges: WordRange[], colorize: boolean): HighlightPart[] {
   const tokens: TokenPart[] = [];
   if (grammar && colorize && code.length <= 4000) {
     try { flatten(Prism.tokenize(code, grammar), [], tokens); }
     catch { tokens.push({ text: code, types: [] }); }
   } else tokens.push({ text: code, types: [] });
+  return tokenParts(tokens, ranges);
+}
+
+function tokenParts(tokens: TokenPart[], ranges: WordRange[]): HighlightPart[] {
   const parts: HighlightPart[] = [];
   let offset = 0;
   for (const token of tokens) {
@@ -119,27 +123,29 @@ function renderParts(code: string, grammar: Prism.Grammar | undefined, ranges: R
 
 const escapeHtml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** Highlights a whole file at once (so multi-line comments and strings color correctly) and returns one HTML string per line. */
-export function highlightFileLines(text: string, path: string): string[] {
+/** Highlights a whole file at once, preserving multi-line syntax. Optional word ranges use 0-based lines and offsets. */
+export function highlightFileLines(text: string, path: string, changed?: Map<number, WordRange[]>): string[] {
   const grammar = grammarFor(path);
   const tokens: TokenPart[] = [];
   if (grammar && text.length <= 400_000) {
     try { flatten(Prism.tokenize(text, grammar), [], tokens); }
     catch { tokens.length = 0; tokens.push({ text, types: [] }); }
   } else tokens.push({ text, types: [] });
-  const lines: string[] = [""];
+  const lines: TokenPart[][] = [[]];
   for (const token of tokens) {
-    const open = token.types.length ? `<span class="${token.types.map(type => `syntax-${type}`).join(" ")}">` : "";
     token.text.split("\n").forEach((piece, index) => {
-      if (index) lines.push("");
-      if (piece) lines[lines.length - 1] += open ? `${open}${escapeHtml(piece)}</span>` : escapeHtml(piece);
+      if (index) lines.push([]);
+      if (piece) lines[lines.length - 1].push({ text: piece, types: token.types });
     });
   }
-  return lines;
+  return lines.map((tokens, index) => tokenParts(tokens, changed?.get(index) ?? []).map(part => {
+    const classes = [...part.types.map(type => `syntax-${type}`), ...(part.changed ? ["word-change"] : [])].join(" ");
+    return classes ? `<span class="${classes}">${escapeHtml(part.text)}</span>` : escapeHtml(part.text);
+  }).join(""));
 }
 
 export function highlightDiff(rows: DiffRow[], path: string, diffLength: number): HighlightPart[][] {
-  const changed = new Map<number, Range[]>();
+  const changed = new Map<number, WordRange[]>();
   for (let index = 0; diffLength <= 180_000 && index < rows.length;) {
     if (rows[index].kind !== "deleted") { index++; continue; }
     const start = index;
@@ -148,7 +154,7 @@ export function highlightDiff(rows: DiffRow[], path: string, diffLength: number)
     while (rows[index]?.kind === "added") index++;
     const pairs = Math.min(added - start, index - added);
     for (let pair = 0; pair < pairs; pair++) {
-      const [before, after] = changedRanges(codeFor(rows[start + pair]), codeFor(rows[added + pair]));
+      const [before, after] = changedWordRanges(codeFor(rows[start + pair]), codeFor(rows[added + pair]));
       changed.set(start + pair, before);
       changed.set(added + pair, after);
     }
