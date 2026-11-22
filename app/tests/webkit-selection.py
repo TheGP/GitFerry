@@ -382,8 +382,10 @@ def editor_selection_alignment(browser):
             # Editing above wrapped code and resizing the pane must keep hit testing aligned.
             editor.fill("// unsaved prefix\n" + content)
             page.locator(".editor-pane").evaluate("e => e.style.width = '300px'")
+            page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
             page.mouse.dblclick(**word_point(page, ".editor-code", "finalSelectionProbe"))
-            assert editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)") == "finalSelectionProbe"
+            selected = editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)")
+            assert selected == "finalSelectionProbe", (width, size, "after resize", selected)
             new_size = 15 if size == 13 else 13
             page.evaluate("""size => {
               document.documentElement.style.setProperty('--code-size',size+'px');
@@ -391,7 +393,8 @@ def editor_selection_alignment(browser):
               return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             }""", new_size)
             page.mouse.dblclick(**word_point(page, ".editor-code", "BrowserProfileIdentity"))
-            assert editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)") == "BrowserProfileIdentity"
+            selected = editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)")
+            assert selected == "BrowserProfileIdentity", (width, size, "after font change", selected)
             page.screenshot(path=f"/tmp/gitferry-webkit-editor-alignment-{width}-{size}.png")
             assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
         assert not errors, errors
