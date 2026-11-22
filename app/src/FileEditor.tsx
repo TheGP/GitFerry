@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Index, on, onCleanup, onMount, Show } from "solid-js";
 import { repositoryKey, type FileRange } from "./mcpNavigation";
 import { changedWordRanges, highlightFileLines, type WordRange } from "./diffHighlight";
 import { describeError } from "./statusMessages";
@@ -116,6 +116,36 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
   const revisionLabel = () => props.target.revisionLabel ?? props.target.commit?.split("..").map(part => part.slice(0, 8)).join("..") ?? "Working tree";
   // The editor stays open across repository tabs; a tab other than the file's own shows it empty (the file stays loaded).
   const shown = () => props.active && Boolean(props.target.path);
+  let alignmentFrame = 0, alignmentGutter: HTMLElement | undefined;
+  const alignmentObserver = new ResizeObserver(queueAlignment);
+  function queueAlignment() {
+    cancelAnimationFrame(alignmentFrame);
+    alignmentFrame = requestAnimationFrame(() => {
+      const row = rowsElement?.firstElementChild;
+      const gutterElement = row?.querySelector<HTMLElement>(".editor-line-number");
+      const code = row?.querySelector<HTMLElement>(".editor-code"), body = rowsElement?.parentElement;
+      if (!rowsElement?.isConnected || !row || !gutterElement || !code || !body || !scroller.clientWidth) return;
+      if (alignmentGutter !== gutterElement) {
+        if (alignmentGutter) alignmentObserver.unobserve(alignmentGutter);
+        alignmentObserver.observe(gutterElement); alignmentGutter = gutterElement;
+      }
+      const gutterBox = gutterElement.getBoundingClientRect(), style = getComputedStyle(code);
+      const cell = gutterBox.width / parseFloat(gutter());
+      const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      const available = row.getBoundingClientRect().right - gutterBox.right;
+      if (cell <= 0 || available <= padding) return;
+      // Native WebKit and syntax token runs round wrap thresholds differently. Share a
+      // whole-pixel width with half a monospace cell of slack between column boundaries.
+      const columns = Math.max(0, Math.floor((available - padding) / cell - 0.5));
+      const width = `${Math.floor(padding + (columns + 0.5) * cell)}px`;
+      const left = `${gutterBox.right - body.getBoundingClientRect().left}px`;
+      if (body.style.getPropertyValue("--editor-text-width") !== width) body.style.setProperty("--editor-text-width", width);
+      if (body.style.getPropertyValue("--editor-text-left") !== left) body.style.setProperty("--editor-text-left", left);
+    });
+  }
+  createEffect(() => { doc(); gutter(); props.width; shown(); queueAlignment(); });
+  onMount(() => alignmentObserver.observe(scroller));
+  onCleanup(() => { alignmentObserver.disconnect(); cancelAnimationFrame(alignmentFrame); });
   const conflicts = createMemo(() => findConflicts(doc()?.text ?? ""));
   const conflictAt = createMemo(() => new Map(conflicts().map(item => [item.start, item])));
   // Per line: which part of a conflict it is (markers, the current side, the common base, the incoming side).

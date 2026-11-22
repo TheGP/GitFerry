@@ -301,16 +301,54 @@ def editor_change_overview(browser):
 
 
 def editor_selection_alignment(browser):
-    page = browser.new_page(viewport={"width": 1100, "height": 800})
+    page = browser.new_page(viewport={"width": 1100, "height": 800}, device_scale_factor=2)
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
-    previous_wrap_mismatches = []
     try:
         for width, size in ((304, 13), (320, 13), (360, 24), (560, 13)):
             page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?alignment&editable&width={width}&size={size}")
             editor = page.locator(".editor-input")
             page.locator(".editor-removed-code").wait_for()
+            page.wait_for_function("document.querySelector('.editor-body').style.getPropertyValue('--editor-text-width') !== ''")
             content = editor.input_value()
+            # Fractional widths at monospace-column boundaries expose old native WebKit
+            # rounding that ordinary integer-width mouse tests miss.
+            critical_widths = page.evaluate("""() => {
+              const pane = document.querySelector('.editor-pane').getBoundingClientRect();
+              const row = document.querySelector('.editor-row').getBoundingClientRect();
+              const gutter = document.querySelector('.editor-line-number').getBoundingClientRect();
+              const input = document.querySelector('.editor-input'), style = getComputedStyle(input);
+              const sample = document.createElement('span'); sample.textContent = '0'.repeat(20);
+              Object.assign(sample.style, {font:style.font,position:'absolute',whiteSpace:'pre'}); document.body.append(sample);
+              const advance = sample.getBoundingClientRect().width / 20; sample.remove();
+              const fixed = pane.width - row.width + gutter.width + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+              return [30,43].flatMap(columns => [-1/64,0,1/64].map(offset => fixed + columns*advance + offset));
+            }""")
+            for probe_width in [width, *critical_widths]:
+                page.locator(".editor-pane").evaluate("(e,width) => e.style.width = width+'px'", probe_width)
+                page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+                metrics = page.evaluate("""() => {
+                  const input = document.querySelector('.editor-input'), rows = document.querySelector('.editor-rows').children;
+                  const original = input.value, height = input.style.height, bottom = input.style.bottom;
+                  const start = input.selectionStart, end = input.selectionEnd;
+                  const code = rows[0].querySelector('.editor-code').getBoundingClientRect(), box = input.getBoundingClientRect();
+                  const prefixes = [];
+                  try {
+                    input.style.height = '0px'; input.style.bottom = 'auto';
+                    for (const count of [3,4,5,6,7,8,10,12,17]) {
+                      input.value = original.split('\\n').slice(0,count).join('\\n');
+                      prefixes.push({count,native:input.scrollHeight,syntax:rows[count-1].getBoundingClientRect().bottom-rows[0].getBoundingClientRect().top});
+                    }
+                  } finally {
+                    input.value = original; input.style.height = height; input.style.bottom = bottom;
+                    input.setSelectionRange(start,end); input.scrollTop = 0;
+                  }
+                  return {prefixes,left:box.left-code.left,width:box.width-code.width};
+                }""")
+                assert abs(metrics["left"]) < .04 and abs(metrics["width"]) < .04, (probe_width, size, metrics)
+                assert all(abs(p["native"]-p["syntax"]) <= 1 for p in metrics["prefixes"]), (probe_width, size, metrics)
+            page.locator(".editor-pane").evaluate("(e,width) => e.style.width = width+'px'", width)
+            page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
             words = ("FinalizeBrowserProfileInput", "BaseActivityArgs", "browserProfileId", "profileJson", "ProfileUploadDetails", "BrowserProfileIdentity", "initializerId", "BrowserProfileArtifact", "ProfileStorageBucket", "proxyUsername", "AnotherLongBrowserProfileDeclaration", "finalSelectionProbe")
             for word in words:
                 point = word_point(page, ".editor-code", word)
@@ -346,17 +384,17 @@ def editor_selection_alignment(browser):
             page.locator(".editor-pane").evaluate("e => e.style.width = '300px'")
             page.mouse.dblclick(**word_point(page, ".editor-code", "finalSelectionProbe"))
             assert editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)") == "finalSelectionProbe"
+            new_size = 15 if size == 13 else 13
+            page.evaluate("""size => {
+              document.documentElement.style.setProperty('--code-size',size+'px');
+              document.documentElement.style.setProperty('--code-line-height',Math.ceil(size*1.5)+'px');
+              return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            }""", new_size)
+            page.mouse.dblclick(**word_point(page, ".editor-code", "BrowserProfileIdentity"))
+            assert editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)") == "BrowserProfileIdentity"
             page.screenshot(path=f"/tmp/gitferry-webkit-editor-alignment-{width}-{size}.png")
             assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
-            previous_style = page.add_style_tag(content=".editor-code, .editor-input { word-break: normal; }")
-            for word in ("BaseActivityArgs", "BrowserProfileIdentity", "finalSelectionProbe"):
-                page.mouse.dblclick(**word_point(page, ".editor-code", word))
-                selected = editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)")
-                if selected != word:
-                    previous_wrap_mismatches.append((width, size, word, selected))
-            previous_style.evaluate("e => e.remove()")
         assert not errors, errors
-        print(f"Previous wrapping reproduced these selection mismatches: {previous_wrap_mismatches}")
         print("WebKit: wrapped type declarations and following fields select their visible text, including forward/reverse drags, unsaved edits and resizing")
     except BaseException:
         page.screenshot(path="/tmp/gitferry-webkit-editor-alignment-failure.png")
