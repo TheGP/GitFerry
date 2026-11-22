@@ -41,7 +41,8 @@
 .editor-body { position: relative; padding: 6px 0 35vh; font-family: var(--code-font); font-size: var(--code-size); line-height: var(--code-line-height, 20px); }
 .editor-row { position: relative; min-height: var(--code-line-height, 20px); display: grid; grid-template-columns: var(--editor-gutter) minmax(0, 1fr); }
 .editor-line-number { padding-right: 1.5ch; color: var(--theme-muted); text-align: right; user-select: none; }
-.editor-code, .editor-input { padding: 0 16px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; tab-size: 4; }
+/* Inline syntax spans and WebKit's textarea otherwise choose different word-wrap points. */
+.editor-code, .editor-input { padding: 0 16px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; tab-size: 4; }
 .editor-code { min-width: 0; color: var(--theme-text); }
 .editor-input { position: absolute; z-index: 1; top: 6px; bottom: 0; left: var(--editor-gutter); width: calc(100% - var(--editor-gutter)); box-sizing: border-box; margin: 0; border: 0; outline: 0; resize: none; overflow: hidden; background: transparent; color: transparent; caret-color: var(--theme-text); font: inherit; line-height: inherit; letter-spacing: inherit; }
 .editor-input::selection { background: #365f89; color: #fff; }

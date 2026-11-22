@@ -300,6 +300,71 @@ def editor_change_overview(browser):
         page.close()
 
 
+def editor_selection_alignment(browser):
+    page = browser.new_page(viewport={"width": 1100, "height": 800})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    previous_wrap_mismatches = []
+    try:
+        for width, size in ((304, 13), (320, 13), (360, 24), (560, 13)):
+            page.goto(f"http://127.0.0.1:1421/tests/editor-navigation.html?alignment&editable&width={width}&size={size}")
+            editor = page.locator(".editor-input")
+            page.locator(".editor-removed-code").wait_for()
+            content = editor.input_value()
+            words = ("FinalizeBrowserProfileInput", "BaseActivityArgs", "browserProfileId", "profileJson", "ProfileUploadDetails", "BrowserProfileIdentity", "initializerId", "BrowserProfileArtifact", "ProfileStorageBucket", "proxyUsername", "AnotherLongBrowserProfileDeclaration", "finalSelectionProbe")
+            for word in words:
+                point = word_point(page, ".editor-code", word)
+                page.mouse.dblclick(**point)
+                actual = editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)")
+                assert actual == word, (width, size, word, actual)
+                assert editor.evaluate("e => e.scrollTop == 0 && e.scrollLeft == 0"), (width, size, word, "textarea scrolled independently")
+            # Drag the selection through several wrapped logical lines in either direction.
+            for reverse in (False, True):
+                page.locator(".editor-scroll").evaluate("e => e.scrollTop = 0")
+                points = page.evaluate("""() => ['BaseActivityArgs', 'profileJson'].map((word, index) => {
+                  const code = [...document.querySelectorAll('.editor-code')].find(e => e.textContent.includes(word));
+                  const nodes = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+                  for (let node = nodes.nextNode(); node; node = nodes.nextNode()) {
+                    const start = node.textContent.indexOf(word);
+                    if (start < 0) continue;
+                    const offset = start + (index ? 3 : 2), range = document.createRange();
+                    range.setStart(node, offset); range.setEnd(node, offset + 1);
+                    const box = range.getBoundingClientRect();
+                    return {x: box.x + 1, y: box.y + box.height / 2};
+                  }
+                  throw new Error(`Missing drag endpoint ${word}`);
+                })""")
+                if reverse:
+                    points.reverse()
+                page.mouse.move(**points[0]); page.mouse.down(); page.mouse.move(**points[1], steps=10); page.mouse.up()
+                selected = editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)")
+                expected = content[content.index("BaseActivityArgs") + 2:content.index("profileJson") + 3]
+                assert selected == expected, (width, size, reverse, selected, expected)
+            assert editor.input_value() == content
+            # Editing above wrapped code and resizing the pane must keep hit testing aligned.
+            editor.fill("// unsaved prefix\n" + content)
+            page.locator(".editor-pane").evaluate("e => e.style.width = '300px'")
+            page.mouse.dblclick(**word_point(page, ".editor-code", "finalSelectionProbe"))
+            assert editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)") == "finalSelectionProbe"
+            page.screenshot(path=f"/tmp/gitferry-webkit-editor-alignment-{width}-{size}.png")
+            assert page.evaluate("window.navigationEffects") == {"saves": 0, "external": 0}
+            previous_style = page.add_style_tag(content=".editor-code, .editor-input { word-break: normal; }")
+            for word in ("BaseActivityArgs", "BrowserProfileIdentity", "finalSelectionProbe"):
+                page.mouse.dblclick(**word_point(page, ".editor-code", word))
+                selected = editor.evaluate("e => e.value.slice(e.selectionStart,e.selectionEnd)")
+                if selected != word:
+                    previous_wrap_mismatches.append((width, size, word, selected))
+            previous_style.evaluate("e => e.remove()")
+        assert not errors, errors
+        print(f"Previous wrapping reproduced these selection mismatches: {previous_wrap_mismatches}")
+        print("WebKit: wrapped type declarations and following fields select their visible text, including forward/reverse drags, unsaved edits and resizing")
+    except BaseException:
+        page.screenshot(path="/tmp/gitferry-webkit-editor-alignment-failure.png")
+        raise
+    finally:
+        page.close()
+
+
 def editor_change_highlights(browser):
     page = browser.new_page(viewport={"width": 1100, "height": 650})
     errors = []
@@ -610,6 +675,7 @@ def main():
             browser = playwright.webkit.launch()
             if os.environ.get("GITFERRY_WEBKIT_HIGHLIGHTS_ONLY"):
                 try:
+                    editor_selection_alignment(browser)
                     editor_change_highlights(browser)
                 finally:
                     browser.close()

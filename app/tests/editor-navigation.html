@@ -19,7 +19,32 @@
     "",
     "            results.push(...batch.filter((item): item is Entry => item !== undefined));");
   const options = new URLSearchParams(location.search);
+  if (options.has("alignment")) {
+    code.splice(0, code.length,
+    "/**",
+    " * Selection must agree with the syntax text after wrapped declarations.",
+    " */",
+    "export type FinalizeBrowserProfileInput = BaseActivityArgs & {",
+    "  browserProfileId: string;",
+    "  profileJson: unknown;",
+    "  uploaded: ProfileUploadSummary;",
+    "  profileIdentity?: BrowserProfileIdentity;",
+    "  initializerId?: string;",
+    "  engineArtifact?: BrowserProfileArtifact;",
+    "  storedIn?: ProfileStorageBucket;",
+    "  proxyUsername?: string;",
+    "};",
+    "",
+    "export type AnotherLongBrowserProfileDeclaration = FinalizeBrowserProfileInput & {",
+    "\tstorageDescription: \"Spaces, Unicode 文件 and emoji 😀 keep their original offsets\";",
+    "  finalSelectionProbe: boolean;",
+    "};",
+    "");
+    // Match the three-digit gutter of a real source file, including narrow-pane wrapping.
+    code.push(...Array.from({ length: 100 }, () => ""));
+  }
   const baseline = code.join("\n");
+  if (options.has("alignment")) code[6] = "  uploaded: ProfileUploadDetails;";
   if (["changes", "words"].includes(options.get("overview"))) {
     code[19] = options.get("overview") === "words" ? "    const value20 = 200;" : "    const editedNearTop = true;";
     code[249] = options.get("overview") === "words" ? "    const value250 = 2500;" : "    const editedNearBottom = true;";
@@ -44,7 +69,7 @@
   document.documentElement.style.setProperty("--code-size", `${size}px`);
   document.documentElement.style.setProperty("--code-line-height", `${Math.ceil(size * 1.5)}px`);
   render(() => createComponent(FileEditor, {
-    target: { repo: "/navigation-fixture", path: "example.ts", line: 176, marks: null, nonce: 1, readOnly: !options.has("editable"), annotation: { ...ranges[0], ranges } },
+    target: { repo: "/navigation-fixture", path: "example.ts", line: options.has("alignment") ? 1 : 176, marks: null, nonce: 1, readOnly: !options.has("editable"), annotation: options.has("alignment") ? undefined : { ...ranges[0], ranges } },
     active: true, conflicted: false, width, externalEditorLabel: "VS Code",
     load: async () => content,
     loadBaseline: async () => {
