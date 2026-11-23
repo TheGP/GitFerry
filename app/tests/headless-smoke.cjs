@@ -116,7 +116,7 @@ async function exerciseKeepWindowWidth(page) {
     await click(page, ".settings-footer button");
   };
   const openAndClose = async () => {
-    await openDiffLineEditor(page, "two changed");
+    await openDiffLineInSideEditor(page, "two changed");
     assert.equal(await page.$eval(".workspace", element => element.style.width), "", "Opening the editor must not leave a widened workspace");
     await click(page, "button[aria-label='Close editor']");
     await page.waitForSelector(".editor-pane", { hidden: true });
