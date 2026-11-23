@@ -63,6 +63,7 @@ const tabBranchKey = "gitferry.showTabBranch";
 const expansionKey = "gitferry.expansion";
 const tabStateKey = "gitferry.tabState";
 const testsClosedKey = "gitferry.keepTestsClosed";
+const keepWindowWidthKey = "gitferry.keepWindowWidth";
 const fullFileKey = "gitferry.fullFile";
 const detailsViewKey = "gitferry.detailsView";
 const whitespaceKey = "gitferry.ignoreWhitespace";
@@ -652,6 +653,7 @@ function App() {
   });
   createEffect(() => localStorage.setItem(fullFileKey, String(fullFile())));
   const [keepTestsClosed, setKeepTestsClosed] = createSignal(localStorage.getItem(testsClosedKey) !== "false");
+  const [keepWindowWidth, setKeepWindowWidth] = createSignal(localStorage.getItem(keepWindowWidthKey) === "true");
   const [editorExecutable, setEditorExecutable] = createSignal(localStorage.getItem(editorExecutableKey) ?? "");
   const [showSettings, setShowSettings] = createSignal(false);
   const [actionDialog, setActionDialog] = createSignal<ActionDialog | null>(null);
@@ -750,7 +752,7 @@ function App() {
     if (expandedPane() === "editor") setExpandedPane("changes");
   }
   let sideEditorNonce = 0;
-  // Opening the editor widens the window by the editor's width, so the rest of the layout keeps its size; closing it narrows the window back.
+  // Unless disabled in Settings, opening the editor widens the window; closing it undoes that widening.
   // While the window resizes, the workspace is pinned to its final width (the window clips the overflow), so the
   // existing panes keep their size instead of squeezing for a frame and springing back.
   const [workspaceLock, setWorkspaceLock] = createSignal<number | null>(null);
@@ -760,10 +762,11 @@ function App() {
     const expandEditor = expandedPane() !== null;
     if (sideEditor()) { setSideEditor(target); if (expandEditor) setExpandedPane("editor"); return; }
     const extra = sideEditorWidth() + 1;
-    setWorkspaceLock((workspaceElement?.clientWidth ?? window.innerWidth) + extra);
+    const shouldGrow = !keepWindowWidth();
+    if (shouldGrow) setWorkspaceLock((workspaceElement?.clientWidth ?? window.innerWidth) + extra);
     setSideEditor(target);
     if (expandEditor) setExpandedPane("editor");
-    await growWindow(extra);
+    if (shouldGrow) await growWindow(extra);
     setWorkspaceLock(null);
   }
   async function hideSideEditor() {
@@ -912,6 +915,7 @@ function App() {
   });
   createEffect(() => localStorage.setItem(tabBranchKey, String(showTabBranch())));
   createEffect(() => localStorage.setItem(testsClosedKey, String(keepTestsClosed())));
+  createEffect(() => localStorage.setItem(keepWindowWidthKey, String(keepWindowWidth())));
   createEffect(() => localStorage.setItem(whitespaceKey, String(ignoreWhitespace())));
   let request = 0;
   // The revision of the file whose diff the file tab shows; a refresh reloads it only when this changes.
@@ -3259,6 +3263,7 @@ ${details()!.body.trimEnd()}` : ""}</pre><Show when={details()!.canEditMessage &
       <div class="settings-body"><label>THEME<select aria-label="Color theme" value={theme()} onChange={event => setTheme(event.currentTarget.value as ThemeId)}><For each={themeOptions}>{option => <option value={option.id}>{option.label}</option>}</For></select></label>
         <label class="settings-check"><input type="checkbox" checked={showTabBranch()} onChange={event => setShowTabBranch(event.currentTarget.checked)} /> Show branch name in repository tabs</label>
         <label class="settings-check" title="Files ending in .test.* / .spec.*, *_test.*, test_*, or inside test, tests, spec or __tests__ folders"><input type="checkbox" checked={keepTestsClosed()} onChange={event => setKeepTestsClosed(event.currentTarget.checked)} /> Keep test files collapsed when expanding all</label>
+        <label class="settings-check" title="Fit the side editor inside the current window instead of widening it"><input type="checkbox" checked={keepWindowWidth()} onChange={event => setKeepWindowWidth(event.currentTarget.checked)} /> Keep window width when opening files</label>
         <label class="settings-check"><input type="checkbox" checked={ignoreWhitespace()} onChange={event => changeIgnoreWhitespace(event.currentTarget.checked)} /> Ignore whitespace-only changes in diffs</label>
         <Show when={isTauri()}><div class="mcp-settings">
           <label class="settings-check"><input aria-label="Enable GitFerry MCP" type="checkbox" checked={Boolean(mcpConnection())} disabled={mcpBusy()} onChange={event => void setMcpEnabled(event.currentTarget.checked)} /> Enable MCP for AI navigation</label>

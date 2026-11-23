@@ -21,6 +21,7 @@ const progressEvents = [];
 const actionRequests = [];
 const invalidRevisionDiffs = [];
 const externalEditorRequests = [];
+const windowRequests = [];
 let editorOpenError = null;
 let snapshotGate = null;
 let actionGate = null;
@@ -104,6 +105,38 @@ async function toggleIgnoreWhitespace(page) {
   await click(page, "button[title='Settings']");
   await click(page, ".settings-body label::-p-text(Ignore whitespace-only changes)");
   await click(page, ".settings-footer button");
+}
+
+async function exerciseKeepWindowWidth(page) {
+  const key = "gitferry.keepWindowWidth";
+  const sizingRequests = () => windowRequests.filter(command => /\|(is_maximized|set_size|set_position)$/.test(command));
+  const toggleSetting = async () => {
+    await click(page, "button[title='Settings']");
+    await click(page, ".settings-body label::-p-text(Keep window width when opening files)");
+    await click(page, ".settings-footer button");
+  };
+  const openAndClose = async () => {
+    await openDiffLineEditor(page, "two changed");
+    assert.equal(await page.$eval(".workspace", element => element.style.width), "", "Opening the editor must not leave a widened workspace");
+    await click(page, "button[aria-label='Close editor']");
+    await page.waitForSelector(".editor-pane", { hidden: true });
+  };
+  assert.equal(await page.evaluate(key => localStorage.getItem(key), key), "false", "Existing automatic widening stays the default");
+  await toggleSetting();
+  let before = sizingRequests().length;
+  await openAndClose();
+  await openAndClose();
+  assert.equal(sizingRequests().length, before, "Keeping the window width must skip native sizing on repeated opens and closes");
+  await page.reload();
+  await page.waitForSelector(".summary-diff-card .diff-content");
+  assert.equal(await page.evaluate(key => localStorage.getItem(key), key), "true", "The setting survives restart");
+  before = sizingRequests().length;
+  await openAndClose();
+  assert.equal(sizingRequests().length, before, "Restart must preserve fixed window width");
+  await toggleSetting();
+  await openAndClose();
+  assert.ok(sizingRequests().length > before, "Turning the setting off restores native automatic widening checks");
+  console.log("Window width: repeated opens and closes, restart persistence, workspace sizing and automatic-widening opt-out passed");
 }
 
 async function exerciseKeepTestsClosed(page) {
@@ -1540,6 +1573,7 @@ async function exerciseFileLinks(page) {
 }
 
 async function bridge(command, args) {
+  if (command.startsWith("plugin:window|")) windowRequests.push(command);
   if (command === "open_in_editor") {
     externalEditorRequests.push({ ...args });
     if (editorOpenError) throw new Error(editorOpenError);
@@ -2055,6 +2089,7 @@ async function main() {
   await page.waitForSelector(".open-modal");
   await page.keyboard.press("Escape");
   await openRepo(page, small);
+  await exerciseKeepWindowWidth(page);
   await exerciseKeepTestsClosed(page);
   await exerciseReadingPosition(page);
   await openRepo(page, small);
