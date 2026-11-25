@@ -19,7 +19,7 @@ import { PaneExpandButton } from "./PaneExpandButton";
 import { cancelDiffScroll, preserveDiffScroll } from "./diffScroll";
 import { createFileLinkQueue, filePosition, type FileLinkBatch, type ResolvedFileLink } from "./fileLinks";
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
-import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection } from "./mcpNavigation";
+import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection, type FileRange } from "./mcpNavigation";
 import "./App.css";
 import { availableWorktrees, hasStagedChanges, repositoryTabs, reorderRepositoryTabs, worktreeGroupKey, worktreeLabel, type Worktree } from "./worktreeTabs";
 import { parseRepositoryMetadata, repositoryMetadataCache } from "./worktreeSession";
@@ -698,6 +698,9 @@ function App() {
   });
   const [sideEditorDirty, setSideEditorDirty] = createSignal(false);
   const [sideEditorWidth, setSideEditorWidth] = createSignal(Number(localStorage.getItem("gitferry.editorWidth")) || 620);
+  // Pending comments are applied only on a subsequent, explicit file open.
+  const fileAnnotations = new Map<string, { repo: string; content: string; ranges: FileRange[]; annotation: NonNullable<EditorTarget["annotation"]> }>();
+  const annotationKey = (repo: string, file: string, revision?: string) => `${repositoryKey(repo)}\0${file}\0${!revision || revision === "untracked" ? "working" : revision}`;
   const [expandedPane, setExpandedPane] = createSignal<"changes" | "editor" | null>(null);
   let activePane: "changes" | "editor" = "changes";
   function rememberPane(event: Event) {
@@ -759,6 +762,8 @@ function App() {
   let workspaceElement: HTMLElement | undefined;
   async function showSideEditor(target: EditorTarget) {
     if (removingWorktree()) return;
+    const saved = fileAnnotations.get(annotationKey(target.repo, target.path, target.commit));
+    if (!target.annotation && saved) target = { ...target, annotation: saved.annotation, annotationContent: saved.content };
     const expandEditor = expandedPane() !== null;
     if (sideEditor()) { setSideEditor(target); if (expandEditor) setExpandedPane("editor"); return; }
     const extra = sideEditorWidth() + 1;
@@ -2277,6 +2282,7 @@ function App() {
     const annotationElement = document.querySelector<HTMLElement>(".editor-annotation");
     const annotationPlacement = editor?.annotation && editor.repo === activePath() ? {
       surface: "side_editor", persistent: false, shownInSummary: false, rendered: Boolean(annotationElement),
+      current: annotationElement?.dataset.current === "true",
       visible: inAppViewport(annotationElement) && !actionDialog() && !showSettings() && !showOpen() && !paletteOpen(),
       comments: [editor.annotation.comment, ...(editor.annotation.ranges ?? []).map(range => range.comment)].filter((comment): comment is string => Boolean(comment)).map(comment => {
         const elements = [...annotationElement?.querySelectorAll<HTMLElement>("p") ?? []].filter(element => element.textContent === comment);
@@ -2362,6 +2368,11 @@ function App() {
       setTabs(tabs => tabs.some(item => item.path === current.path) ? tabs.map(item => item.path === current.path ? current : item) : [...tabs, current]);
       activateTab(current.path); saveRecent(current.path); saveTabs();
       return mcpView();
+    }
+    let backgroundRepo: Repo | undefined;
+    if (["annotate_file", "write_notes"].includes(message.tool) && (!tab || tab.loading || tab.loadError)) {
+      backgroundRepo = await invoke<Repo>("repo_snapshot", { path: tab?.path ?? repository, offset: 0 });
+      tab = backgroundRepo;
     }
     if (!tab || tab.loading || tab.loadError) throw new Error("Repository is not open and ready. Call open_repository with its path first.");
     const path = tab.path;
@@ -2472,10 +2483,10 @@ function App() {
       }
       throw new Error("Could not confirm the rendered saved note; check get_view for load errors");
     }
-    if (message.tool === "reveal_file") {
+    if (message.tool === "reveal_file" || message.tool === "annotate_file") {
       if (!a.file) throw new Error("file is required");
       if (a.branch && a.revision) throw new Error("Specify either branch or revision, not both");
-      const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
+      const current = backgroundRepo ?? await invoke<Repo>("repo_snapshot", { path, offset: 0 });
       const ref = a.branch ? current.refs.find(ref => (ref.kind === "branch" || ref.kind === "remote") && ref.name === a.branch) : null;
       if (a.branch && !ref) throw new Error(`Branch ${a.branch} does not exist in this repository`);
       const workingTarget = a.revision && ["working", "staged", "untracked"].includes(a.revision) ? a.revision : null;
@@ -2485,9 +2496,25 @@ function App() {
       const detail = revision ? await invoke<Details>("repo_commit", { path, hash: revision }) : null;
       const content = await readSideEditorFile(path, a.file, workingTarget === "staged" ? "staged" : detail?.hash);
       if (a.ranges && (a.startLine != null || a.endLine != null || a.quote != null)) throw new Error("Do not combine ranges with startLine/endLine/quote");
-      const ranges = a.ranges ?? [{ startLine: a.startLine ?? 1, endLine: a.endLine, quote: a.quote }];
+      const key = annotationKey(path, a.file, workingTarget ?? detail?.hash);
+      const normalizedContent = content.replace(/\r\n?/g, "\n");
+      const saved = fileAnnotations.get(key);
+      const pending = message.tool === "reveal_file" && a.ranges == null && a.startLine == null && a.endLine == null && a.quote == null && a.comment == null ? saved : undefined;
+      if (pending && pending.content !== normalizedContent) throw new Error("Code changed since these comments. Refresh them with annotate_file, or specify an explicit startLine/ranges to open the current code.");
+      const ranges = pending?.ranges ?? a.ranges ?? [{ startLine: a.startLine ?? 1, endLine: a.endLine, quote: a.quote }];
       const selectedRows = fileRangeRows(content, ranges);
       const startLine = ranges[0].startLine, endLine = ranges[0].endLine ?? startLine;
+      const annotation = pending?.annotation ?? { startLine, endLine, comment: a.comment, ranges: a.ranges };
+      if (message.tool === "annotate_file") {
+        await valid();
+        fileAnnotations.delete(key);
+        fileAnnotations.set(key, { repo: path, content: normalizedContent, ranges, annotation });
+        const oldest = fileAnnotations.keys().next().value;
+        if (fileAnnotations.size > 100 && oldest !== undefined) fileAnnotations.delete(oldest);
+        return { repository: path, file: a.file, revision: detail?.hash ?? workingTarget ?? "working", ranges,
+          stored: true, applied: false, persistent: false, viewUnchanged: true, confirmed: true,
+          message: "Comments stored for the next file open or explicit reveal_file. The current repository, editor, selection and scroll position are unchanged." };
+      }
       await valid(true);
       setTabs(tabs => tabs.map(item => item.path === path ? mergeRepo(item, current) : item));
       activateTab(path);
@@ -2500,7 +2527,7 @@ function App() {
       const navigationRequest = request;
       const target: EditorTarget = { repo: path, path: a.file, commit: workingTarget === "staged" || workingTarget === "untracked" ? workingTarget : detail?.hash, line: startLine, marks: null, nonce: ++sideEditorNonce,
         readOnly: true, revisionLabel: a.branch ? `${a.branch} · ${detail?.hash.slice(0, 8)}` : detail?.hash.slice(0, 8) ?? (workingTarget === "staged" ? "Staged index" : "Working tree"),
-        content, annotation: { startLine, endLine, comment: a.comment, ranges: a.ranges } };
+        content, annotation, annotationContent: normalizedContent };
       await showSideEditor(target);
       await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
       await valid();
@@ -2510,7 +2537,7 @@ function App() {
       if (!input?.readOnly || input.value !== content.replace(/\r\n?/g, "\n") || highlighted.length !== selectedRows.size || highlighted.some(index => !selectedRows.has(index))) throw new Error("GitFerry could not confirm the file and rendered highlights");
       const view = mcpView();
       return { repository: path, branch: current.branch, file: a.file, revision: detail?.hash ?? workingTarget ?? "working", editor: view.editor,
-        placement: view.editor?.annotationPlacement ?? null, persistent: false, message: "Temporary annotation in the side editor only; not a saved note and not shown in Summary. Use write_notes and reveal_note for saved review comments.", confirmed: true };
+        placement: view.editor?.annotationPlacement ?? null, persistent: false, message: "Temporary annotation in the side editor only; not a saved note and not shown in Summary. Use write_notes for saved review comments; reveal_note only when the user asks to show them.", confirmed: true };
     }
     if (message.tool === "list_branches" || message.tool === "show_branch") {
       const current = await invoke<Repo>("repo_snapshot", { path, offset: 0 });
@@ -2729,6 +2756,7 @@ function App() {
     batch(() => {
       setTabs(next);
       setMcpHighlights(marks => marks.filter(mark => mark.repo !== path));
+      for (const [key, entry] of fileAnnotations) if (entry.repo === path) fileAnnotations.delete(key);
       tabViews.delete(path); pendingComparisons.delete(path); initialSelection.delete(path); updateComparison(path, () => null);
       if (activePath() === path) { setActivePath(next.length ? next[next.length - 1].path : null); setScrollTop(0); selectWorking(); }
     });
@@ -3233,7 +3261,7 @@ ${details()!.body.trimEnd()}` : ""}</pre><Show when={details()!.canEditMessage &
         </section>
       </Show>
     </Show>
-        <Show when={sideEditor()}>{target => <FileEditor target={target()} externalEditorLabel={editorOptions.find(option => option.id === editor())?.label ?? "editor"} onOpenExternal={openEditorFile} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} expanded={expandedPane() === "editor"} onToggleExpand={() => toggleExpandedPane("editor")} baselineRevision={tabs().find(tab => tab.path === target().repo)?.head ?? ""} loadBaseline={readEditorBaseline} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => setSideEditor(current => current && { ...current, annotation: undefined })} onResize={event => startResize("editor", event)} />}</Show>
+        <Show when={sideEditor()}>{target => <FileEditor target={target()} externalEditorLabel={editorOptions.find(option => option.id === editor())?.label ?? "editor"} onOpenExternal={openEditorFile} active={repoReady() && target().repo === activePath()} conflicted={target().repo === activePath() && !target().commit && conflicts().some(item => item.path === target().path)} onMarkResolved={remaining => void runAction({ kind: "stage_file", value: { path: target().path } }, remaining ? `${target().path} still has ${remaining} conflict${remaining === 1 ? "" : "s"}. Mark it resolved anyway?` : undefined)} revision={target().repo === activePath() ? repo()?.status.find(item => item.path === target().path)?.worktreeRevision : undefined} width={sideEditorWidth()} expanded={expandedPane() === "editor"} onToggleExpand={() => toggleExpandedPane("editor")} baselineRevision={tabs().find(tab => tab.path === target().repo)?.head ?? ""} loadBaseline={readEditorBaseline} load={readSideEditorFile} save={saveSideEditorFile} onDirty={setSideEditorDirty} onClose={closeSideEditor} onClearAnnotation={() => { fileAnnotations.delete(annotationKey(target().repo, target().path, target().commit)); setSideEditor(current => current && { ...current, annotation: undefined, annotationContent: undefined }); }} onResize={event => startResize("editor", event)} />}</Show>
     </main>
     <footer class="statusbar"><span><span class="connection-dot" /> {repo()?.path ?? "Ready"}</span><span class="statusbar-right"><Show when={notice() && !actionBusy()} fallback={<>{actionBusy() ? actionMessage() : repo()?.loading ? `Opening ${repo()?.name}…` : searchBusy() ? "Searching commits…" : busy() ? loadingStatus() : repo()?.loadError ? "Repository unavailable" : "Ready"}</>}><span class="notice-bar" title={notice()}>{notice().split("\n").find(line => line.trim()) ?? notice()}</span></Show> <i /> GITFERRY {version}</span></footer>
     <Show when={actionDialog()}>{current => <div class="modal-backdrop" onClick={() => setActionDialog(null)}><div class="action-dialog" role="dialog" aria-modal="true" aria-label={current().title} onClick={event => event.stopPropagation()}>

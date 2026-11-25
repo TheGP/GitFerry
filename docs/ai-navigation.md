@@ -50,6 +50,18 @@ For exact, non-adjacent lines in the same file, use `ranges` in one `reveal_file
 
 The [GitFerry MCP skill](skills/gitferry-mcp/SKILL.md) teaches agents to choose the correct repository/worktree branch, investigate changes, and reveal verified lines or hunks. Install its folder as `~/.agents/skills/gitferry-mcp` for Codex or `~/.claude/skills/gitferry-mcp` for Claude Code. Invoke it with `$gitferry-mcp` in Codex or `/gitferry-mcp` in Claude Code, or let the agent select it when your request matches. If an existing chat has not loaded native MCP tools, its Python 3.11+ helper calls the same authenticated local server using the saved client configuration without printing tokens. This skill is separate from the change-notes skill below.
 
+## Add comments without interrupting the reader
+
+Use `annotate_file` to add temporary code explanations. It accepts the same file/revision/range arguments as `reveal_file`, validates the source, and stores comments without switching repositories, opening an editor, resizing, scrolling, changing focus, or touching unsaved changes. The repository does not need to be open. Repeated calls replace the pending comments for that file and resolved revision; up to 100 targets are kept until app exit or repository close.
+
+```json
+{"repository":"C:/work/my-repo","revision":"working","file":"src/example.ts","ranges":[{"startLine":42,"quote":"retry","comment":"Retry only while active."}]}
+```
+
+Require `confirmed: true`, `stored: true`, `applied: false`, and `viewUnchanged: true`. These confirm validation and storage, not on-screen visibility. Comments appear on the next user file open, or an explicit `reveal_file` with the same repository/file/revision and no range/comment arguments. Updating comments on the currently displayed file leaves its existing annotations and reading position untouched until that next open. Changed source is marked **Outdated**, with highlights and range navigation disabled. An explicit reveal of stale stored comments fails before navigation; refresh them with `annotate_file` or supply an explicit new range. Clearing AI highlights also clears the stored comments for that target.
+
+Use `write_notes` for persistent `.gitferry/notes.jsonl` comments; it also works without opening a repository and does not navigate. **Never call `open_repository`, `reveal_file`, `reveal_note`, or `reveal_change` merely to add comments or verify a write. Navigate only when the user explicitly asks to show the code/comments.** Saving and showing are separate actions. Read the exact source through read-only Git/file tools if its repository is not open; do not activate it just to inspect an anchor.
+
 ## AI change notes
 
 Linked worktrees share a repository tab. The second row shows branch names (detached checkouts show their short commit ID). Hover to see the folder path, and drag tabs to reorder them. Select a checkout in this row; GitFerry remembers the last choice across repository switches and restarts. MCP continues addressing individual checkouts by their canonical paths. `reorder_repositories` requires every open checkout; first occurrences determine repository-group order, while the worktree row keeps its own saved drag order.
@@ -58,9 +70,9 @@ Linked worktrees share a repository tab. The second row shows branch names (deta
 
 Optional `side`, `startLine`, `before` and `after` disambiguate repeated lines. The response reports every matched file, target, side and line, plus visibility states. `validateOnly: true` checks without writing; same-id entries update notes and `{id,deleted:true}` removes them. Saving appends LF records, checks for concurrent updates, and uses atomic replacement. It never edits source or stages files.
 
-After saving, call `reveal_note({"repository":"<tabId>","id":"retry-abort"})`. It opens the saved comparison/commit or working target without checkout, expands the file in Summary, scrolls to the note, and confirms `note.matched`, `note.rendered`, and `note.visible`. Use `view: "diff"` for an anchor outside normal hunk context. Recheck with `get_view({"noteIds":["retry-abort"]})`: it separates saved, matched, rendered, and visible states, reports hidden reasons and missing IDs, and surfaces `notesError`. Visibility means inside the app viewport, including scroll clipping; `appFocused` reports focus, not whether another window covers GitFerry.
+Only when the user explicitly asks to show a saved comment, call `reveal_note({"repository":"<tabId>","id":"retry-abort"})`. It opens the saved comparison/commit or working target without checkout, expands the file in Summary, scrolls to the note, and confirms `note.matched`, `note.rendered`, and `note.visible`. Use `view: "diff"` for an anchor outside normal hunk context. Recheck with `get_view({"noteIds":["retry-abort"]})`: it separates saved, matched, rendered, and visible states, reports hidden reasons and missing IDs, and surfaces `notesError`. Visibility means inside the app viewport, including scroll clipping; `appFocused` reports focus, not whether another window covers GitFerry.
 
-`reveal_file` comments are temporary annotations in the **side editor**, never saved Summary notes. Its response explicitly reports `placement.surface`, `persistent: false`, `shownInSummary: false`, and per-comment rendered/visible states; `get_view.editor.annotationPlacement` reads them back. Use `write_notes` followed by `reveal_note` for a persistent review explanation.
+`reveal_file` comments are temporary annotations in the **side editor**, never saved Summary notes. Its response explicitly reports `placement.surface`, `persistent: false`, `shownInSummary: false`, and per-comment rendered/visible states; `get_view.editor.annotationPlacement` reads them back. Use `write_notes` for a persistent review explanation, and `reveal_note` only on an explicit request to show it.
 
 Notes accept LF and CRLF, including mixed endings. Read/parse errors are displayed; a failed refresh retains loaded notes. Ambiguous quotes produce an error rather than attaching to the first occurrence. Legacy quote-only entries remain supported.
 

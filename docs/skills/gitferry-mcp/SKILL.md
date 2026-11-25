@@ -7,6 +7,18 @@ description: Use GitFerry MCP to inspect repository tabs and branches, investiga
 
 Use the configured `gitferry` MCP server's tools to investigate and navigate the running GitFerry app. Discover their actual client tool names and schemas; the names below omit client namespace prefixes. The app must be running with MCP enabled. If this chat has not loaded the server, use the authenticated helper below. This skill covers navigation and investigation; requests to write GitFerry change notes use the separate change-notes skill.
 
+## Add comments without interrupting the reader
+
+Use `annotate_file` to add temporary code explanations. It accepts the same file/revision/range arguments as `reveal_file`, validates the source, and stores comments without switching repositories, opening an editor, resizing, scrolling, changing focus, or touching unsaved changes. The repository does not need to be open. Repeated calls replace the pending comments for that file and resolved revision; up to 100 targets are kept until app exit or repository close.
+
+```json
+{"repository":"C:/work/my-repo","revision":"working","file":"src/example.ts","ranges":[{"startLine":42,"quote":"retry","comment":"Retry only while active."}]}
+```
+
+Require `confirmed: true`, `stored: true`, `applied: false`, and `viewUnchanged: true`. These confirm validation and storage, not on-screen visibility. Comments appear on the next user file open, or an explicit `reveal_file` with the same repository/file/revision and no range/comment arguments. Updating comments on the currently displayed file leaves its existing annotations and reading position untouched until that next open. Changed source is marked **Outdated**, with highlights and range navigation disabled. An explicit reveal of stale stored comments fails before navigation; refresh them with `annotate_file` or supply an explicit new range. Clearing AI highlights also clears the stored comments for that target.
+
+Use `write_notes` for persistent `.gitferry/notes.jsonl` comments; it also works without opening a repository and does not navigate. **Never call `open_repository`, `reveal_file`, `reveal_note`, or `reveal_change` merely to add comments or verify a write. Navigate only when the user explicitly asks to show the code/comments.** Saving and showing are separate actions. Read the exact source through read-only Git/file tools if its repository is not open; do not activate it just to inspect an anchor.
+
 ## Choose the repository and branch
 
 - For a request about the current view or selection, call `get_view` to read the active repository, checked-out branch, browsed commit, file, text selection, and line/hunk selection.
@@ -25,7 +37,7 @@ With grouped worktrees, this order includes every open checkout. The first occur
 
 When explicitly asked for repository change notes, use `write_notes` with the separate change-notes skill's guidance. Read the exact target diff first. Each entry needs `id`, `file`, `quote`, `note`, and `target`: `working`, `staged`, `untracked`, full commit SHA, or `baseSHA..headSHA`. For an open comparison use `get_view.comparison.target` or `compare`; the saved target is pinned to exact SHAs. Optional `side`, `startLine`, `before` and `after` disambiguate repeated code. The tool validates the whole batch before appending LF JSONL and returns matched locations and separate visibility states. `validateOnly: true` does not write. Same id updates; `{id,deleted:true}` removes. Require `confirmed: true` and `written: true` for saves. It writes only `.gitferry/notes.jsonl`, never source or index. Do not write notes without user authorization.
 
-After saving, call `reveal_note(repository, id)` to open the correct target in Summary, expand the file and scroll to the note. Require `confirmed: true` and `note.matched`, `note.rendered`, `note.visible` all true. Use `view: "diff"` for notes outside normal hunk context. `get_view(noteIds: [id])` rechecks saved/matched/rendered/visible states, hidden reasons, missing ids and `notesError`; it reports up to 200 notes without a filter. Visibility means inside the app viewport, not OS window occlusion; `appFocused` reports focus. Saving alone does not prove visibility. An older note stays on its original comparison after the branch moves. Never use manual JSONL edits as a workaround for an outdated running server's comparison schema.
+Only when the user explicitly asks to show the saved comment, call `reveal_note(repository, id)` to open the correct target in Summary, expand the file and scroll to the note. Require `confirmed: true` and `note.matched`, `note.rendered`, `note.visible` all true. Use `view: "diff"` for notes outside normal hunk context. `get_view(noteIds: [id])` rechecks saved/matched/rendered/visible states, hidden reasons, missing ids and `notesError`; it reports up to 200 notes without a filter. Visibility means inside the app viewport, not OS window occlusion; `appFocused` reports focus. Saving alone does not prove visibility. An older note stays on its original comparison after the branch moves. Never use manual JSONL edits as a workaround for an outdated running server's comparison schema.
 
 Repository tabs group linked worktrees, and the second row selects a checkout. MCP still addresses each checkout by its canonical `tabId`; last selected worktrees are remembered across sessions. Do not infer checkout identity from the first row's repository name.
 
@@ -46,7 +58,7 @@ For a merge, inspect `get_commit`'s parents and pass the appropriate parent SHA 
 
 ## Show the evidence in GitFerry
 
-For explanations of existing code, use `reveal_file`; the file does not need to have a diff. Open the repository first, read its refs with `list_branches`, and use `blame` at the resolved full commit SHA to verify the requested code and line numbers. Then call:
+For explicit requests to show existing code, use `reveal_file`; the file does not need to have a diff. Open the repository first, read its refs with `list_branches`, and use `blame` at the resolved full commit SHA to verify the requested code and line numbers. Then call:
 
 ```json
 {"repository":"C:/work/my-repo","branch":"topic","file":"src/example.ts","startLine":42,"endLine":44,"quote":"retry","comment":"These checks can finish before the post has loaded."}
@@ -54,7 +66,7 @@ For explanations of existing code, use `reveal_file`; the file does not need to 
 
 Unlike `reveal_change`'s checked-out branch check, `reveal_file.branch` selects a local or remote branch to browse without checkout. Alternatively, pass `revision` as a full commit SHA, `HEAD` (default), or `working`; do not combine it with `branch`. Prefer the verified full SHA when refs could move during the investigation. The file opens read-only in the side editor, including unchanged code. Lines are 1-based; `quote` must occur in the highlighted range. `comment` is a plain-text, temporary explanation beside the code, not a repository edit. Require `confirmed: true`, and report the returned resolved `revision`, file, and line range. `get_view.editor` reads back the displayed revision and annotation. **Clear AI highlights** removes the annotation.
 
-`reveal_file` returns `placement.surface: "side_editor"`, `persistent: false`, `shownInSummary: false`, and per-comment rendered/visible states. `get_view.editor.annotationPlacement` reads them back. Report the placement accurately; `confirmed: true` verifies the file and highlights, not visibility of every comment. Saved comments in Summary require `write_notes` followed by `reveal_note`.
+`reveal_file` returns `placement.surface: "side_editor"`, `persistent: false`, `shownInSummary: false`, and per-comment rendered/visible states. `get_view.editor.annotationPlacement` reads them back. Report the placement accurately; `confirmed: true` verifies the file and highlights, not visibility of every comment. Save Summary comments with `write_notes`; call `reveal_note` only when the user asks to show them.
 
 For multiple non-adjacent ranges in a single file, make **one** `reveal_file` request with `ranges`, not repeated requests that replace each other. Each range has `startLine`, optional `endLine`, `quote`, and `comment`. Top-level `comment` can explain the whole file. Do not mix `ranges` with top-level `startLine`, `endLine`, or `quote`:
 

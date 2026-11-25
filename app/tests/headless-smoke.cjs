@@ -186,6 +186,77 @@ async function exerciseKeepWindowWidth(page) {
   console.log("Window width: repeated opens and closes, restart persistence, workspace sizing and automatic-widening opt-out passed");
 }
 
+async function exerciseQuietAnnotations(page) {
+  const target = makeRepo("quiet-comments-target"), reading = makeRepo("quiet-comments-reading");
+  const targetText = Array.from({ length: 100 }, (_, i) => `target line ${i + 1}`).join("\n") + "\n";
+  const readingText = targetText.replaceAll("target", "reading");
+  fs.writeFileSync(path.join(target, "base.txt"), targetText);
+  fs.writeFileSync(path.join(reading, "base.txt"), readingText);
+  const index = fs.readFileSync(path.join(target, ".git/index")), head = git(target, "rev-parse", "HEAD");
+  await openRepo(page, reading);
+  await openDiffLineInSideEditor(page, "reading line 40");
+  await page.locator(".editor-input").fill(readingText + "unsaved buffer\n");
+  const position = () => page.evaluate(() => {
+    const input = document.querySelector(".editor-input"), scroll = document.querySelector(".editor-scroll");
+    return { value: input.value, start: input.selectionStart, end: input.selectionEnd, top: scroll.scrollTop,
+      focused: document.activeElement === input, details: document.querySelector(".details-scroll").scrollTop,
+      annotation: document.querySelector(".editor-annotation")?.textContent ?? null };
+  });
+  await page.evaluate(() => {
+    const input = document.querySelector(".editor-input"); input.focus(); input.setSelectionRange(200, 220);
+    document.querySelector(".editor-scroll").scrollTop = 400;
+  });
+  const before = await position(), sizes = windowRequests.length;
+  for (const comment of ["First explanation", "Updated explanation"]) {
+    const reply = await mcp(page, "annotate_file", { repository: target, file: "base.txt", revision: "working", startLine: 40, quote: "target line 40", comment });
+    assert.equal(reply.error, null);
+    assert.equal(reply.result.stored, true); assert.equal(reply.result.applied, false); assert.equal(reply.result.viewUnchanged, true);
+    assert.deepEqual(await position(), before, "Background comments must preserve the unsaved buffer, selection, focus and both scroll positions");
+  }
+  let reply = await mcp(page, "write_notes", { repository: target, notes: [{ id: "quiet-note", file: "base.txt", target: "working", quote: "target line 40", note: "Saved without showing" }] });
+  assert.equal(reply.error, null); assert.equal(reply.result.written, true);
+  assert.deepEqual(await position(), before, "Saving notes in an unopened repository must preserve the view");
+  reply = await mcp(page, "list_repositories");
+  assert.equal(reply.result.repositories.find(repo => repo.active)?.path, reading);
+  assert.ok(!reply.result.repositories.some(repo => repo.path === target), "Adding comments must not open a repository tab");
+  assert.equal(windowRequests.length, sizes, "Adding comments must not resize or focus the window");
+  await click(page, "button[aria-label='Close editor']"); await submitActionDialog(page);
+  await openRepo(page, target);
+  reply = await mcp(page, "reveal_file", { repository: target, file: "base.txt", revision: "working" });
+  assert.equal(reply.error, null); assert.equal(reply.result.confirmed, true);
+  assert.equal(reply.result.editor.annotation.comment, "Updated explanation");
+  assert.equal(reply.result.editor.line, 40, "Explicit reveal uses the stored range");
+  await page.evaluate(() => { document.querySelector(".editor-scroll").scrollTop = 450; });
+  const sameFile = await position();
+  reply = await mcp(page, "annotate_file", { repository: target, file: "base.txt", revision: "working", ranges: [{ startLine: 10, quote: "target line 10", comment: "New pending explanation" }] });
+  assert.equal(reply.error, null);
+  assert.deepEqual(await position(), sameFile, "Comments on the displayed file must not reset it or insert a panel while reading");
+  reply = await mcp(page, "annotate_file", { repository: target, file: "base.txt", revision: "working", startLine: 10, quote: "wrong code", comment: "Invalid update" });
+  assert.ok(reply.error);
+  await click(page, "button[aria-label='Close editor']");
+  await openDiffLineInSideEditor(page, "target line 15");
+  assert.equal(await page.$eval(".editor-annotation p", item => item.textContent), "New pending explanation", "A user file open applies the last valid stored comments");
+  assert.equal(await page.$eval(".editor-input", input => input.readOnly), false, "Comments must not make an ordinary working file read-only");
+  await click(page, "button[aria-label='Close editor']");
+  fs.writeFileSync(path.join(target, "base.txt"), targetText.replace("target line 10\n", "changed source line\n"));
+  reply = await mcp(page, "reveal_file", { repository: target, file: "base.txt", revision: "working" });
+  assert.match(reply.error, /Code changed since these comments/);
+  await openDiffLineInSideEditor(page, "target line 15");
+  await page.waitForFunction(() => document.querySelector(".editor-annotation")?.dataset.current === "false");
+  assert.equal(await page.$$eval(".editor-row.ai-highlight", rows => rows.length), 0, "Old comments must not highlight changed code");
+  assert.equal(await page.$eval(".editor-annotation-range button", button => button.disabled), true);
+  await click(page, ".editor-annotation button[title='Clear AI highlights']");
+  await click(page, "button[aria-label='Close editor']");
+  await openDiffLineInSideEditor(page, "target line 15");
+  assert.equal(await page.$(".editor-annotation"), null, "Cleared comments must not reappear on reopening");
+  await click(page, "button[aria-label='Close editor']");
+  assert.deepEqual(fs.readFileSync(path.join(target, ".git/index")), index);
+  assert.equal(git(target, "rev-parse", "HEAD"), head);
+  assert.equal(fs.readFileSync(path.join(reading, "base.txt"), "utf8"), readingText, "Unsaved editor changes must not be written by commenting");
+  await mcp(page, "close_repository", { repository: target }); await mcp(page, "close_repository", { repository: reading });
+  console.log("Quiet comments: unopened and active repositories, repeated writes, unsaved buffers, scroll/focus/selection, explicit reveal, ordinary opens, stale code and clearing passed");
+}
+
 async function exerciseKeepTestsClosed(page) {
   assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.keepTestsClosed")), "true", "Test files should stay collapsed by default");
   const root = makeRepo("test-expansion");
@@ -2137,6 +2208,8 @@ async function main() {
   await page.keyboard.press("Escape");
   await openRepo(page, small);
   await exerciseKeepWindowWidth(page);
+  await exerciseQuietAnnotations(page);
+  await openRepo(page, small);
   await exerciseKeepTestsClosed(page);
   await exerciseReadingPosition(page);
   await openRepo(page, small);

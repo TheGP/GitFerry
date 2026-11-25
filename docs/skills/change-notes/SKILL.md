@@ -17,6 +17,8 @@ Do NOT note: renames, formatting, imports, types, simple refactors, tests, obvio
 
 ## Write and verify with MCP
 
+Adding notes must preserve the reader's current repository, file and scroll position. `write_notes` works without opening a repository. Do not call `open_repository`, `reveal_note`, `reveal_change` or `reveal_file` merely to add or verify notes. Navigate only when the user explicitly asks to show them. For temporary editor comments, use `annotate_file`; it stores validated comments without changing the view.
+
 Prefer GitFerry's `write_notes` MCP tool when the repository is open. Read `list_repositories` and `get_diff` first; use the exact checkout's canonical `tabId`, file and diff target. Never switch a branch just to attach a note.
 
 ```json
@@ -27,12 +29,12 @@ Prefer GitFerry's `write_notes` MCP tool when the repository is open. Read `list
 - Use separate notes for separate logical changed blocks. Anchor each to its actual behavior, not an import or an unrelated test.
 - Repeated quotes need `startLine` and `side`, or exact `before`/`after` adjacent code lines. Ambiguous or missing anchors fail the whole batch.
 - `validateOnly: true` checks without writing. Require `confirmed: true` and `written: true` when saving; inspect every returned file/target/side/line.
-- After saving, call `reveal_note(repository, id)` for each note. It opens the saved target in Summary, expands the file, scrolls to the note, and returns `note.matched`, `rendered` and `visible`. Require all three plus `confirmed: true`. For an anchor outside ordinary hunk context, use `view: "diff"`.
+- Only when the user explicitly asks to show the notes, call `reveal_note(repository, id)` for each note. It opens the saved target in Summary, expands the file, scrolls to the note, and returns `note.matched`, `rendered` and `visible`. Require all three plus `confirmed: true`. For an anchor outside ordinary hunk context, use `view: "diff"`.
 - Recheck `get_view(noteIds: [id])` before claiming current visibility; it distinguishes saved, matched, rendered and visible, with hidden reasons and `notesError`. Visibility is inside the app viewport; `appFocused` reports focus. A saved note may be collapsed, outside the viewport or in a different comparison.
 - `reveal_file` comments are temporary side-editor annotations, never saved Summary notes. Do not substitute them or manual JSONL writes when a saved comparison note is requested. If the running app lacks the tool/schema, report that it needs updating.
 - The tool appends records, normalizes notes to LF, and refuses concurrent updates or malformed existing records. Same id updates a note; `{"id":"first-scroll-loop","deleted":true}` removes it.
 
-Fallback if MCP is unavailable: use a UTF-8 writer that preserves existing records and writes LF (avoid PowerShell `Add-Content`/`Out-File` defaults). Validate every JSONL record and quote location, then verify the visible result. Never treat a read error as an empty file. Do not include `.gitferry/` in commits.
+Fallback if MCP is unavailable: use a UTF-8 writer that preserves existing records and writes LF (avoid PowerShell `Add-Content`/`Out-File` defaults). Validate every JSONL record and quote location, then verify the saved anchors without navigating; check visible placement only if the user asks to show the notes. Never treat a read error as an empty file. Do not include `.gitferry/` in commits.
 
 Format: append one JSON object per line. Preserve existing records:
 {"id":"<short-kebab-slug>","file":"<repo-relative path, forward slashes>","quote":"<distinctive code copied verbatim from ONE line of the new code>","note":"<why, not what; 1 sentence, max 25 words>"}
