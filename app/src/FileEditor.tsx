@@ -400,7 +400,7 @@ export function FileEditor(props: { target: EditorTarget; baselineRevision?: str
   const isAdded = (index: number) => changeHighlights().added.has(index) || baseline() === null && Boolean(marks()?.added.has(index + 1));
   const removedAbove = (index: number) => removalsByLine().has(index + 1) || baseline() === null && Boolean(marks()?.removed.has(index + 1));
   const annotationRanges = () => props.target.annotation?.ranges ?? (props.target.annotation ? [props.target.annotation] : []);
-  const annotationCurrent = () => props.target.annotationContent === undefined || !doc() || props.target.annotationContent === doc()?.text;
+  const annotationCurrent = createMemo(() => props.target.annotationContent === undefined || !doc() || props.target.annotationContent === doc()?.text);
   const isHighlighted = (index: number) => annotationCurrent() && annotationRanges().some(range => index + 1 >= range.startLine && index + 1 <= (range.endLine ?? range.startLine));
   return <>
     <div class="splitter editor-splitter" onPointerDown={event => props.onResize(event)} />

@@ -238,6 +238,13 @@ async function exerciseQuietAnnotations(page) {
   await openDiffLineInSideEditor(page, "target line 15");
   assert.equal(await page.$eval(".editor-annotation p", item => item.textContent), "New pending explanation", "A user file open applies the last valid stored comments");
   assert.equal(await page.$eval(".editor-input", input => input.readOnly), false, "Comments must not make an ordinary working file read-only");
+  await page.locator(".editor-input").fill(targetText + "unsaved change\n");
+  await page.waitForFunction(() => document.querySelector(".editor-annotation")?.dataset.current === "false");
+  assert.equal(await page.$$eval(".editor-row.ai-highlight", rows => rows.length), 0, "Typing invalidates the cached annotation status");
+  assert.equal(fs.readFileSync(path.join(target, "base.txt"), "utf8"), targetText, "Checking annotation status must not save the buffer");
+  await page.locator(".editor-input").fill(targetText);
+  await page.waitForFunction(() => document.querySelector(".editor-annotation")?.dataset.current === "true");
+  assert.deepEqual(await page.$$eval(".editor-row.ai-highlight .editor-line-number", rows => rows.map(row => row.textContent)), ["10"], "Restoring the original text restores its highlights");
   await click(page, "button[aria-label='Close editor']");
   fs.writeFileSync(path.join(target, "base.txt"), targetText.replace("target line 10\n", "changed source line\n"));
   reply = await mcp(page, "reveal_file", { repository: target, file: "base.txt", revision: "working" });
