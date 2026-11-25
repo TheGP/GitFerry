@@ -726,7 +726,12 @@ mod tests {
             .unwrap();
         assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
         let data = rpc_body(&body);
-        assert_eq!(data["result"]["tools"].as_array().unwrap().len(), 17);
+        assert_eq!(data["result"]["tools"].as_array().unwrap().len(), 18);
+        let advertised = data["result"]["tools"].as_array().unwrap();
+        let annotate = advertised.iter().find(|tool| tool["name"] == "annotate_file").unwrap();
+        let reveal = advertised.iter().find(|tool| tool["name"] == "reveal_file").unwrap();
+        assert_eq!(annotate["inputSchema"], reveal["inputSchema"]);
+        assert_eq!(annotate["annotations"]["readOnlyHint"], false);
         for name in ["close_repository", "reorder_repositories"] {
             assert!(data["result"]["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == name));
         }

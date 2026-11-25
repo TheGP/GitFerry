@@ -1,6 +1,6 @@
 {
   "name": "gitferry",
-  "version": "0.3.41",
+  "version": "0.3.42",
   "description": "A fast Git client for local and SSH repositories",
   "type": "module",
   "scripts": {
