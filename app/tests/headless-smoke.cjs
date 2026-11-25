@@ -83,6 +83,7 @@ async function doubleClickDiffWord(page, lineText, word, opensEditor = true) {
 }
 
 async function openDiffLineInSideEditor(page, lineText) {
+  await page.waitForFunction(text => [...document.querySelectorAll(".diff-line .line-text")].some(line => line.textContent === text), {}, lineText);
   const line = await page.evaluate(text => {
     const row = [...document.querySelectorAll(".diff-line")].find(row => row.querySelector(".line-text")?.textContent === text);
     if (!row) throw new Error(`Missing diff line: ${text}`);
