@@ -109,6 +109,18 @@ async function toggleIgnoreWhitespace(page) {
 
 async function exerciseKeepWindowWidth(page) {
   const key = "gitferry.keepWindowWidth";
+  const viewport = page.viewport();
+  const preferredWidths = await page.evaluate(() => ["locationsWidth", "commitsWidth", "editorWidth"].map(key => localStorage.getItem(`gitferry.${key}`)));
+  const assertFitted = async () => {
+    const layout = await page.evaluate(() => {
+      const editor = document.querySelector(".editor-pane").getBoundingClientRect();
+      const changes = document.querySelector(".details-pane").getBoundingClientRect();
+      const controls = [...document.querySelectorAll(".editor-save, .editor-open-external, .editor-tab-close")].map(button => button.getBoundingClientRect());
+      return { width: innerWidth, editor: editor.width, changes: changes.width, right: editor.right,
+        controlsVisible: controls.length >= 3 && controls.every(box => box.width > 0 && box.left >= 0 && box.right <= innerWidth + 1) };
+    });
+    assert.ok(layout.editor >= 319 && layout.changes >= 219 && layout.right <= layout.width + 1 && layout.controlsVisible, JSON.stringify(layout));
+  };
   const sizingRequests = () => windowRequests.filter(command => /\|(is_maximized|set_size|set_position)$/.test(command));
   const toggleSetting = async () => {
     await click(page, "button[title='Settings']");
@@ -126,7 +138,42 @@ async function exerciseKeepWindowWidth(page) {
   let before = sizingRequests().length;
   await openAndClose();
   await openAndClose();
+  for (let layout = 0; layout < 2; layout++) {
+    if (layout) await click(page, ".layout-toggle");
+    for (const width of [960, 1100]) {
+      await page.setViewport({ ...viewport, width });
+      await openDiffLineInSideEditor(page, "two changed");
+      await assertFitted();
+      await click(page, "button[title='Toggle locations']");
+      await assertFitted();
+      await click(page, "button[title='Toggle locations']");
+      await page.setViewport({ ...viewport, width: 1920 });
+      assert.equal(await page.$eval(".editor-pane", element => element.getBoundingClientRect().width), 620, "A wider window restores the preferred editor width");
+      await click(page, "button[aria-label='Close editor']");
+      await page.waitForSelector(".editor-pane", { hidden: true });
+    }
+  }
+  await click(page, ".layout-toggle");
+  await page.setViewport(viewport);
+  assert.deepEqual(await page.evaluate(() => ["locationsWidth", "commitsWidth", "editorWidth"].map(key => localStorage.getItem(`gitferry.${key}`))), preferredWidths, "Fitting panes must preserve preferred widths");
   assert.equal(sizingRequests().length, before, "Keeping the window width must skip native sizing on repeated opens and closes");
+  await page.setViewport({ ...viewport, width: 960 });
+  await openDiffLineInSideEditor(page, "two changed");
+  for (const [pane, splitter, delta] of [[".locations", ".locations-splitter", -8], [".commits-pane", ".commits-splitter", -8], [".editor-pane", ".editor-splitter", 8]]) {
+    const start = await page.$eval(pane, element => element.getBoundingClientRect().width);
+    const handle = await page.$eval(splitter, element => { const box = element.getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; });
+    await page.mouse.move(handle.x, handle.y); await page.mouse.down();
+    await page.mouse.move(handle.x + delta, handle.y); await page.mouse.up();
+    const resized = await page.$eval(pane, element => element.getBoundingClientRect().width);
+    assert.ok(Math.abs(resized - (start - 8)) <= 1, `${pane} drag must start from its visible width: ${start} -> ${resized}`);
+    await assertFitted();
+  }
+  await click(page, "button[aria-label='Close editor']");
+  await page.waitForSelector(".editor-pane", { hidden: true });
+  await page.evaluate(widths => ["locationsWidth", "commitsWidth", "editorWidth"].forEach((key, i) => {
+    if (widths[i] === null) localStorage.removeItem(`gitferry.${key}`); else localStorage.setItem(`gitferry.${key}`, widths[i]);
+  }), preferredWidths);
+  await page.setViewport(viewport);
   await page.reload();
   await page.waitForSelector(".summary-diff-card .diff-content");
   assert.equal(await page.evaluate(key => localStorage.getItem(key), key), "true", "The setting survives restart");

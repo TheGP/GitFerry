@@ -6,6 +6,18 @@
 .workspace.alt.no-locations .editor-splitter { grid-column: 2; }
 .workspace.alt.no-locations .editor-pane { grid-column: 3; }
 
+/* Fit inside the window without replacing the user's preferred pane widths. */
+.workspace.fit-editor:not(.pane-expanded) {
+  --fit-locations-width: min(var(--locations-width), 18vw);
+  --fit-commits-width: min(var(--commits-width), 24vw);
+}
+.workspace.fit-editor.no-locations { --fit-locations-width: 0px; }
+.workspace.fit-editor.alt { --fit-commits-width: 0px; }
+.workspace.fit-editor:not(.pane-expanded) > .locations { width: var(--fit-locations-width) !important; }
+.workspace.fit-editor:not(.pane-expanded):not(.alt) > .commits-pane { width: var(--fit-commits-width) !important; }
+/* Reserve 220px for changes and up to three 1px splitters. */
+.workspace.fit-editor:not(.pane-expanded) > .editor-pane { width: min(var(--editor-width), calc(100vw - var(--fit-locations-width) - var(--fit-commits-width) - 223px)) !important; }
+
 .editor-tabs { height: 38px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-bottom: 1px solid var(--theme-border); background: var(--theme-heading); }
 .editor-tab { min-width: 0; display: flex; align-items: center; gap: 6px; padding: 4px 5px 4px 10px; border-radius: 4px; background: var(--theme-raised); color: var(--theme-text); font-size: 13px; font-style: italic; }
 .editor-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

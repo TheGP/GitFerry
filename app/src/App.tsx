@@ -2891,14 +2891,15 @@ function App() {
     event.preventDefault();
     if (which === "editor") {
       // The editor sits on the right, so dragging its splitter left widens it.
-      const startX = event.clientX, start = sideEditorWidth();
+      const startX = event.clientX, start = workspaceElement?.querySelector<HTMLElement>(".editor-pane")?.getBoundingClientRect().width ?? sideEditorWidth();
       const move = (next: PointerEvent) => setSideEditorWidth(Math.max(320, Math.min(window.innerWidth - 480, start - next.clientX + startX)));
       const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); localStorage.setItem("gitferry.editorWidth", String(sideEditorWidth())); };
       window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop);
       return;
     }
     const startPosition = which === "history" ? event.clientY : event.clientX;
-    const startWidth = which === "locations" ? locationsWidth() : which === "history" ? commitsHeight() : commitsWidth();
+    const startWidth = which === "history" ? commitsHeight()
+      : workspaceElement?.querySelector<HTMLElement>(which === "locations" ? ".locations" : ".commits-pane")?.getBoundingClientRect().width ?? (which === "locations" ? locationsWidth() : commitsWidth());
     const move = (next: PointerEvent) => {
       if (which === "history") {
         setCommitsHeight(Math.max(180, Math.min(window.innerHeight - 320, startWidth + next.clientY - startPosition)));
@@ -2908,7 +2909,8 @@ function App() {
       const maximum = which === "locations"
         ? Math.min(320, window.innerWidth - commitsWidth() - 360)
         : Math.min(600, window.innerWidth - (locationsOpen() ? locationsWidth() : 0) - 360);
-      const width = Math.max(which === "locations" ? 150 : 280, Math.min(maximum, startWidth + next.clientX - startPosition));
+      const minimum = which === "locations" ? 150 : sideEditor() && keepWindowWidth() ? 160 : 280;
+      const width = Math.max(minimum, Math.min(maximum, startWidth + next.clientX - startPosition));
       if (which === "locations") setLocationsWidth(width); else setCommitsWidth(width);
     };
     const stop = () => {
@@ -3139,7 +3141,7 @@ function App() {
       <Show when={menu().ref.kind === "remote" && !menu().ref.name.endsWith("/HEAD")}><button class="danger" disabled={actionBusy()} onClick={() => { const target = remoteBranch(menu().ref); setRefMenu(null); if (target) void runAction({ kind: "delete_remote_branch", value: target }, `Delete branch ${target.branch} from ${target.remote}?`); }}>Delete remote branch</button></Show>
       <Show when={menu().ref.kind === "tag"}><button disabled={actionBusy()} onClick={() => pushRef(menu().ref)}>Push tag to remote…</button><button disabled={actionBusy()} onClick={() => { const name = menu().ref.name; setRefMenu(null); void runAction({ kind: "delete_tag", value: { name } }, `Delete local tag ${name}?`); }}>Delete local tag</button><button class="danger" disabled={actionBusy()} onClick={() => deleteRemoteTag(menu().ref.name)}>Delete remote tag…</button></Show>
     </div>}</Show>
-    <main class={`workspace ${repoReady() && bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditor() ? "with-editor" : ""} ${repoReady() && expandedPane() ? `pane-expanded expanded-${expandedPane()}` : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
+    <main class={`workspace ${repoReady() && bottomLayout() ? "alt" : ""} ${locationsOpen() ? "" : "no-locations"} ${sideEditor() ? `with-editor ${keepWindowWidth() ? "fit-editor" : ""}` : ""} ${repoReady() && expandedPane() ? `pane-expanded expanded-${expandedPane()}` : ""}`} ref={workspaceElement} style={{ "--history-height": `${commitsHeight()}px`, "--locations-width": `${locationsWidth()}px`, "--commits-width": `${commitsWidth()}px`, "--editor-width": `${sideEditorWidth()}px`, width: workspaceLock() === null ? undefined : `${workspaceLock()}px` }}>
     <Show when={repo()} fallback={<main class="welcome">
       <div class="welcome-symbol">◇</div><div class="eyebrow">YOUR REPOSITORIES, ALL IN ONE PLACE</div>
       <h1>Git, wherever it lives.</h1><p>Open a local repository to browse its history, changes, and diffs.</p>
