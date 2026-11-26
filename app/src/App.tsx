@@ -21,7 +21,7 @@ import { createFileLinkQueue, filePosition, type FileLinkBatch, type ResolvedFil
 import { forgetWindowGrowth, growWindow, shrinkWindow } from "./windowGrow";
 import { highlightRows, numberedDiffRows, repositoryKey, mcpConfiguration, snapshotDiffTarget, fileFromSnapshotDiff, fileRangeRows, type McpRequest, type McpConnection, type FileRange } from "./mcpNavigation";
 import "./App.css";
-import { availableWorktrees, hasStagedChanges, repositoryTabs, reorderRepositoryTabs, worktreeGroupKey, worktreeLabel, type Worktree } from "./worktreeTabs";
+import { availableWorktrees, hasStagedChanges, isDefaultBranchWorktree, repositoryTabs, reorderRepositoryTabs, worktreeGroupKey, worktreeLabel, type Worktree } from "./worktreeTabs";
 import { parseRepositoryMetadata, repositoryMetadataCache } from "./worktreeSession";
 
 type Status = { path: string; index: string; worktree: string; worktreeRevision?: string; indexRevision?: string };
@@ -55,6 +55,7 @@ const tabsKey = "gitferry.openTabs";
 const activeKey = "gitferry.activeTab";
 const worktreeSelectionKey = "gitferry.worktreeSelection";
 const worktreeOrderKey = "gitferry.worktreeOrder";
+const manualWorktreeOrderKey = "gitferry.manualWorktreeOrder";
 const worktreeMetadataKey = "gitferry.worktreeMetadata";
 const themeKey = "gitferry.theme";
 const editorKey = "gitferry.editor";
@@ -673,6 +674,14 @@ function App() {
       return saved && typeof saved === "object" && !Array.isArray(saved) ? Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(path => typeof path === "string"))) : {};
     } catch { return {}; }
   })());
+  // Old order arrays also contain automatic discovery order. Only explicit new drags
+  // should override the newest-first default.
+  const [manualWorktreeOrder, setManualWorktreeOrder] = createSignal<Set<string>>((() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(manualWorktreeOrderKey) ?? "[]");
+      return new Set<string>(Array.isArray(saved) ? saved.filter(value => typeof value === "string") : []);
+    } catch { return new Set<string>(); }
+  })());
   const [details, setDetails] = createSignal<Details | null>(null);
   const [choice, setChoice] = createSignal<Choice | null>(null);
   // A file tab left open while viewing the Summary; it closes with its × or when the view changes.
@@ -946,7 +955,7 @@ function App() {
     else if (expandedPane() === "editor" && sideEditor()?.repo !== activePath()) setExpandedPane("changes");
   });
   const groupedTabs = createMemo(() => repositoryTabs(tabs(), activePath(), worktreeSelection()));
-  const selectedWorktrees = createMemo(() => repo() ? availableWorktrees(repo()!, tabs(), worktreeOrder()[worktreeGroupKey(repo()!)] ?? []) : []);
+  const selectedWorktrees = createMemo(() => repo() ? availableWorktrees(repo()!, tabs(), worktreeOrder()[worktreeGroupKey(repo()!)] ?? [], manualWorktreeOrder().has(worktreeGroupKey(repo()!))) : []);
   const repositoryActive = (item: Repo) => Boolean(repo() && worktreeGroupKey(item) === worktreeGroupKey(repo()!));
   const tabBranchVisibility = createMemo(() => {
     const seen = new Set<string>();
@@ -1286,6 +1295,7 @@ function App() {
     localStorage.setItem(activeKey, activePath() ?? "");
     localStorage.setItem(worktreeSelectionKey, JSON.stringify(worktreeSelection()));
     localStorage.setItem(worktreeOrderKey, JSON.stringify(worktreeOrder()));
+    localStorage.setItem(manualWorktreeOrderKey, JSON.stringify([...manualWorktreeOrder()]));
     localStorage.setItem(worktreeMetadataKey, JSON.stringify(repositoryMetadataCache(tabs(), parseRepositoryMetadata(localStorage.getItem(worktreeMetadataKey)))));
   }
   async function restoreRepo(path: string) {
@@ -2815,9 +2825,8 @@ function App() {
       setWorktreeSelection(items => Object.fromEntries(Object.entries(items).filter(([, path]) => !closed.has(repositoryKey(path)))));
       setWorktreeOrder(items => ({ ...items, [group]: (items[group] ?? []).filter(path => !closed.has(repositoryKey(path))) }));
     }
-    // Persist discovery order too, not only manual drags. Future Git listings may insert
-    // a newly created path alphabetically between older checkouts.
-    const order = availableWorktrees(current, tabs(), worktreeOrder()[group] ?? []).map(tree => tree.path);
+    // Remember ties and unknown dates without letting old discovery order override newer dates.
+    const order = availableWorktrees(current, tabs(), worktreeOrder()[group] ?? [], manualWorktreeOrder().has(group)).map(tree => tree.path);
     setWorktreeOrder(items => items[group]?.length === order.length && order.every((path, index) => path === items[group][index]) ? items : { ...items, [group]: order });
     saveTabs();
   }
@@ -2862,6 +2871,8 @@ function App() {
     const stripElement = kind === "worktree" ? worktreeStrip : tabStrip;
     const from = items.findIndex(item => item.path === path);
     if (from < 0) return;
+    if (kind === "worktree" && isDefaultBranchWorktree(items[from])) return;
+    const firstMovable = kind === "worktree" ? items.filter(isDefaultBranchWorktree).length : 0;
     const startX = event.clientX, startScroll = stripElement.scrollLeft;
     let rects: { left: number; right: number }[] = [];
     let dragging = false;
@@ -2876,7 +2887,7 @@ function App() {
       if (moveEvent.clientX < strip.left + 30) stripElement.scrollLeft -= 12;
       else if (moveEvent.clientX > strip.right - 30) stripElement.scrollLeft += 12;
       const width = rects[from].right - rects[from].left;
-      const dx = Math.min(Math.max(moveEvent.clientX - startX + stripElement.scrollLeft - startScroll, rects[0].left - rects[from].left), rects[rects.length - 1].right - rects[from].right);
+      const dx = Math.min(Math.max(moveEvent.clientX - startX + stripElement.scrollLeft - startScroll, rects[firstMovable].left - rects[from].left), rects[rects.length - 1].right - rects[from].right);
       // Swap with a neighbour once the dragged tab's leading edge passes its middle.
       const middle = (rect: { left: number; right: number }) => (rect.left + rect.right) / 2;
       const to = from + rects.filter((rect, index) => index > from && middle(rect) < rects[from].right + dx).length - rects.filter((rect, index) => index < from && middle(rect) > rects[from].left + dx).length;
@@ -2898,6 +2909,7 @@ function App() {
             const order = items.map(item => item.path);
             order.splice(drag.to, 0, order.splice(from, 1)[0]);
             setWorktreeOrder(current => ({ ...current, [group]: order }));
+            setManualWorktreeOrder(current => new Set([...current, group]));
           }
         } else setTabs(reorderRepositoryTabs(tabs(), path, drag.to));
         setTabDrag(null); saveTabs();

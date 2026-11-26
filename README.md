@@ -23,7 +23,7 @@ A feature branch gets an automatic comparison with `master` or `main`, pinned ab
 
 The comparison follows both branches as they move. You can also **pull master/main from its context menu without leaving your current branch**; it fast-forwards from the configured upstream.
 
-New worktree tabs appear at the end in creation order, and their positions stay stable across refreshes. Saved AI comments preserve the code or comment you are reading when comments arrive or change.
+Worktree tabs pin `main` and `master` on the left and default to newest first by creation date. Drag other tabs to keep a custom order; newly discovered worktrees appear after the pinned tabs. Saved AI comments preserve the code or comment you are reading when comments arrive or change.
 
 ## The explanation belongs beside the code
 

@@ -21,7 +21,9 @@ export function repositoryTabs<T extends WorktreeRepository>(tabs: T[], selected
   });
 }
 
-export function availableWorktrees<T extends WorktreeRepository>(repo: T, tabs: T[], order: string[] = []): Worktree[] {
+export const isDefaultBranchWorktree = (tree: { branch: string }) => tree.branch === "main" || tree.branch === "master";
+
+export function availableWorktrees<T extends WorktreeRepository>(repo: T, tabs: T[], order: string[] = [], manualOrder = false): Worktree[] {
   const members = tabs.filter(tab => worktreeGroupKey(tab) === worktreeGroupKey(repo));
   const listed = (repo.worktrees ?? []).filter(entry => !entry.bare);
   const paths = new Map(listed.map(entry => [repositoryKey(entry.path), entry]));
@@ -38,11 +40,15 @@ export function availableWorktrees<T extends WorktreeRepository>(repo: T, tabs: 
   const positions = new Map(order.map((path, index) => [repositoryKey(path), index]));
   const primary = repo.worktrees?.[0];
   const primaryKey = primary && !primary.bare ? repositoryKey(primary.path) : undefined;
-  const created = (tree: Worktree) => typeof tree.createdAt === "number" && Number.isFinite(tree.createdAt) && tree.createdAt >= 0 ? tree.createdAt : Number.MAX_SAFE_INTEGER;
+  const created = (tree: Worktree) => typeof tree.createdAt === "number" && Number.isFinite(tree.createdAt) && tree.createdAt >= 0 ? tree.createdAt : -1;
+  const pinned = (tree: Worktree) => isDefaultBranchWorktree(tree) ? repositoryKey(tree.path) === primaryKey ? 0 : 1 : 2;
   return [...paths.values()].sort((a, b) => {
-    const saved = (positions.get(repositoryKey(a.path)) ?? order.length) - (positions.get(repositoryKey(b.path)) ?? order.length);
-    if (saved) return saved;
-    return Number(repositoryKey(b.path) === primaryKey) - Number(repositoryKey(a.path) === primaryKey) || created(a) - created(b);
+    const defaultBranch = pinned(a) - pinned(b);
+    if (defaultBranch) return defaultBranch;
+    // Unknown paths are new discoveries: put them ahead of the remembered tabs.
+    const saved = (positions.get(repositoryKey(a.path)) ?? -1) - (positions.get(repositoryKey(b.path)) ?? -1);
+    if (manualOrder && saved) return saved;
+    return created(b) - created(a) || saved;
   });
 }
 

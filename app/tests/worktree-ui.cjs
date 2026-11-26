@@ -75,7 +75,7 @@ async function main() {
     if (command === "repo_diff") return { text: statusByPath.has(args.path) ? "diff --git a/draft.txt b/draft.txt\n--- a/draft.txt\n+++ b/draft.txt\n@@ -1 +1 @@\n-before\n+original\n" : "", truncated: false };
     return null;
   });
-  await page.evaluateOnNewDocument(({ primary, topic, independent }) => {
+  await page.evaluateOnNewDocument(({ primary, topic, unopened, independent }) => {
     window.isTauri = true;
     Object.defineProperty(navigator, "clipboard", { value: { writeText: async text => { window.__copiedText = text; } } });
     window.__callbacks = new Map(); window.__events = {}; window.__nextCallback = 0;
@@ -95,26 +95,27 @@ async function main() {
     if (!localStorage.getItem("worktree-test-initialized")) {
       localStorage.setItem("gitferry.openTabs", JSON.stringify([primary, independent, topic]));
       localStorage.setItem("gitferry.activeTab", topic);
+      localStorage.setItem("gitferry.worktreeOrder", JSON.stringify({ [`${primary}/.git`.toLowerCase()]: [primary, topic, unopened] }));
       localStorage.setItem("worktree-test-initialized", "true");
     }
-  }, { primary, topic, independent });
+  }, { primary, topic, unopened, independent });
   await page.goto(url);
   await page.waitForFunction(() => document.querySelectorAll(".repo-tab").length === 2 && document.querySelectorAll(".worktree-tab").length === 3);
   assert.equal(await page.$eval(".worktree-tab.active", button => button.title), topic);
   assert.deepEqual(await page.$$eval(".repo-tab .tab-name", spans => spans.map(span => span.textContent)), ["app", "app"]);
-  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.textContent.trim())), ["main", "topic", "unopened (detached)"], "Branches use branch labels; detached checkouts use their folder name");
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.textContent.trim())), ["main", "unopened (detached)", "topic"], "Branches use branch labels; detached checkouts use their folder name");
   const latest = { ...worktrees[0], path: "C:/trees/aaa-created-later", branch: "newest", createdAt: 400 };
   worktrees.splice(1, 0, latest); // Git's path order puts it in the middle.
   await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
   await page.waitForFunction(() => document.querySelectorAll(".worktree-tab").length === 4);
-  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, topic, unopened, latest.path]);
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, latest.path, unopened, topic]);
   worktrees.splice(1, 3, worktrees[3], worktrees[1], worktrees[2]);
   await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
   await page.waitForFunction(() => !document.querySelector(".statusbar")?.textContent.includes("Loading"));
-  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, topic, unopened, latest.path], "Refreshed Git ordering must not move existing tabs");
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, latest.path, unopened, topic], "Refreshed Git ordering must not move existing tabs");
   await page.reload();
   await page.waitForFunction(() => document.querySelectorAll(".worktree-tab").length === 4 && !document.querySelector(".repo-tab.loading"));
-  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, topic, unopened, latest.path], "Discovery order survives restarting GitFerry");
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, latest.path, unopened, topic], "Newest-first order survives restarting GitFerry");
   worktrees.splice(worktrees.findIndex(tree => tree.path === latest.path), 1);
   await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
   await page.waitForFunction(() => document.querySelectorAll(".worktree-tab").length === 3);
@@ -128,13 +129,21 @@ async function main() {
   await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
   await page.waitForFunction(() => document.querySelectorAll(".worktree-merged").length === 1);
   const beforeTabs = await page.evaluate(() => localStorage.getItem("gitferry.openTabs"));
-  const first = await page.$eval(".worktree-tab:first-child", button => { const rect = button.getBoundingClientRect(); return { x: rect.x + 5, y: rect.y + rect.height / 2 }; });
-  const last = await page.$eval(".worktree-tab:last-child", button => { const rect = button.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
-  await page.mouse.move(last.x, last.y); await page.mouse.down();
-  await page.mouse.move(first.x, first.y, { steps: 10 }); await page.mouse.up();
-  await page.waitForFunction(() => [...document.querySelectorAll(".worktree-tab")].map(button => button.textContent.trim()).join(",") === "unopened (detached),main,topic");
+  const destination = await page.$eval(".worktree-tab:last-child", button => { const rect = button.getBoundingClientRect(); return { x: rect.x + 5, y: rect.y + rect.height / 2 }; });
+  const source = await page.$eval(".worktree-tab:nth-child(2)", button => { const rect = button.getBoundingClientRect(); return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }; });
+  await page.mouse.move(source.x, source.y); await page.mouse.down();
+  await page.mouse.move(destination.x, destination.y, { steps: 10 }); await page.mouse.up();
+  await page.waitForFunction(() => [...document.querySelectorAll(".worktree-tab")].map(button => button.textContent.trim()).join(",") === "main,topic,unopened (detached)");
   assert.equal(await page.$eval(".worktree-tab.active", button => button.title), topic, "Dragging must not activate or open the dragged checkout");
   assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.openTabs")), beforeTabs, "Worktree sorting does not reorder repository tabs or open new checkouts");
+  worktrees.push(latest);
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelectorAll(".worktree-tab").length === 4);
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.title)), [primary, latest.path, topic, unopened], "New worktrees go after main even when existing tabs have a custom order");
+  assert.equal(await page.$eval(".worktree-tab.active", button => button.title), topic, "Discovery must preserve the active checkout");
+  worktrees.splice(worktrees.findIndex(tree => tree.path === latest.path), 1);
+  await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.querySelectorAll(".worktree-tab").length === 3);
   await page.locator(".repo-tab:nth-child(2) .tab-main").click();
   await page.waitForFunction(() => localStorage.getItem("gitferry.activeTab") === "C:/elsewhere/app");
   assert.equal(await page.$$eval(".worktree-tabbar", nodes => nodes.length), 0);
@@ -157,7 +166,7 @@ async function main() {
   assert.equal(await page.$$eval(".repo-tab", nodes => nodes.length), 2, "Cached linked checkout metadata groups repository tabs before snapshots finish");
   assert.equal(await page.$$eval(".worktree-tab", nodes => nodes.length), 3, "Cached worktree tabs appear while repository verification is pending");
   assert.equal(await page.$eval(".worktree-tab.active", button => button.title), unopened);
-  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.textContent.trim())), ["unopened (detached)", "main", "topic"], "Dragged order is restored before snapshots complete");
+  assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.textContent.trim())), ["main", "topic", "unopened (detached)"], "Dragged order is restored before snapshots complete");
   assert.equal(await page.$$eval(".repo-tab.loading", nodes => nodes.length), 2, "Cache hints do not mark snapshots ready");
   assert.equal(await page.$$eval(".worktree-merged", badges => badges.length), 0, "Do not show cached badges before verifying repository state");
   releaseSnapshots = null; release();

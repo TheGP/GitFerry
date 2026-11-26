@@ -32,10 +32,10 @@ test("old agent snapshots and SSH authorities keep their own repository identiti
   assert.notEqual(worktreeGroupKey({ ...primary, commonGitDir: "ssh://one/repo/.git" }), worktreeGroupKey({ ...primary, commonGitDir: "ssh://two/repo/.git" }));
 });
 
-test("manual worktree order tolerates removed checkouts and appends newly discovered checkouts", () => {
+test("manual worktree order tolerates removed checkouts and inserts new checkouts after main", () => {
   const extra = { ...primary.worktrees[0], path: "C:/trees/new", branch: "new" };
   const repo = { ...primary, worktrees: [...primary.worktrees, extra] };
-  assert.deepEqual(availableWorktrees(repo, [repo], [topic.path, "C:/gone", primary.path]).map(tree => tree.path), [topic.path, primary.path, extra.path]);
+  assert.deepEqual(availableWorktrees(repo, [repo], [topic.path, "C:/gone", primary.path], true).map(tree => tree.path), [primary.path, extra.path, topic.path]);
 });
 
 test("worktree labels show branch names and identify detached checkouts by folder name", () => {
@@ -66,13 +66,14 @@ test("verified Git listings do not resurrect removed worktrees from cached open 
   assert.equal(availableWorktrees({ ...primary, worktrees: undefined }, [primary, topic]).length, 2, "Old agents still use open checkout metadata");
 });
 
-test("initial worktree order uses creation date instead of Git's path order", () => {
+test("worktree order uses newest creation date first after the default branch", () => {
   const older = { ...primary.worktrees[1], path: "C:/trees/z-older", createdAt: 100 };
   const newer = { ...older, path: "C:/trees/a-newer", createdAt: 200 };
   const repo = { ...primary, worktrees: [{ ...primary.worktrees[0], createdAt: 500 }, newer, older] };
-  assert.deepEqual(availableWorktrees(repo, [repo]).map(tree => tree.path), [primary.path, older.path, newer.path]);
+  assert.deepEqual(availableWorktrees(repo, [repo]).map(tree => tree.path), [primary.path, newer.path, older.path]);
+  assert.deepEqual(availableWorktrees(repo, [repo], [primary.path, older.path, newer.path]).map(tree => tree.path), [primary.path, newer.path, older.path], "Legacy discovery order must not override newest-first sorting");
   const bare = { ...repo, worktrees: [{ ...repo.worktrees[0], bare: true }, newer, older] };
-  assert.deepEqual(availableWorktrees(bare, []).map(tree => tree.path), [older.path, newer.path]);
+  assert.deepEqual(availableWorktrees(bare, []).map(tree => tree.path), [newer.path, older.path]);
 });
 test("discovery order stays stable when later Git listings insert or reorder paths", () => {
   const first = { ...primary.worktrees[1], path: "C:/trees/z-first", createdAt: 100 };
@@ -80,15 +81,34 @@ test("discovery order stays stable when later Git listings insert or reorder pat
   let repo = { ...primary, worktrees: [primary.worktrees[0], first] };
   const order = availableWorktrees(repo, [repo]).map(tree => tree.path);
   repo = { ...repo, worktrees: [primary.worktrees[0], second, first] };
-  assert.deepEqual(availableWorktrees(repo, [repo], order).map(tree => tree.path), [...order, second.path]);
+  assert.deepEqual(availableWorktrees(repo, [repo], order).map(tree => tree.path), [primary.path, second.path, first.path]);
   const saved = availableWorktrees(repo, [repo], order).map(tree => tree.path);
   assert.deepEqual(availableWorktrees({ ...repo, worktrees: [second, first, primary.worktrees[0]] }, [], saved).map(tree => tree.path), saved);
-  assert.deepEqual(availableWorktrees(repo, [repo], [first.path, primary.path]).map(tree => tree.path), [first.path, primary.path, second.path]);
+  assert.deepEqual(availableWorktrees(repo, [repo], [first.path, primary.path], true).map(tree => tree.path), [primary.path, second.path, first.path]);
 });
-test("old agents and invalid creation dates retain stable first-discovered order", () => {
+test("old agents and invalid creation dates keep remembered tabs stable and insert new discoveries on the left", () => {
   const extra = { ...primary.worktrees[1], path: "C:/trees/a-new" };
   const order = availableWorktrees(primary, [primary]).map(tree => tree.path);
   const repo = { ...primary, worktrees: [primary.worktrees[0], extra, primary.worktrees[1]] };
-  assert.deepEqual(availableWorktrees(repo, [repo], order).map(tree => tree.path), [...order, extra.path]);
-  for (const createdAt of [NaN, Infinity, -1]) assert.equal(availableWorktrees({ ...repo, worktrees: repo.worktrees.map(tree => ({ ...tree, createdAt })) }, [], order).at(-1)?.path, extra.path);
+  assert.deepEqual(availableWorktrees(repo, [repo], order).map(tree => tree.path), [primary.path, extra.path, topic.path]);
+  for (const createdAt of [NaN, Infinity, -1]) assert.deepEqual(availableWorktrees({ ...repo, worktrees: repo.worktrees.map(tree => ({ ...tree, createdAt })) }, [], order).map(tree => tree.path), [primary.path, extra.path, topic.path]);
+});
+
+test("main or master is pinned even in a linked checkout and cannot be moved by manual order", () => {
+  for (const branch of ["main", "master"]) {
+    const root = { ...primary.worktrees[0], branch: "feature", createdAt: 300 };
+    const pinned = { ...primary.worktrees[1], branch, createdAt: 100 };
+    const latest = { ...pinned, path: "C:/trees/latest", branch: "latest", createdAt: 400 };
+    const repo = { ...primary, branch: root.branch, worktrees: [root, pinned, latest] };
+    assert.deepEqual(availableWorktrees(repo, []).map(tree => tree.path), [pinned.path, latest.path, root.path]);
+    assert.deepEqual(availableWorktrees(repo, [], [root.path, latest.path, pinned.path], true).map(tree => tree.path), [pinned.path, root.path, latest.path]);
+  }
+});
+
+test("repositories without a default-branch checkout sort every worktree newest first", () => {
+  const root = { ...primary.worktrees[0], branch: "feature", createdAt: 100 };
+  const latest = { ...primary.worktrees[1], createdAt: 300 };
+  const unknown = { ...latest, path: "C:/trees/unknown", createdAt: undefined };
+  const repo = { ...primary, branch: root.branch, worktrees: [root, unknown, latest] };
+  assert.deepEqual(availableWorktrees(repo, []).map(tree => tree.path), [latest.path, root.path, unknown.path]);
 });
