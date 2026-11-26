@@ -62,6 +62,7 @@ const editorKey = "gitferry.editor";
 const editorExecutableKey = "gitferry.editorExecutable";
 const tabBranchKey = "gitferry.showTabBranch";
 const expansionKey = "gitferry.expansion";
+const refExpansionKey = "gitferry.refExpansion";
 const tabStateKey = "gitferry.tabState";
 const testsClosedKey = "gitferry.keepTestsClosed";
 const keepWindowWidthKey = "gitferry.keepWindowWidth";
@@ -839,7 +840,18 @@ function App() {
     }));
   });
   const [keyboardFileKey, setKeyboardFileKey] = createSignal<string | null>(null);
-  const [folderOverrides, setFolderOverrides] = createSignal<Record<string, boolean>>({});
+  // Shared across repositories: section keys end in ":", folders include their full ref prefix.
+  const [refExpansion, setRefExpansion] = createSignal<Record<string, boolean>>((() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(refExpansionKey) ?? "{}");
+      return saved && typeof saved === "object" && !Array.isArray(saved)
+        ? Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean")) : {};
+    } catch { return {}; }
+  })());
+  createEffect(() => localStorage.setItem(refExpansionKey, JSON.stringify(refExpansion())));
+  function setRefOpen(key: string, open: boolean) {
+    setRefExpansion(previous => ({ ...previous, [key]: open }));
+  }
   const [error, setErrorText] = createSignal("");
   const [errorContext, setErrorContext] = createSignal("");
   const [errorPath, setErrorPath] = createSignal<string | null>(null);
@@ -3190,9 +3202,9 @@ function App() {
     </main>}>
       <Show when={repoReady()} fallback={<main class="repo-startup" role="status"><div class="repo-startup-icon">◇</div><strong>{repo()?.loading ? `Opening ${repo()?.name}…` : `Could not open ${repo()?.name}`}</strong><span>{repo()?.loadError || "Your saved repositories are loading."}</span><Show when={repo()?.loadError}><button onClick={() => retryRestoredRepo(repo()!.path)}>Retry</button></Show></main>}>
         <Show when={locationsOpen()}><aside class="locations" style={{ width: `${locationsWidth()}px` }}><div class="pane-heading">LOCATIONS</div><div class="locations-list">
-          <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section">
-            <div class="section-heading"><ChevronDown />{kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span><Show when={kind === "remote"}><button class="ref-section-action" title="Delete a remote branch by name" onClick={deleteRemoteBranchByName}>Delete…</button></Show><Show when={kind === "tag"}><button class="ref-section-action" title="Delete a remote tag by name" onClick={() => deleteRemoteTag()}>Remote…</button></Show></div>
-            <RefTree nodes={groupRefs(repo()?.refs.filter(item => item.kind === kind) ?? [], kind === "branch" || kind === "remote")} kind={kind} depth={0} overrides={folderOverrides()} onToggle={(key, open) => setFolderOverrides(previous => ({ ...previous, [key]: open }))} onSelect={hash => void jumpToCommit(hash, kind !== "stash")} onMenu={openRefMenu} onCheckout={checkoutRef} colorFor={ref => kind === "branch" || kind === "remote" ? branchColor(branchKey(ref.name, repo()?.remotes ?? [])) : undefined} />
+          <For each={["branch", "remote", "tag", "stash", "submodule"]}>{kind => <section class="ref-section" data-kind={kind}>
+            <div class="section-heading"><button class="ref-section-toggle" aria-expanded={refExpansion()[`${kind}:`] !== false} onClick={() => setRefOpen(`${kind}:`, refExpansion()[`${kind}:`] === false)}><ChevronDown />{kind === "branch" ? "BRANCHES" : kind === "remote" ? "REMOTES" : kind === "tag" ? "TAGS" : kind === "stash" ? "STASHES" : "SUBMODULES"} <span>{repo()?.refs.filter(item => item.kind === kind).length ?? 0}</span></button><Show when={kind === "remote"}><button class="ref-section-action" title="Delete a remote branch by name" onClick={deleteRemoteBranchByName}>Delete…</button></Show><Show when={kind === "tag"}><button class="ref-section-action" title="Delete a remote tag by name" onClick={() => deleteRemoteTag()}>Remote…</button></Show></div>
+            <Show when={refExpansion()[`${kind}:`] !== false}><RefTree nodes={groupRefs(repo()?.refs.filter(item => item.kind === kind) ?? [], kind === "branch" || kind === "remote")} kind={kind} depth={0} overrides={refExpansion()} onToggle={setRefOpen} onSelect={hash => void jumpToCommit(hash, kind !== "stash")} onMenu={openRefMenu} onCheckout={checkoutRef} colorFor={ref => kind === "branch" || kind === "remote" ? branchColor(branchKey(ref.name, repo()?.remotes ?? [])) : undefined} /></Show>
           </section>}</For></div><div class="locations-footer"><span class="connection-dot" /> {repo()?.path.startsWith("ssh://") ? "SSH REPOSITORY" : "LOCAL REPOSITORY"}</div>
         </aside><div class="splitter locations-splitter" onPointerDown={event => startResize("locations", event)} /></Show>
         <section class="commits-pane" style={{ width: `${commitsWidth()}px` }} onPointerDown={() => { navigationArea = "commits"; }}><div class="pane-heading">{searchQuery() ? "SEARCH RESULTS" : "COMMITS"} <span class="heading-count">{displayedCommits().length}{hasMore() ? "+" : ""}</span></div>

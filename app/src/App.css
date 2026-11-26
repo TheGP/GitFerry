@@ -128,7 +128,10 @@ button { cursor: pointer; }
 .pane-heading { height: 38px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: #20262d; border-bottom: 1px solid #141a20; color: #aab6c1; font-size: 13px; letter-spacing: 1.3px; font-weight: 750; }
 .heading-count { color: #657480; letter-spacing: 0; }
 .ref-section { padding-top: 10px; }
-.section-heading { display: flex; align-items: center; padding: 5px 14px; color: #8e9ca8; font-size: 13px; letter-spacing: 0.7px; font-weight: 800; }
+.section-heading { display: flex; align-items: center; padding: 0 10px 0 0; color: #8e9ca8; font-size: 13px; letter-spacing: 0.7px; font-weight: 800; }
+.ref-section-toggle { display: flex; align-items: center; flex: 1; min-width: 0; padding: 5px 4px 5px 14px; border: 0; background: transparent; color: inherit; font: inherit; letter-spacing: inherit; text-align: left; }
+.ref-section-toggle:hover { background: var(--theme-hover); }
+.ref-section-toggle[aria-expanded="false"] .chevron-icon { transform: rotate(-90deg); }
 .section-heading span { margin-left: auto; color: #62727e; }
 .section-heading .chevron-icon { width: 12px; height: 12px; flex: none; margin-right: 8px; }
 .ref-item { height: 27px; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 25px; color: #a7b3bd; font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

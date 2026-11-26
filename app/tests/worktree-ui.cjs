@@ -21,6 +21,7 @@ const missingPaths = new Set(), deniedPaths = new Set();
 const statusByPath = new Map();
 const checkouts = [];
 let showBranchRefs = false;
+let showSidebarRefs = true;
 let destinationGate = null, failNextSnapshot = null;
 
 async function main() {
@@ -61,6 +62,11 @@ async function main() {
       if (destinationGate?.path === args.path) { destinationGate.started = true; await destinationGate.promise; }
       if (failNextSnapshot === args.path) { failNextSnapshot = null; throw new Error("Cannot open repository path: The system cannot find the file specified. (os error 2)"); }
       const result = snapshot(args.path);
+      if (showSidebarRefs) result.refs = [
+        { name: "feature/nested/topic", kind: "branch", target: "1".repeat(40), isHead: true },
+        { name: "feature/other", kind: "branch", target: "1".repeat(40), isHead: false },
+        ...["remote", "tag", "stash", "submodule"].map(kind => ({ name: kind === "remote" ? "origin/main" : "entry", kind, target: "1".repeat(40), isHead: false })),
+      ];
       if (showBranchRefs) result.refs = [{ name: "main", kind: "branch", target: "1".repeat(40), isHead: result.branch === "main" }];
       return result;
     }
@@ -104,6 +110,48 @@ async function main() {
   assert.equal(await page.$eval(".worktree-tab.active", button => button.title), topic);
   assert.deepEqual(await page.$$eval(".repo-tab .tab-name", spans => spans.map(span => span.textContent)), ["app", "app"]);
   assert.deepEqual(await page.$$eval(".worktree-tab", buttons => buttons.map(button => button.textContent.trim())), ["main", "unopened (detached)", "topic"], "Branches use branch labels; detached checkouts use their folder name");
+  // Sidebar disclosure clicks must hide descendants, preserve explicit choices even for
+  // HEAD folders, and share those choices across repositories and application restarts.
+  const branchSection = '.ref-section[data-kind="branch"]';
+  const sectionToggle = kind => `.ref-section[data-kind="${kind}"] .ref-section-toggle`;
+  const featureFolder = `${branchSection} > .ref-folder`;
+  const nestedFolder = `${branchSection} .ref-folder:nth-of-type(2)`;
+  await page.waitForSelector(`${branchSection} .ref-item[title="feature/nested/topic"]`);
+  await page.locator(`${nestedFolder} .chevron-icon`).click();
+  assert.equal(await page.$(`${branchSection} .ref-item[title="feature/nested/topic"]`), null);
+  await page.locator(`${featureFolder} .chevron-icon`).click();
+  assert.equal(await page.$$eval(`${branchSection} .ref-folder`, nodes => nodes.length), 1);
+  // Every section, including otherwise-disabled submodule leaves, can be collapsed.
+  for (const kind of ["branch", "remote", "tag", "stash", "submodule"]) {
+    await page.locator(`${sectionToggle(kind)} .chevron-icon`).click();
+    assert.equal(await page.$eval(sectionToggle(kind), button => button.getAttribute("aria-expanded")), "false");
+    assert.equal(await page.$$eval(`.ref-section[data-kind="${kind}"] .ref-item, .ref-section[data-kind="${kind}"] .ref-folder`, nodes => nodes.length), 0);
+  }
+  const expansion = await page.evaluate(() => localStorage.getItem("gitferry.refExpansion"));
+  await page.locator(".repo-tab:nth-child(2) .tab-main").click();
+  await page.waitForFunction(() => localStorage.getItem("gitferry.activeTab") === "C:/elsewhere/app" && !document.querySelector(".repo-startup"));
+  assert.equal(await page.$eval(sectionToggle("branch"), button => button.getAttribute("aria-expanded")), "false", "Sections use application-wide preferences");
+  await page.reload();
+  await page.waitForSelector(sectionToggle("branch"));
+  assert.equal(await page.evaluate(() => localStorage.getItem("gitferry.refExpansion")), expansion, "Restart preserves section and folder choices");
+  // Keyboard activation works, and reopening a section retains its nested folder state.
+  await page.focus(sectionToggle("branch"));
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(featureFolder);
+  assert.equal(await page.$eval(featureFolder, button => button.getAttribute("aria-expanded")), "false");
+  await page.locator(featureFolder).click();
+  assert.equal(await page.$eval(nestedFolder, button => button.getAttribute("aria-expanded")), "false", "Closing a HEAD folder must override automatic expansion");
+  await page.locator(nestedFolder).click();
+  await page.waitForSelector(`${branchSection} .ref-item[title="feature/nested/topic"]`);
+  await page.focus(sectionToggle("branch"));
+  await page.keyboard.press("Space");
+  await page.waitForFunction(() => document.querySelector('.ref-section[data-kind="branch"] .ref-section-toggle')?.getAttribute("aria-expanded") === "false");
+  assert.deepEqual(checkouts, [], "Disclosure actions never check out a branch");
+  await page.locator(".repo-tab:first-child .tab-main").click();
+  await page.waitForFunction(() => document.querySelector(".worktree-tab.active")?.title === "C:/trees/topic");
+  assert.equal(await page.$eval(sectionToggle("branch"), button => button.getAttribute("aria-expanded")), "false");
+  for (const kind of ["branch", "remote", "tag", "stash", "submodule"]) await page.locator(sectionToggle(kind)).click();
+  showSidebarRefs = false;
   const latest = { ...worktrees[0], path: "C:/trees/aaa-created-later", branch: "newest", createdAt: 400 };
   worktrees.splice(1, 0, latest); // Git's path order puts it in the middle.
   await page.keyboard.down("Control"); await page.keyboard.press("r"); await page.keyboard.up("Control");
